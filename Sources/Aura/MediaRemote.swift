@@ -58,7 +58,7 @@ final class MediaRemote {
             center,
             Unmanaged.passUnretained(self).toOpaque(),
             Self.notificationCallback,
-            "kMRMediaRemoteNowPlayingInfoDidChangeNotification" as CFString,
+            CFNotificationName("kMRMediaRemoteNowPlayingInfoDidChangeNotification" as CFString),
             nil,
             .deliverImmediately
         )
@@ -69,7 +69,7 @@ final class MediaRemote {
         CFNotificationCenterRemoveObserver(
             center,
             Unmanaged.passUnretained(self).toOpaque(),
-            "kMRMediaRemoteNowPlayingInfoDidChangeNotification" as CFString,
+            CFNotificationName("kMRMediaRemoteNowPlayingInfoDidChangeNotification" as CFString),
             nil
         )
     }
