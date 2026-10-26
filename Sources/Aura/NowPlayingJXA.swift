@@ -1,0 +1,135 @@
+import AppKit
+import Foundation
+
+/// Now-playing sensor for macOS 15.4+, where Apple blocks third-party
+/// processes from reading MediaRemote directly: mediaremoted denies
+/// MRMediaRemoteGetNowPlayingInfo (and the other getters) to any client
+/// without Apple's entitlement. That is exactly the symptom seen on
+/// macOS 15.7: Control Center (Apple's own UI) shows the track while a
+/// third-party caller gets nil/empty, no matter how the call is made.
+///
+/// The workaround, used by the media-remote project and others: run a
+/// small JXA script through /usr/bin/osascript — an Apple-signed system
+/// binary — which reads the SAME info through the modern, synchronous
+/// MRNowPlayingRequest API and prints it as JSON. No SIP change, no
+/// daemon patching, no private entitlement needed.
+///
+/// Trade-offs vs the direct path (documented, accepted):
+/// - No album artwork: JXA cannot carry the image bytes back, so the
+///   expanded card shows its placeholder glyph on this path.
+/// - Polling only (no change notifications); the app already polls
+///   every second, so this costs one osascript spawn per tick.
+/// - Browser elapsed time can go stale in the info dict; the script
+///   prefers metadata.calculatedPlaybackPosition when available.
+enum NowPlayingJXA {
+    private static let script = """
+        ObjC.import('Foundation');
+        function run() {
+          try {
+            var bundle = $.NSBundle.bundleWithPath('/System/Library/PrivateFrameworks/MediaRemote.framework/');
+            bundle.load();
+            var MRNowPlayingRequest = $.NSClassFromString('MRNowPlayingRequest');
+            if (!MRNowPlayingRequest) return JSON.stringify(null);
+            var item = MRNowPlayingRequest.localNowPlayingItem;
+            if (!item) return JSON.stringify(null);
+            var info = item.nowPlayingInfo;
+            if (!info) return JSON.stringify(null);
+            function str(key) {
+              var v = info.valueForKey(key);
+              return v ? v.js : '';
+            }
+            function num(key) {
+              var v = info.valueForKey(key);
+              return v ? v.js : 0;
+            }
+            var position = num('kMRMediaRemoteNowPlayingInfoElapsedTime');
+            try {
+              var meta = item.metadata;
+              if (meta) {
+                var calc = meta.calculatedPlaybackPosition;
+                if (calc && calc.js > 0) position = calc.js;
+              }
+            } catch (e) {}
+            var client = '';
+            try {
+              var path = MRNowPlayingRequest.localNowPlayingPlayerPath;
+              if (path && path.client && path.client.displayName) client = path.client.displayName.js;
+            } catch (e) {}
+            return JSON.stringify({
+              title: str('kMRMediaRemoteNowPlayingInfoTitle'),
+              artist: str('kMRMediaRemoteNowPlayingInfoArtist'),
+              album: str('kMRMediaRemoteNowPlayingInfoAlbum'),
+              duration: num('kMRMediaRemoteNowPlayingInfoDuration'),
+              elapsed: position,
+              rate: num('kMRMediaRemoteNowPlayingInfoPlaybackRate'),
+              client: client
+            });
+          } catch (e) {
+            return JSON.stringify({ error: String(e) });
+          }
+        }
+        """
+
+    /// Runs the script off the main thread (an osascript spawn costs
+    /// tens of milliseconds) and delivers the result on the main thread.
+    /// The second value is the playing app's display name (e.g. "Google
+    /// Chrome"), for diagnostics; empty when unknown.
+    static func fetch(completion: @escaping (NowPlaying?, String) -> Void) {
+        DispatchQueue.global(qos: .utility).async {
+            let result = runScript()
+            DispatchQueue.main.async {
+                completion(result.now, result.client)
+            }
+        }
+    }
+
+    private static func runScript() -> (now: NowPlaying?, client: String) {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        proc.arguments = ["-l", "JavaScript", "-e", script]
+        let out = Pipe()
+        proc.standardOutput = out
+        proc.standardError = FileHandle.nullDevice
+        do {
+            try proc.run()
+        } catch {
+            return (nil, "")
+        }
+        // Never let one stuck osascript block this sensor forever.
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 5) {
+            if proc.isRunning {
+                proc.terminate()
+            }
+        }
+        proc.waitUntilExit()
+        guard proc.terminationStatus == 0 else {
+            return (nil, "")
+        }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        guard let text = String(data: data, encoding: .utf8),
+              let jsonData = text.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+              obj["error"] == nil else {
+            return (nil, "")
+        }
+        let title = obj["title"] as? String ?? ""
+        let artist = obj["artist"] as? String ?? ""
+        let rate = (obj["rate"] as? NSNumber)?.doubleValue ?? 0
+        let elapsed = (obj["elapsed"] as? NSNumber)?.doubleValue ?? 0
+        let duration = (obj["duration"] as? NSNumber)?.doubleValue ?? 0
+        let client = obj["client"] as? String ?? ""
+        guard !title.isEmpty || rate > 0 else {
+            return (nil, "")
+        }
+        let displayTitle = !title.isEmpty ? title : (!artist.isEmpty ? artist : "Musik")
+        let now = NowPlaying(
+            title: displayTitle,
+            artist: artist,
+            isPlaying: rate > 0,
+            position: elapsed,
+            duration: duration,
+            artwork: nil
+        )
+        return (now, client)
+    }
+}

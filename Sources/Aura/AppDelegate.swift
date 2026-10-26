@@ -35,6 +35,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var currentTrackKey: String?
     private var lastMediaLog: String?
     private var lastTabLog: String?
+    private var jxaInFlight = false
+
+    /// macOS 15.4+ denies direct MediaRemote reads to third-party
+    /// clients (see NowPlayingJXA). Below that, the direct path works
+    /// and keeps artwork + instant notifications.
+    private let useJXA: Bool = {
+        let v = ProcessInfo.processInfo.operatingSystemVersion
+        return v.majorVersion > 15 || (v.majorVersion == 15 && v.minorVersion >= 4)
+    }()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let initial = NSRect(x: 0, y: 0, width: 140, height: 32)
@@ -121,23 +130,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Polling
 
+    private func applySystemNowPlaying(_ now: NowPlaying?, logLabel: String, logKey: String) {
+        // Diagnostic log, only when the detected state changes. Visible
+        // when the app is run from Terminal; tells us whether the
+        // system side sees the music at all.
+        if logKey != lastMediaLog {
+            lastMediaLog = logKey
+            print("[Aura] \(logLabel): \(logKey)")
+        }
+        if let now {
+            sessions.updateSystem(now)
+        } else {
+            sessions.clearSystem()
+        }
+        refresh()
+    }
+
     private func tick() {
-        mediaRemote.fetchNowPlaying { [weak self] now in
-            guard let self else { return }
-            // Diagnostic log, only when the detected state changes. Visible
-            // when the app is run from Terminal; tells us whether the
-            // system side sees the music at all.
-            let mediaKey = now.map { "\($0.title) | \($0.artist) | playing=\($0.isPlaying)" } ?? "(tidak ada)"
-            if mediaKey != self.lastMediaLog {
-                self.lastMediaLog = mediaKey
-                print("[Aura] MediaRemote: \(mediaKey)")
+        if useJXA {
+            // One osascript spawn per tick; never stack them if a fetch
+            // is still running.
+            if !jxaInFlight {
+                jxaInFlight = true
+                NowPlayingJXA.fetch { [weak self] now, client in
+                    guard let self else { return }
+                    self.jxaInFlight = false
+                    let key = now.map { "\($0.title) | \($0.artist) | playing=\($0.isPlaying) | \(client)" } ?? "(tidak ada)"
+                    self.applySystemNowPlaying(now, logLabel: "MediaRemote(JXA)", logKey: key)
+                }
             }
-            if let now {
-                self.sessions.updateSystem(now)
-            } else {
-                self.sessions.clearSystem()
+        } else {
+            mediaRemote.fetchNowPlaying { [weak self] now in
+                guard let self else { return }
+                let key = now.map { "\($0.title) | \($0.artist) | playing=\($0.isPlaying)" } ?? "(tidak ada)"
+                self.applySystemNowPlaying(now, logLabel: "MediaRemote", logKey: key)
             }
-            self.refresh()
         }
         sessions.refreshExtensionTabs(bridge.tabs)
         let tabKey = bridge.tabs.values

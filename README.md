@@ -57,6 +57,15 @@ Ekstensi melapor ke aplikasi lewat server lokal di `http://127.0.0.1:48123`
   (update instan saat lagu mulai/berhenti/ganti), ditambah polling tiap
   1 detik untuk posisi/progress. Info lagu termasuk sampul album bila
   tersedia dari sumbernya.
+- macOS 15.4+: Apple memblokir pembacaan MediaRemote langsung oleh
+  aplikasi pihak ketiga (mediaremoted menolak client tanpa entitlement
+  Apple — gejala persisnya: Control Center menampilkan lagu, aplikasi
+  lain mendapat nil). Di 15.4+ aplikasi otomatis memakai jalur JXA:
+  script kecil lewat /usr/bin/osascript (binary Apple) membaca info
+  yang sama via API modern MRNowPlayingRequest dan mengembalikannya
+  sebagai JSON. Tanpa ubah SIP, tanpa patch daemon. Trade-off jalur
+  ini: tidak ada sampul album (placeholder) dan update hanya lewat
+  polling 1 detik.
 - Baterai: lingkar hijau dari IOKit (disembunyikan otomatis di Mac tanpa
   baterai). Waveform dianimasikan dekoratif selama lagu diputar (bukan
   analisis audio nyata, sama seperti Nusa).
@@ -93,6 +102,8 @@ Ekstensi melapor ke aplikasi lewat server lokal di `http://127.0.0.1:48123`
 - `Sources/Aura/IslandView.swift` — gambar pill/kartu gaya Nusa + hit-test klik.
 - `Sources/Aura/SessionStore.swift` — sesi gabungan + logika pin Auto/Pin.
 - `Sources/Aura/MediaRemote.swift` — baca now-playing via MediaRemote.
+- `Sources/Aura/NowPlayingJXA.swift` — sensor JXA via osascript untuk
+  macOS 15.4+ (baca MRNowPlayingRequest, tanpa sampul album).
 - `Sources/Aura/Battery.swift` — level baterai via IOKit.
 - `Sources/Aura/ExtensionBridge.swift` — server lokal untuk ekstensi.
 - `Sources/Aura/Lyrics.swift` — klien LRCLIB + parser lirik sinkron.
