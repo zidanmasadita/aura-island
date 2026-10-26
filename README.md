@@ -42,7 +42,7 @@ Ekstensi melapor ke aplikasi lewat server lokal di `http://127.0.0.1:48123`
 - Window: NSWindow borderless, transparan, level floating, tidak mengambil
   fokus, rapat ke menu bar tanpa gap (1px masuk ke bawah menu bar supaya
   tidak ada garis cahaya) sehingga kartu terbaca sebagai notch, bukan
-  pill melayang. Sudut atas membulat tipis (6pt), sudut bawah membulat
+  pill melayang. Sudut atas membulat 20pt, sudut bawah membulat
   penuh.
 - State (gaya visual Nusa): Zen = pill tipis dengan dua mata saat idle;
   hover jadi Compact = state tertutup (lingkar baterai, jam, waveform);

@@ -33,6 +33,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let lyrics = LyricsClient()
     private var pollTimer: Timer?
     private var currentTrackKey: String?
+    private var lastMediaLog: String?
+    private var lastTabLog: String?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let initial = NSRect(x: 0, y: 0, width: 140, height: 32)
@@ -109,6 +111,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func tick() {
         mediaRemote.fetchNowPlaying { [weak self] now in
             guard let self else { return }
+            // Diagnostic log, only when the detected state changes. Visible
+            // when the app is run from Terminal; tells us whether the
+            // system side sees the music at all.
+            let mediaKey = now.map { "\($0.title) | \($0.artist) | playing=\($0.isPlaying)" } ?? "(tidak ada)"
+            if mediaKey != self.lastMediaLog {
+                self.lastMediaLog = mediaKey
+                print("[Aura] MediaRemote: \(mediaKey)")
+            }
             if let now {
                 self.sessions.updateSystem(now)
             } else {
@@ -117,6 +127,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.refresh()
         }
         sessions.refreshExtensionTabs(bridge.tabs)
+        let tabKey = bridge.tabs.values
+            .sorted(by: { $0.tabId < $1.tabId })
+            .map { "\($0.tabId):\($0.title)(\($0.playbackState))" }
+            .joined(separator: ", ")
+        if tabKey != lastTabLog {
+            lastTabLog = tabKey
+            print("[Aura] Chrome tabs: \(tabKey.isEmpty ? "(tidak ada)" : tabKey)")
+        }
         if let battery = Battery.fetch() {
             islandView.batteryPercent = battery.percent
             islandView.batteryCharging = battery.charging

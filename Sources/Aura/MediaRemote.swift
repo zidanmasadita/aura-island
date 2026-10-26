@@ -45,12 +45,18 @@ final class MediaRemote {
             let rate = (map["kMRMediaRemoteNowPlayingInfoPlaybackRate"] as? NSNumber)?.doubleValue ?? 0
             let artworkData = map["kMRMediaRemoteNowPlayingInfoArtworkData"] as? Data
             let artwork = artworkData.flatMap { NSImage(data: $0) }
-            guard !title.isEmpty else {
+            // Some sources report playback without a title. Previously such
+            // sessions were dropped entirely ("music not detected") even
+            // though something was playing. Keep them with a fallback title;
+            // only treat it as "nothing" when there is no title AND nothing
+            // is playing.
+            guard !title.isEmpty || rate > 0 else {
                 completion(nil)
                 return
             }
+            let displayTitle = !title.isEmpty ? title : (!artist.isEmpty ? artist : "Musik")
             completion(NowPlaying(
-                title: title,
+                title: displayTitle,
                 artist: artist,
                 isPlaying: rate > 0,
                 position: elapsed,

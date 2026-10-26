@@ -119,13 +119,13 @@ final class IslandView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         let rect = bounds
-        // Notch shape, not a floating pill: thin rounding on the top corners
-        // so the card merges into the menu bar, full rounding at the bottom.
+        // Notch shape: generous rounding on the top corners (like the
+        // reference sketch), full rounding at the bottom.
         // Tangent-based arcs (not angle-based) so the shape is correct in
         // this flipped view regardless of angle conventions.
         let path = notchPath(
             rect: rect,
-            topRadius: 6,
+            topRadius: 20,
             bottomRadius: state == .expanded ? 28 : rect.height / 2
         )
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
