@@ -119,13 +119,15 @@ final class IslandView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         let rect = bounds
-        // Notch shape: generous rounding on the top corners (like the
-        // reference sketch), full rounding at the bottom.
-        // Tangent-based arcs (not angle-based) so the shape is correct in
-        // this flipped view regardless of angle conventions.
+        // Notch shape, like the MacBook notch in the reference photo:
+        // boxy body, concave sweeps where the top meets the bezel (the
+        // sides tuck inward just below the top edge), convex rounding
+        // at the bottom. Tangent-based arcs (not angle-based) so the
+        // shape is correct in this flipped view regardless of angle
+        // conventions.
         let path = notchPath(
             rect: rect,
-            topRadius: 20,
+            tuck: 12,
             bottomRadius: state == .expanded ? 28 : rect.height / 2
         )
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
@@ -169,27 +171,37 @@ final class IslandView: NSView {
         }
     }
 
-    /// Rounded rectangle with separate top/bottom radii, built from
-    /// tangent arcs. Coordinates are this flipped view's (y grows down):
-    /// rect.minY is the top edge, rect.maxY the bottom edge.
-    private func notchPath(rect: NSRect, topRadius: CGFloat, bottomRadius: CGFloat) -> CGPath {
+    /// Notch outline: boxy body, concave sweeps where the top meets the
+    /// bezel, convex rounding at the bottom. Coordinates are this flipped
+    /// view's (y grows down): rect.minY is the top edge, rect.maxY the
+    /// bottom edge.
+    /// - tuck: how far the sides tuck inward below the top edge, and how
+    ///   tall the concave sweep is. The sweep is tangent to the top edge
+    ///   at the full width and tangent to the tucked side edge, so the
+    ///   notch reads as flowing out of the bezel rather than stuck onto
+    ///   it.
+    private func notchPath(rect: NSRect, tuck: CGFloat, bottomRadius: CGFloat) -> CGPath {
         let path = CGMutablePath()
         let x = rect.minX, y = rect.minY, w = rect.width, h = rect.height
-        let rt = min(topRadius, w / 2, h / 2)
+        let t = min(tuck, w / 2, h / 2)
         let rb = min(bottomRadius, w / 2, h / 2)
-        path.move(to: CGPoint(x: x + rt, y: y))
-        path.addLine(to: CGPoint(x: x + w - rt, y: y))
-        path.addArc(tangent1End: CGPoint(x: x + w, y: y),
-                    tangent2End: CGPoint(x: x + w, y: y + rt), radius: rt)
-        path.addLine(to: CGPoint(x: x + w, y: y + h - rb))
-        path.addArc(tangent1End: CGPoint(x: x + w, y: y + h),
-                    tangent2End: CGPoint(x: x + w - rb, y: y + h), radius: rb)
-        path.addLine(to: CGPoint(x: x + rb, y: y + h))
-        path.addArc(tangent1End: CGPoint(x: x, y: y + h),
-                    tangent2End: CGPoint(x: x, y: y + h - rb), radius: rb)
-        path.addLine(to: CGPoint(x: x, y: y + rt))
-        path.addArc(tangent1End: CGPoint(x: x, y: y),
-                    tangent2End: CGPoint(x: x + rt, y: y), radius: rt)
+        path.move(to: CGPoint(x: x, y: y))
+        path.addLine(to: CGPoint(x: x + w, y: y))
+        // Top-right: concave sweep into the bezel.
+        path.addArc(tangent1End: CGPoint(x: x + w - t, y: y),
+                    tangent2End: CGPoint(x: x + w - t, y: y + t), radius: t)
+        path.addLine(to: CGPoint(x: x + w - t, y: y + h - rb))
+        // Bottom-right: convex rounding.
+        path.addArc(tangent1End: CGPoint(x: x + w - t, y: y + h),
+                    tangent2End: CGPoint(x: x + w - t - rb, y: y + h), radius: rb)
+        path.addLine(to: CGPoint(x: x + t + rb, y: y + h))
+        // Bottom-left: convex rounding.
+        path.addArc(tangent1End: CGPoint(x: x + t, y: y + h),
+                    tangent2End: CGPoint(x: x + t, y: y + h - rb), radius: rb)
+        path.addLine(to: CGPoint(x: x + t, y: y + t))
+        // Top-left: concave sweep into the bezel.
+        path.addArc(tangent1End: CGPoint(x: x + t, y: y),
+                    tangent2End: CGPoint(x: x, y: y), radius: t)
         path.closeSubpath()
         return path
     }
