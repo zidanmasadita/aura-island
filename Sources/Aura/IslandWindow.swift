@@ -21,14 +21,16 @@ final class IslandWindow: NSWindow {
         ignoresMouseEvents = false
     }
 
-    /// Position the window centered horizontally, just below the menu bar.
+    /// Position the window centered horizontally, flush against the menu
+    /// bar so the card reads as a notch, not a floating pill. The +1
+    /// tucks one pixel under the menu bar so no hairline gap can show.
     func placeAtTopCenter() {
         guard let screen = NSScreen.main else { return }
         let visible = screen.visibleFrame
         let w = frame.width
         let h = frame.height
         let x = visible.midX - w / 2
-        let y = visible.maxY - h - 8
+        let y = visible.maxY - h + 1
         setFrame(NSRect(x: x, y: y, width: w, height: h), display: true)
     }
 }
@@ -54,7 +56,7 @@ final class IslandAnimator {
         let x = window.frame.midX - size.width / 2
         let y: CGFloat
         if let screen = NSScreen.main {
-            y = screen.visibleFrame.maxY - size.height - 8
+            y = screen.visibleFrame.maxY - size.height + 1
         } else {
             y = window.frame.minY
         }

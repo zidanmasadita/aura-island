@@ -107,34 +107,57 @@ final class IslandView: NSView {
                 } else {
                     onSessionPicked?(picked.id)
                 }
+                return
             }
         }
+        // Any other click on the expanded card collapses it. Without this
+        // fallthrough there was no way to close the card by clicking: only
+        // the controls and picker rows responded, the rest did nothing.
+        onClicked?()
     }
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         let rect = bounds
-        let radius: CGFloat = state == .expanded ? 28 : rect.height / 2
-        let pill = NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius)
-        NSColor.black.withAlphaComponent(0.98).setFill()
-        pill.fill()
+        // Notch shape, not a floating pill: thin rounding on the top corners
+        // so the card merges into the menu bar, full rounding at the bottom.
+        // Tangent-based arcs (not angle-based) so the shape is correct in
+        // this flipped view regardless of angle conventions.
+        let path = notchPath(
+            rect: rect,
+            topRadius: 6,
+            bottomRadius: state == .expanded ? 28 : rect.height / 2
+        )
+        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+        ctx.saveGState()
+        ctx.addPath(path)
+        ctx.setFillColor(NSColor.black.withAlphaComponent(0.98).cgColor)
+        ctx.fillPath()
         if state == .expanded {
             // Subtle blue glow at the bottom, like Nusa's expanded card.
-            NSGraphicsContext.saveGraphicsState()
-            pill.setClip()
-            let glow = NSGradient(
-                starting: NSColor.systemBlue.withAlphaComponent(0.35),
-                ending: NSColor.systemBlue.withAlphaComponent(0.0)
-            )
-            glow?.draw(
-                in: NSRect(x: 0, y: rect.height * 0.55, width: rect.width, height: rect.height * 0.45),
-                angle: 90
-            )
-            NSGraphicsContext.restoreGraphicsState()
+            ctx.saveGState()
+            ctx.addPath(path)
+            ctx.clip()
+            let colors = [
+                NSColor.systemBlue.withAlphaComponent(0.35).cgColor,
+                NSColor.systemBlue.withAlphaComponent(0.0).cgColor,
+            ] as CFArray
+            if let gradient = CGGradient(
+                colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: [0, 1]) {
+                ctx.drawLinearGradient(
+                    gradient,
+                    start: CGPoint(x: 0, y: rect.maxY),
+                    end: CGPoint(x: 0, y: rect.height * 0.55),
+                    options: []
+                )
+            }
+            ctx.restoreGState()
         }
-        NSColor.white.withAlphaComponent(0.15).setStroke()
-        pill.lineWidth = 0.5
-        pill.stroke()
+        ctx.addPath(path)
+        ctx.setStrokeColor(NSColor.white.withAlphaComponent(0.15).cgColor)
+        ctx.setLineWidth(0.5)
+        ctx.strokePath()
+        ctx.restoreGState()
 
         switch state {
         case .zen:
@@ -144,6 +167,31 @@ final class IslandView: NSView {
         case .expanded:
             drawExpanded()
         }
+    }
+
+    /// Rounded rectangle with separate top/bottom radii, built from
+    /// tangent arcs. Coordinates are this flipped view's (y grows down):
+    /// rect.minY is the top edge, rect.maxY the bottom edge.
+    private func notchPath(rect: NSRect, topRadius: CGFloat, bottomRadius: CGFloat) -> CGPath {
+        let path = CGMutablePath()
+        let x = rect.minX, y = rect.minY, w = rect.width, h = rect.height
+        let rt = min(topRadius, w / 2, h / 2)
+        let rb = min(bottomRadius, w / 2, h / 2)
+        path.move(to: CGPoint(x: x + rt, y: y))
+        path.addLine(to: CGPoint(x: x + w - rt, y: y))
+        path.addArc(tangent1End: CGPoint(x: x + w, y: y),
+                    tangent2End: CGPoint(x: x + w, y: y + rt), radius: rt)
+        path.addLine(to: CGPoint(x: x + w, y: y + h - rb))
+        path.addArc(tangent1End: CGPoint(x: x + w, y: y + h),
+                    tangent2End: CGPoint(x: x + w - rb, y: y + h), radius: rb)
+        path.addLine(to: CGPoint(x: x + rb, y: y + h))
+        path.addArc(tangent1End: CGPoint(x: x, y: y + h),
+                    tangent2End: CGPoint(x: x, y: y + h - rb), radius: rb)
+        path.addLine(to: CGPoint(x: x, y: y + rt))
+        path.addArc(tangent1End: CGPoint(x: x, y: y),
+                    tangent2End: CGPoint(x: x + rt, y: y), radius: rt)
+        path.closeSubpath()
+        return path
     }
 
     // MARK: - Text helpers
