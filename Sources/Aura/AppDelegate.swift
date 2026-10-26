@@ -96,7 +96,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             setState(.expanded)
         }
-        window.setIgnoresMouseEvents(false)
+        window.ignoresMouseEvents = false
     }
 
     func setState(_ state: IslandState) {

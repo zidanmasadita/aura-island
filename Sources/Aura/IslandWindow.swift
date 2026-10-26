@@ -18,7 +18,7 @@ final class IslandWindow: NSWindow {
         isMovableByWindowBackground = false
         // Mouse events stay enabled even in zen: hover is what expands
         // the island, so the window must keep receiving tracking events.
-        setIgnoresMouseEvents(false)
+        ignoresMouseEvents = false
     }
 
     /// Position the window centered horizontally, just below the menu bar.
