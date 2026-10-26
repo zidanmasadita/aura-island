@@ -40,4 +40,14 @@ PLIST
 # quarantined, so no notarization is needed for personal use).
 codesign --force --deep --sign - "$APP" || true
 
-echo "Done: ./$APP — double-click to run, or drag it to /Applications."
+# Distributable disk image: the .app plus a shortcut to /Applications,
+# so installing is a drag-and-drop. hdiutil ships with macOS.
+DMG_STAGING=".dmg-staging"
+rm -rf "$DMG_STAGING" "Aura.dmg"
+mkdir -p "$DMG_STAGING"
+cp -R "$APP" "$DMG_STAGING/"
+ln -s /Applications "$DMG_STAGING/Applications"
+hdiutil create -volname "Aura Island" -srcfolder "$DMG_STAGING" -ov -format UDZO "Aura.dmg"
+rm -rf "$DMG_STAGING"
+
+echo "Done: ./$APP and ./Aura.dmg — open the DMG and drag Aura to Applications."

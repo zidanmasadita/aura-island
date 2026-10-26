@@ -14,7 +14,8 @@ bebas di tengah atas layar, bukan menempel di notch.
 1. Pastikan Xcode Command Line Tools terpasang (`xcode-select --install`
    bila belum).
 2. `swift build -c release` atau langsung `./scripts/package-app.sh`
-   untuk menghasilkan `Aura.app`.
+   untuk menghasilkan `Aura.app` dan `Aura.dmg` (di dalam DMG ada
+   shortcut ke /Applications, jadi install tinggal drag-and-drop).
 3. Jalankan `Aura.app` (boleh dipindah ke /Applications). Ikon menu bar
    "Aura" muncul; pill pulau muncul di tengah atas layar.
 
