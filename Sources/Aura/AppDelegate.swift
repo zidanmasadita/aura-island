@@ -67,6 +67,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.orderFrontRegardless()
 
         setupStatusItem()
+        // Event-driven refresh from the system sensor, so the island
+        // reacts the moment playback starts, pauses, or changes track,
+        // instead of only on the next poll.
+        mediaRemote.onInfoChanged = { [weak self] now in
+            guard let self else { return }
+            if let now {
+                self.sessions.updateSystem(now)
+            } else {
+                self.sessions.clearSystem()
+            }
+            self.refresh()
+        }
         bridge.onTabsChanged = { [weak self] in
             self?.refresh()
         }
@@ -86,9 +98,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 setState(.compact)
             }
         } else {
-            if islandView.state == .compact {
-                setState(sessions.current?.isPlaying == true ? .compact : .zen)
-            }
+            // Leaving the island always closes it — including an expanded
+            // card, so closing never needs a second click. Playing music
+            // falls back to the closed (compact) state, silence to zen.
+            setState(sessions.current?.isPlaying == true ? .compact : .zen)
         }
     }
 

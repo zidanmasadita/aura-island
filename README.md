@@ -52,8 +52,11 @@ Ekstensi melapor ke aplikasi lewat server lokal di `http://127.0.0.1:48123`
   klik jadi Expanded = kartu musik/lirik (header tanggal+jam, sampul album,
   judul/artis, progress, kontrol, kolom lirik, daftar sumber).
 - Media sistem: framework private MediaRemote (dlopen runtime, tanpa
-  link-time dependency). Info lagu dibaca tiap 1 detik, termasuk sampul
-  album bila tersedia dari sumbernya.
+  link-time dependency). Sensornya sama seperti Control Center: observe
+  notifikasi perubahan now-playing dari Darwin notification center
+  (update instan saat lagu mulai/berhenti/ganti), ditambah polling tiap
+  1 detik untuk posisi/progress. Info lagu termasuk sampul album bila
+  tersedia dari sumbernya.
 - Baterai: lingkar hijau dari IOKit (disembunyikan otomatis di Mac tanpa
   baterai). Waveform dianimasikan dekoratif selama lagu diputar (bukan
   analisis audio nyata, sama seperti Nusa).
