@@ -1,5 +1,9 @@
 import Foundation
 import IOKit
+// NOTE: the power-source APIs live in the IOKit.ps submodule, not the
+// top-level IOKit module — plain `import IOKit` alone does not expose
+// IOPSCopyPowerSourcesInfo and friends, hence the "cannot find" errors.
+import IOKit.ps
 
 /// Battery level via IOKit power sources. Returns nil on Macs without a
 /// battery (desktops) or when the info is unavailable, so callers can
