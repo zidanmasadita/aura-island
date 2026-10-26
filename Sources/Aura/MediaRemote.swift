@@ -50,15 +50,16 @@ final class MediaRemote {
             let register = unsafeBitCast(regSym, to: RegisterFn.self)
             register(DispatchQueue.main)
         }
-        // Observe the system now-playing change notification, the same
-        // sensor Control Center uses. The observer pointer is just this
-        // object (unretained; it lives for the app's lifetime).
+        // NOTE: asymmetric API — AddObserver takes a plain CFString here,
+        // while RemoveObserver below takes CFNotificationName. Passing the
+        // wrong one to either call is a compile error, in opposite
+        // directions.
         let center = CFNotificationCenterGetDarwinNotifyCenter()
         CFNotificationCenterAddObserver(
             center,
             Unmanaged.passUnretained(self).toOpaque(),
             Self.notificationCallback,
-            CFNotificationName("kMRMediaRemoteNowPlayingInfoDidChangeNotification" as CFString),
+            "kMRMediaRemoteNowPlayingInfoDidChangeNotification" as CFString,
             nil,
             .deliverImmediately
         )
