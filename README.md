@@ -42,11 +42,16 @@ Ekstensi melapor ke aplikasi lewat server lokal di `http://127.0.0.1:48123`
 - Window: NSWindow borderless, transparan, level floating, tidak mengambil
   fokus. Animasi digerakkan timer 60 fps dengan easing ease-out cubic,
   mengikuti filosofi Nusa (timer, bukan keyframe).
-- State: Zen (pill tipis) → hover jadi Compact (judul/artis/progress) →
-  klik jadi Expanded (lirik, kontrol, daftar sumber).
+- State (gaya visual Nusa): Zen = pill tipis dengan dua mata saat idle;
+  hover jadi Compact = state tertutup (lingkar baterai, jam, waveform);
+  klik jadi Expanded = kartu musik/lirik (header tanggal+jam, sampul album,
+  judul/artis, progress, kontrol, kolom lirik, daftar sumber).
 - Media sistem: framework private MediaRemote (dlopen runtime, tanpa
-  link-time dependency). Info lagu dibaca tiap 1 detik. Ini API private:
-  jalan untuk pemakaian pribadi, tidak lolos App Store.
+  link-time dependency). Info lagu dibaca tiap 1 detik, termasuk sampul
+  album bila tersedia dari sumbernya.
+- Baterai: lingkar hijau dari IOKit (disembunyikan otomatis di Mac tanpa
+  baterai). Waveform dianimasikan dekoratif selama lagu diputar (bukan
+  analisis audio nyata, sama seperti Nusa).
 - Lirik: LRCLIB (`lrclib.net/api/search`), sama seperti Nusa, tanpa key.
 - Kontrol: tombol play/pause/next/prev untuk sesi sistem dikirim sebagai
   media key macOS (menargetkan client aktif sistem). Untuk tab ekstensi,
@@ -59,7 +64,9 @@ Ekstensi melapor ke aplikasi lewat server lokal di `http://127.0.0.1:48123`
 - Belum pernah dikompilasi di sini (VM Linux tidak punya toolchain macOS).
   Compile pertama di Mac kemungkinan menemukan typo/mismatch API kecil —
   kirim errornya dan akan diperbaiki.
-- Belum ada sampul album, baru teks.
+- Sampul album tampil bila sumber media menyediakannya lewat MediaRemote;
+  tab ekstensi Chrome tidak punya sampul, jadi tampil placeholder.
+- Daftar sumber di kartu expanded menampilkan maks 4 sumber.
 - Tombol next/prev hanya untuk sesi sistem; tab ekstensi baru play/pause.
 - Kalau tombol media tidak bereaksi, beri izin Accessibility di
   System Settings → Privacy & Security (macOS membatasi synthetic media key).
@@ -72,9 +79,10 @@ Ekstensi melapor ke aplikasi lewat server lokal di `http://127.0.0.1:48123`
 
 - `Sources/Aura/AppDelegate.swift` — wiring, menu bar, polling 1 detik.
 - `Sources/Aura/IslandWindow.swift` — window + animator timer.
-- `Sources/Aura/IslandView.swift` — gambar pill/kartu + hit-test klik.
+- `Sources/Aura/IslandView.swift` — gambar pill/kartu gaya Nusa + hit-test klik.
 - `Sources/Aura/SessionStore.swift` — sesi gabungan + logika pin Auto/Pin.
 - `Sources/Aura/MediaRemote.swift` — baca now-playing via MediaRemote.
+- `Sources/Aura/Battery.swift` — level baterai via IOKit.
 - `Sources/Aura/ExtensionBridge.swift` — server lokal untuk ekstensi.
 - `Sources/Aura/Lyrics.swift` — klien LRCLIB + parser lirik sinkron.
 - `extension/` — ekstensi Chrome pendamping (MV3).

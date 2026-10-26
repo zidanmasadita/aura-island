@@ -1,3 +1,4 @@
+import AppKit
 import Darwin
 import Foundation
 
@@ -42,6 +43,8 @@ final class MediaRemote {
             let duration = (map["kMRMediaRemoteNowPlayingInfoDuration"] as? NSNumber)?.doubleValue ?? 0
             let elapsed = (map["kMRMediaRemoteNowPlayingInfoElapsedTime"] as? NSNumber)?.doubleValue ?? 0
             let rate = (map["kMRMediaRemoteNowPlayingInfoPlaybackRate"] as? NSNumber)?.doubleValue ?? 0
+            let artworkData = map["kMRMediaRemoteNowPlayingInfoArtworkData"] as? Data
+            let artwork = artworkData.flatMap { NSImage(data: $0) }
             guard !title.isEmpty else {
                 completion(nil)
                 return
@@ -51,7 +54,8 @@ final class MediaRemote {
                 artist: artist,
                 isPlaying: rate > 0,
                 position: elapsed,
-                duration: duration
+                duration: duration,
+                artwork: artwork
             ))
         }
     }

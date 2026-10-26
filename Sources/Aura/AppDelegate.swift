@@ -16,7 +16,7 @@ enum IslandState {
         switch self {
         case .zen: return NSSize(width: 140, height: 32)
         case .compact, .split: return NSSize(width: 380, height: 64)
-        case .expanded: return NSSize(width: 420, height: 340)
+        case .expanded: return NSSize(width: 520, height: 360)
         }
     }
 }
@@ -117,13 +117,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.refresh()
         }
         sessions.refreshExtensionTabs(bridge.tabs)
+        if let battery = Battery.fetch() {
+            islandView.batteryPercent = battery.percent
+            islandView.batteryCharging = battery.charging
+        } else {
+            islandView.batteryPercent = nil
+        }
         refresh()
     }
 
     private func refresh() {
         guard let current = sessions.current else {
             islandView.session = nil
-            islandView.lyricLine = nil
+            islandView.lyricPrev = nil
+            islandView.lyricCurrent = nil
+            islandView.lyricNext = nil
             return
         }
         islandView.session = current
@@ -146,15 +154,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func refreshLyricLine() {
         guard let session = sessions.current else {
-            islandView.lyricLine = nil
+            islandView.lyricPrev = nil
+            islandView.lyricCurrent = nil
+            islandView.lyricNext = nil
             return
         }
         let t = session.position
-        var line: String?
-        for entry in lyricsLines where entry.time <= t {
-            line = entry.text
+        var index: Int?
+        for (i, entry) in lyricsLines.enumerated() where entry.time <= t {
+            index = i
         }
-        islandView.lyricLine = line
+        islandView.lyricPrev = index.flatMap { $0 > 0 ? lyricsLines[$0 - 1].text : nil }
+        islandView.lyricCurrent = index.map { lyricsLines[$0].text }
+        islandView.lyricNext = index.flatMap { $0 + 1 < lyricsLines.count ? lyricsLines[$0 + 1].text : nil }
     }
 
     // MARK: - Menu bar

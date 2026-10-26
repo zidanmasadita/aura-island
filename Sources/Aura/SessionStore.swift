@@ -10,6 +10,7 @@ struct DisplaySession {
     let isPlaying: Bool
     let position: Double
     let duration: Double
+    let artwork: NSImage?
     /// Extension tabs support play/pause only in v1; system sessions
     /// support full transport through the macOS media keys.
     let supportsNextPrev: Bool
@@ -21,6 +22,7 @@ struct NowPlaying {
     let isPlaying: Bool
     let position: Double
     let duration: Double
+    let artwork: NSImage?
 }
 
 /// Unified session list + pin ("pilih active") logic.
@@ -55,6 +57,7 @@ final class SessionStore {
                 isPlaying: system.isPlaying,
                 position: system.position,
                 duration: system.duration,
+                artwork: system.artwork,
                 supportsNextPrev: true
             ))
         }
@@ -67,6 +70,7 @@ final class SessionStore {
                 isPlaying: tab.playbackState == "playing",
                 position: tab.position,
                 duration: tab.duration,
+                artwork: nil,
                 supportsNextPrev: false
             ))
         }
