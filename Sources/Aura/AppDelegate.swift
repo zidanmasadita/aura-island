@@ -36,6 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastMediaLog: String?
     private var lastTabLog: String?
     private var jxaInFlight = false
+    private var isHovering = false
 
     /// macOS 15.4+ denies direct MediaRemote reads to third-party
     /// clients (see NowPlayingJXA). Below that, the direct path works
@@ -50,6 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window = IslandWindow(contentRect: initial)
         islandView = IslandView(frame: initial)
         islandView.onHoverChanged = { [weak self] hovering in
+            self?.isHovering = hovering
             self?.handleHover(hovering)
         }
         islandView.onClicked = { [weak self] in
@@ -152,10 +154,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // is still running.
             if !jxaInFlight {
                 jxaInFlight = true
-                NowPlayingJXA.fetch { [weak self] now, client in
+                NowPlayingJXA.fetch { [weak self] now, client, failure in
                     guard let self else { return }
                     self.jxaInFlight = false
-                    let key = now.map { "\($0.title) | \($0.artist) | playing=\($0.isPlaying) | \(client)" } ?? "(tidak ada)"
+                    let key: String
+                    if let now {
+                        key = "\(now.title) | \(now.artist) | playing=\(now.isPlaying) | \(client)"
+                    } else {
+                        key = "(tidak ada: \(failure ?? "?"))"
+                    }
                     self.applySystemNowPlaying(now, logLabel: "MediaRemote(JXA)", logKey: key)
                 }
             }
@@ -190,9 +197,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             islandView.lyricPrev = nil
             islandView.lyricCurrent = nil
             islandView.lyricNext = nil
+            // No session: fall back to idle eyes, unless the card is
+            // open or the cursor is still hovering the island.
+            if (islandView.state == .compact || islandView.state == .split) && !isHovering {
+                setState(.zen)
+            }
             return
         }
         islandView.session = current
+        // Playback must visibly leave the idle eyes on its own: when
+        // music starts, switch to compact without waiting for a hover;
+        // when it stops, fall back to zen. Never touches an open
+        // expanded card, and never yanks the island out from under a
+        // hovering cursor. Without this, even a working sensor looks
+        // broken, because the pill would keep showing eyes until hovered.
+        if islandView.state == .zen && current.isPlaying {
+            setState(.compact)
+        } else if (islandView.state == .compact || islandView.state == .split) && !current.isPlaying && !isHovering {
+            setState(.zen)
+        }
         let key = "\(current.title)|\(current.artist)"
         if key != currentTrackKey {
             currentTrackKey = key

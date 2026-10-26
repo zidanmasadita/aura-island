@@ -73,17 +73,20 @@ enum NowPlayingJXA {
     /// Runs the script off the main thread (an osascript spawn costs
     /// tens of milliseconds) and delivers the result on the main thread.
     /// The second value is the playing app's display name (e.g. "Google
-    /// Chrome"), for diagnostics; empty when unknown.
-    static func fetch(completion: @escaping (NowPlaying?, String) -> Void) {
+    /// Chrome"), for diagnostics; empty when unknown. The third value
+    /// explains a nil result (nil when a track was found), so a failed
+    /// detection can be diagnosed from the log line alone instead of
+    /// guessing which step broke.
+    static func fetch(completion: @escaping (NowPlaying?, String, String?) -> Void) {
         DispatchQueue.global(qos: .utility).async {
             let result = runScript()
             DispatchQueue.main.async {
-                completion(result.now, result.client)
+                completion(result.now, result.client, result.failure)
             }
         }
     }
 
-    private static func runScript() -> (now: NowPlaying?, client: String) {
+    private static func runScript() -> (now: NowPlaying?, client: String, failure: String?) {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         proc.arguments = ["-l", "JavaScript", "-e", script]
@@ -93,7 +96,7 @@ enum NowPlayingJXA {
         do {
             try proc.run()
         } catch {
-            return (nil, "")
+            return (nil, "", "osascript-gagal-dijalankan")
         }
         // Never let one stuck osascript block this sensor forever.
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 5) {
@@ -103,14 +106,21 @@ enum NowPlayingJXA {
         }
         proc.waitUntilExit()
         guard proc.terminationStatus == 0 else {
-            return (nil, "")
+            return (nil, "", "osascript-status-\(proc.terminationStatus)")
         }
         let data = out.fileHandleForReading.readDataToEndOfFile()
-        guard let text = String(data: data, encoding: .utf8),
-              let jsonData = text.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
-              obj["error"] == nil else {
-            return (nil, "")
+        guard let text = String(data: data, encoding: .utf8) else {
+            return (nil, "", "output-bukan-teks")
+        }
+        if text.trimmingCharacters(in: .whitespacesAndNewlines) == "null" {
+            return (nil, "", "tidak-ada-item")
+        }
+        guard let jsonData = text.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
+            return (nil, "", "output-bukan-json")
+        }
+        guard obj["error"] == nil else {
+            return (nil, "", "script-error")
         }
         let title = obj["title"] as? String ?? ""
         let artist = obj["artist"] as? String ?? ""
@@ -119,7 +129,7 @@ enum NowPlayingJXA {
         let duration = (obj["duration"] as? NSNumber)?.doubleValue ?? 0
         let client = obj["client"] as? String ?? ""
         guard !title.isEmpty || rate > 0 else {
-            return (nil, "")
+            return (nil, "", "tidak-ada-item")
         }
         let displayTitle = !title.isEmpty ? title : (!artist.isEmpty ? artist : "Musik")
         let now = NowPlaying(
@@ -130,6 +140,6 @@ enum NowPlayingJXA {
             duration: duration,
             artwork: nil
         )
-        return (now, client)
+        return (now, client, nil)
     }
 }

@@ -1,0 +1,45 @@
+ObjC.import('Foundation');
+function run() {
+  try {
+    var bundle = $.NSBundle.bundleWithPath('/System/Library/PrivateFrameworks/MediaRemote.framework/');
+    bundle.load();
+    var MRNowPlayingRequest = $.NSClassFromString('MRNowPlayingRequest');
+    if (!MRNowPlayingRequest) return JSON.stringify(null);
+    var item = MRNowPlayingRequest.localNowPlayingItem;
+    if (!item) return JSON.stringify(null);
+    var info = item.nowPlayingInfo;
+    if (!info) return JSON.stringify(null);
+    function str(key) {
+      var v = info.valueForKey(key);
+      return v ? v.js : '';
+    }
+    function num(key) {
+      var v = info.valueForKey(key);
+      return v ? v.js : 0;
+    }
+    var position = num('kMRMediaRemoteNowPlayingInfoElapsedTime');
+    try {
+      var meta = item.metadata;
+      if (meta) {
+        var calc = meta.calculatedPlaybackPosition;
+        if (calc && calc.js > 0) position = calc.js;
+      }
+    } catch (e) {}
+    var client = '';
+    try {
+      var path = MRNowPlayingRequest.localNowPlayingPlayerPath;
+      if (path && path.client && path.client.displayName) client = path.client.displayName.js;
+    } catch (e) {}
+    return JSON.stringify({
+      title: str('kMRMediaRemoteNowPlayingInfoTitle'),
+      artist: str('kMRMediaRemoteNowPlayingInfoArtist'),
+      album: str('kMRMediaRemoteNowPlayingInfoAlbum'),
+      duration: num('kMRMediaRemoteNowPlayingInfoDuration'),
+      elapsed: position,
+      rate: num('kMRMediaRemoteNowPlayingInfoPlaybackRate'),
+      client: client
+    });
+  } catch (e) {
+    return JSON.stringify({ error: String(e) });
+  }
+}
