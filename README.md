@@ -19,11 +19,13 @@ bebas di tengah atas layar, bukan menempel di notch.
 3. Jalankan `Aura.app` (boleh dipindah ke /Applications). Ikon menu bar
    "Aura" muncul; pill pulau muncul di tengah atas layar.
 
-## Ekstensi Chrome (untuk pilih active per tab)
+## Ekstensi Chrome (OPSIONAL, hanya untuk pilih active per tab)
 
-MediaRemote macOS hanya melihat Chrome sebagai satu client, jadi dua tab
-(YouTube + YouTube Music) dalam satu Chrome tidak bisa dibedakan dari sisi
-sistem. Ekstensi pendamping mengatasinya:
+Tanpa ekstensi, pulau tetap mendeteksi dan mengontrol media Chrome lewat
+MediaRemote — Chrome tampil sebagai satu sesi yang mengikuti media aktif
+Chrome. Ekstensi hanya dibutuhkan kalau kamu mau memisahkan tab (misalnya
+pin YouTube Music sambil menonton YouTube), karena dari sisi sistem dua
+tab itu tidak bisa dibedakan:
 
 1. Buka `chrome://extensions`, aktifkan Developer mode, Load unpacked,
    pilih folder `extension/`.
@@ -70,6 +72,9 @@ Ekstensi melapor ke aplikasi lewat server lokal di `http://127.0.0.1:48123`
   tab ekstensi Chrome tidak punya sampul, jadi tampil placeholder.
 - Daftar sumber di kartu expanded menampilkan maks 4 sumber.
 - Tombol next/prev hanya untuk sesi sistem; tab ekstensi baru play/pause.
+- Tanpa ekstensi, tidak ada pemisahan tab: pulau mengikuti media aktif
+  Chrome (satu sesi), bukan tab yang dipilih. Ini batas sistem, bukan
+  pilihan desain.
 - Kalau tombol media tidak bereaksi, beri izin Accessibility di
   System Settings → Privacy & Security (macOS membatasi synthetic media key).
 - Listener notifikasi aplikasi lain (fitur Nusa) tidak ada di macOS dan

@@ -17,14 +17,25 @@ final class MediaRemote {
     // the moment the framework retains it — which crashed the app on launch.
     private typealias InfoBlock = @convention(block) (CFDictionary?) -> Void
     private typealias GetInfoFn = @convention(c) (DispatchQueue, @escaping InfoBlock) -> Void
+    private typealias RegisterFn = @convention(c) (DispatchQueue) -> Void
 
     private var getInfo: GetInfoFn?
 
     init() {
         let path = "/System/Library/PrivateFrameworks/MediaRemote.framework/MediaRemote"
         guard let handle = dlopen(path, RTLD_NOW) else { return }
-        guard let sym = dlsym(handle, "MRMediaRemoteGetNowPlayingInfo") else { return }
-        getInfo = unsafeBitCast(sym, to: GetInfoFn.self)
+        if let sym = dlsym(handle, "MRMediaRemoteGetNowPlayingInfo") {
+            getInfo = unsafeBitCast(sym, to: GetInfoFn.self)
+        }
+        // Registering for now-playing notifications is what makes the
+        // system start reporting clients (e.g. Chrome) to
+        // GetNowPlayingInfo. Without this step, polling alone can return
+        // nothing even while a browser is playing — which is why music
+        // went undetected when the Chrome extension was not installed.
+        if let regSym = dlsym(handle, "MRMediaRemoteRegisterForNowPlayingNotifications") {
+            let register = unsafeBitCast(regSym, to: RegisterFn.self)
+            register(DispatchQueue.main)
+        }
     }
 
     func fetchNowPlaying(completion: @escaping (NowPlaying?) -> Void) {
