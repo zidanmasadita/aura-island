@@ -1,0 +1,217 @@
+import AppKit
+import ServiceManagement
+
+/// Island states, mirroring the Nusa-style notch states.
+/// - zen: thin pill, idle.
+/// - compact: mini media strip (title/artist/progress).
+/// - split: kept for parity with the earlier scaffold; behaves like compact.
+/// - expanded: full card (lyrics, controls, session picker).
+enum IslandState {
+    case zen
+    case compact
+    case split
+    case expanded
+
+    var size: NSSize {
+        switch self {
+        case .zen: return NSSize(width: 140, height: 32)
+        case .compact, .split: return NSSize(width: 380, height: 64)
+        case .expanded: return NSSize(width: 420, height: 340)
+        }
+    }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var window: IslandWindow!
+    private var islandView: IslandView!
+    private var statusItem: NSStatusItem!
+    private var animator: IslandAnimator!
+
+    let sessions = SessionStore()
+    private let mediaRemote = MediaRemote()
+    private let bridge = ExtensionBridge()
+    private let lyrics = LyricsClient()
+    private var pollTimer: Timer?
+    private var currentTrackKey: String?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        let initial = NSRect(x: 0, y: 0, width: 140, height: 32)
+        window = IslandWindow(contentRect: initial)
+        islandView = IslandView(frame: initial)
+        islandView.onHoverChanged = { [weak self] hovering in
+            self?.handleHover(hovering)
+        }
+        islandView.onClicked = { [weak self] in
+            self?.handleClick()
+        }
+        islandView.onSessionPicked = { [weak self] id in
+            self?.sessions.pin(id: id)
+        }
+        islandView.onUnpin = { [weak self] in
+            self?.sessions.unpin()
+        }
+        islandView.onPlayPause = { [weak self] in
+            self?.sessions.togglePlayPause()
+        }
+        islandView.onNext = { [weak self] in
+            self?.sessions.nextTrack()
+        }
+        islandView.onPrevious = { [weak self] in
+            self?.sessions.previousTrack()
+        }
+        window.contentView = islandView
+        animator = IslandAnimator(window: window)
+        window.placeAtTopCenter()
+        window.orderFrontRegardless()
+
+        setupStatusItem()
+        bridge.onTabsChanged = { [weak self] in
+            self?.refresh()
+        }
+        bridge.start()
+
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.tick()
+        }
+        tick()
+    }
+
+    // MARK: - Interaction
+
+    private func handleHover(_ hovering: Bool) {
+        if hovering {
+            if islandView.state != .expanded {
+                setState(.compact)
+            }
+        } else {
+            if islandView.state == .compact {
+                setState(sessions.current?.isPlaying == true ? .compact : .zen)
+            }
+        }
+    }
+
+    private func handleClick() {
+        if islandView.state == .expanded {
+            setState(.compact)
+        } else {
+            setState(.expanded)
+        }
+        window.setIgnoresMouseEvents(false)
+    }
+
+    func setState(_ state: IslandState) {
+        islandView.state = state
+        animator.animate(to: state.size)
+    }
+
+    // MARK: - Polling
+
+    private func tick() {
+        mediaRemote.fetchNowPlaying { [weak self] now in
+            guard let self else { return }
+            if let now {
+                self.sessions.updateSystem(now)
+            } else {
+                self.sessions.clearSystem()
+            }
+            self.refresh()
+        }
+        sessions.refreshExtensionTabs(bridge.tabs)
+        refresh()
+    }
+
+    private func refresh() {
+        guard let current = sessions.current else {
+            islandView.session = nil
+            islandView.lyricLine = nil
+            return
+        }
+        islandView.session = current
+        let key = "\(current.title)|\(current.artist)"
+        if key != currentTrackKey {
+            currentTrackKey = key
+            lyrics.fetchLyrics(title: current.title, artist: current.artist) { [weak self] lines in
+                self?.lyricsLines = lines
+                self?.refreshLyricLine()
+            }
+            lyricsLines = []
+        }
+        refreshLyricLine()
+        islandView.sessionsForPicker = sessions.allSessions
+        islandView.pinnedId = sessions.pinnedId
+        islandView.needsDisplay = true
+    }
+
+    private var lyricsLines: [(time: Double, text: String)] = []
+
+    private func refreshLyricLine() {
+        guard let session = sessions.current else {
+            islandView.lyricLine = nil
+            return
+        }
+        let t = session.position
+        var line: String?
+        for entry in lyricsLines where entry.time <= t {
+            line = entry.text
+        }
+        islandView.lyricLine = line
+    }
+
+    // MARK: - Menu bar
+
+    private func setupStatusItem() {
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        statusItem.button?.title = "Aura"
+        let menu = NSMenu()
+        let about = NSMenuItem(title: "Tentang Aura Island", action: #selector(showAbout), keyEquivalent: "")
+        about.target = self
+        menu.addItem(about)
+        let auto = NSMenuItem(title: "Mode: Auto (ikuti yang aktif)", action: #selector(setAuto), keyEquivalent: "")
+        auto.target = self
+        menu.addItem(auto)
+        let unpin = NSMenuItem(title: "Lepas pin sesi", action: #selector(unpinSession), keyEquivalent: "")
+        unpin.target = self
+        menu.addItem(unpin)
+        let login = NSMenuItem(title: "Jalankan saat login", action: #selector(toggleLoginItem), keyEquivalent: "")
+        login.target = self
+        login.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        menu.addItem(login)
+        menu.addItem(.separator())
+        let quit = NSMenuItem(title: "Keluar", action: #selector(quitApp), keyEquivalent: "q")
+        quit.target = self
+        menu.addItem(quit)
+        statusItem.menu = menu
+    }
+
+    @objc private func showAbout() {
+        let alert = NSAlert()
+        alert.messageText = "Aura Island"
+        alert.informativeText = "Pulau dinamis untuk Mac. Native, tanpa webview.\nMedia: MediaRemote + bridge ekstensi Chrome.\nLirik: LRCLIB."
+        alert.runModal()
+    }
+
+    @objc private func setAuto() {
+        sessions.unpin()
+    }
+
+    @objc private func unpinSession() {
+        sessions.unpin()
+    }
+
+    @objc private func toggleLoginItem() {
+        do {
+            if SMAppService.mainApp.status == .enabled {
+                try SMAppService.mainApp.unregister()
+            } else {
+                try SMAppService.mainApp.register()
+            }
+        } catch {
+            // Best effort; user can manage Login Items manually in System Settings.
+        }
+        setupStatusItem()
+    }
+
+    @objc private func quitApp() {
+        NSApplication.shared.terminate(nil)
+    }
+}

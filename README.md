@@ -1,82 +1,81 @@
-# Aura Island — Fase 1: Foundation & Window Engine
+# Aura Island untuk Mac
 
-Dynamic Island untuk Windows (Tauri v2 + React + TypeScript + Framer Motion).
-Fase 1 mencakup: window engine Windows, state machine 4 mode, tray icon,
-autostart, settings, dan global hotkey. Modul media asli (GSMTC, WASAPI) masuk
-Fase 2; konten lagu/timer di Fase 1 masih demo visual.
+Klon fungsional Nusa untuk macOS, dibangun native (Swift + AppKit, tanpa
+webview, tanpa Tauri). Nusa di Windows memakai Rust + Win32 + DirectComposition;
+padanan native-nya di Mac adalah Swift + AppKit + CoreGraphics, jadi stack
+inilah yang dipakai. Fungsinya yang ditiru: pulau mengambang di tengah atas
+layar, media + lirik, dan fitur pilih sesi aktif ("pilih active").
 
-## Yang sudah jadi di Fase 1
+Catatan: Mac Intel tidak punya notch hardware, jadi pulau ini mengambang
+bebas di tengah atas layar, bukan menempel di notch.
 
-- **Window engine (Rust, `src-tauri/src/main.rs`)**
-  - Frameless, transparent, always-on-top, `skipTaskbar`.
-  - `WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW`: klik tidak mencuri fokus, sembunyi
-    dari Alt+Tab.
-  - `DWMWA_WINDOW_CORNER_PREFERENCE = DONOTROUND` + `DWMWA_BORDER_COLOR = NONE`.
-  - **Click-through via WM_NCHITTEST**: WndProc di-subclass; titik di luar
-    kapsul mengembalikan `HTTRANSPARENT` (klik tembus), di dalam kapsul
-    `HTCLIENT`. Frontend melaporkan rect pulau lewat command `set_island_rect`.
-  - Posisi top-center dari work area monitor utama, lalu window ditampilkan.
-- **State machine UI (`src/island/Island.tsx`)**: Zen (120x4) <-> Compact (180x36)
-  <-> Split (160x36 + bubble 36, efek gooey SVG sesuai PRD) <-> Expanded
-  (420x180). Spring PRD: expand 380/28/0.8, collapse 450/35/0.7.
-- **Interaksi**: hover >150 ms (bisa diatur) memperluas, klik kapsul toggle,
-  klik garis Zen kembali ke Compact, tombol Zen di kartu, hotkey `Ctrl+Alt+I`,
-  menu tray "Perluas / Ciutkan Pulau" dan "Keluar".
-- **Settings**: hover delay, demo musik, demo timer (tersimpan di localStorage
-  WebView2); autostart via plugin-autostart (toggle di kartu Expanded).
-- **Ikon**: `src-tauri/icons/icon.png` + `icon.ico` (kapsul hitam, dibuat lokal).
+## Build (di Mac)
 
-## Build & jalan di Windows (langkah user)
+1. Pastikan Xcode Command Line Tools terpasang (`xcode-select --install`
+   bila belum).
+2. `swift build -c release` atau langsung `./scripts/package-app.sh`
+   untuk menghasilkan `Aura.app`.
+3. Jalankan `Aura.app` (boleh dipindah ke /Applications). Ikon menu bar
+   "Aura" muncul; pill pulau muncul di tengah atas layar.
 
-Prasyarat: Windows 10 1903+ / 11, WebView2 Runtime (bawaan Windows 10/11),
-Rust stable via https://rustup.rs, Node.js 20+.
+## Ekstensi Chrome (untuk pilih active per tab)
 
-```powershell
-npm install
-npm run tauri dev
-```
+MediaRemote macOS hanya melihat Chrome sebagai satu client, jadi dua tab
+(YouTube + YouTube Music) dalam satu Chrome tidak bisa dibedakan dari sisi
+sistem. Ekstensi pendamping mengatasinya:
 
-Untuk installer:
+1. Buka `chrome://extensions`, aktifkan Developer mode, Load unpacked,
+   pilih folder `extension/`.
+2. Putar lagu di YouTube Music dan video di YouTube. Pulau menampilkan
+   keduanya sebagai sumber terpisah.
+3. Klik pulau untuk expand, klik salah satu sumber untuk mem-pin-nya.
+   Selama pin aktif, pulau tetap menampilkan sumber itu (termasuk liriknya)
+   walau tab lain sedang aktif. Klik lagi untuk melepas pin, atau pilih
+   "Mode: Auto" dari menu bar.
 
-```powershell
-npm run tauri build
-```
+Ekstensi melapor ke aplikasi lewat server lokal di `http://127.0.0.1:48123`
+(tidak ada data yang keluar dari mesin).
 
-Hasilnya di `src-tauri/target/release/bundle/` (`.msi` dan `.exe` NSIS).
+## Cara kerja
 
-## Checklist penerimaan Fase 1 (diuji di PC Windows)
+- Window: NSWindow borderless, transparan, level floating, tidak mengambil
+  fokus. Animasi digerakkan timer 60 fps dengan easing ease-out cubic,
+  mengikuti filosofi Nusa (timer, bukan keyframe).
+- State: Zen (pill tipis) → hover jadi Compact (judul/artis/progress) →
+  klik jadi Expanded (lirik, kontrol, daftar sumber).
+- Media sistem: framework private MediaRemote (dlopen runtime, tanpa
+  link-time dependency). Info lagu dibaca tiap 1 detik. Ini API private:
+  jalan untuk pemakaian pribadi, tidak lolos App Store.
+- Lirik: LRCLIB (`lrclib.net/api/search`), sama seperti Nusa, tanpa key.
+- Kontrol: tombol play/pause/next/prev untuk sesi sistem dikirim sebagai
+  media key macOS (menargetkan client aktif sistem). Untuk tab ekstensi,
+  play/pause bekerja lewat content script; next/prev tab belum didukung v1.
+- Menu bar: Tentang, Mode Auto, Lepas pin, Jalankan saat login
+  (SMAppService), Keluar.
 
-1. Pulau muncul di tengah-atas layar, di atas taskbar dan jendela lain.
-2. Hover >150 ms memperluas ke kartu; keluar dari kartu mengecilkan lagi.
-3. Klik di luar kapsul (mis. tab browser di belakang area window) tetap
-   mengklik aplikasi di belakangnya, bukan pulau.
-4. Klik tombol di kartu tidak membuat aplikasi yang sedang aktif kehilangan
-   fokus (ketik di editor, klik play demo, fokus editor tetap).
-5. Tray icon muncul; menu tray bekerja; `Ctrl+Alt+I` toggle expand.
-6. Autostart toggle bertahan setelah restart aplikasi.
-7. Tombol Zen menyembunyikan pulau jadi garis; klik garis mengembalikan Compact.
+## Batasan v1 (jujur)
 
-## Yang belum terverifikasi (jujur)
+- Belum pernah dikompilasi di sini (VM Linux tidak punya toolchain macOS).
+  Compile pertama di Mac kemungkinan menemukan typo/mismatch API kecil —
+  kirim errornya dan akan diperbaiki.
+- Belum ada sampul album, baru teks.
+- Tombol next/prev hanya untuk sesi sistem; tab ekstensi baru play/pause.
+- Kalau tombol media tidak bereaksi, beri izin Accessibility di
+  System Settings → Privacy & Security (macOS membatasi synthetic media key).
+- Listener notifikasi aplikasi lain (fitur Nusa) tidak ada di macOS dan
+  sengaja tidak dibuat.
+- Belum ada: Pomodoro, todo, file shelf, baterai Bluetooth, status
+  jaringan, water reminder. Itu Fase 2–3 dari rencana.
 
-VM pembuat kode ini adalah Linux tanpa toolchain Rust/Windows, sehingga:
+## Struktur
 
-- **Kode Rust belum pernah di-compile.** `cargo tauri dev` di Windows adalah
-  langkah verifikasi pertama. Yang paling mungkin perlu penyesuaian kecil:
-  pemanggilan builder menu/tray (`Menu::with_items`, `TrayIconBuilder`),
-  permission capability di `src-tauri/capabilities/default.json`, dan
-  detail `windows` crate (nama konstanta/fitur).
-- **Perilaku WM_NCHITTEST, DWM, dan no-activate belum teruji di perangkat.**
-  Checklist di atas adalah definisi "Fase 1 selesai", bukan klaim sudah lolos.
-- **Frontend sudah terverifikasi**: `tsc` bersih dan `vite build` lolos
-  (dist ~388 KB). UI juga bisa dibuka di browser biasa via `npm run dev`
-  untuk QA visual — semua pemanggilan Tauri menjadi no-op di luar Tauri.
-
-## Catatan scope (dari audit PRD)
-
-- Target RAM direvisi: idle ≤80 MB, expanded ≤120 MB (private working set).
-  Klaim PRD <35 MB tidak realistis untuk WebView2.
-- System HUD diposisikan sebagai companion, bukan replacement OSD bawaan
-  (Windows 11 tidak menyediakan API menonaktifkan flyout-nya).
-- Indikator kamera/mikrofon digeser ke Fase 5 (spike, bisa dipotong).
-- Baterai Bluetooth: best-effort (hanya perangkat yang mengekspos GATT
-  Battery Service). V1: monitor utama saja, brightness layar internal saja.
+- `Sources/Aura/AppDelegate.swift` — wiring, menu bar, polling 1 detik.
+- `Sources/Aura/IslandWindow.swift` — window + animator timer.
+- `Sources/Aura/IslandView.swift` — gambar pill/kartu + hit-test klik.
+- `Sources/Aura/SessionStore.swift` — sesi gabungan + logika pin Auto/Pin.
+- `Sources/Aura/MediaRemote.swift` — baca now-playing via MediaRemote.
+- `Sources/Aura/ExtensionBridge.swift` — server lokal untuk ekstensi.
+- `Sources/Aura/Lyrics.swift` — klien LRCLIB + parser lirik sinkron.
+- `extension/` — ekstensi Chrome pendamping (MV3).
+- `scripts/package-app.sh` — build release + paket .app (LSUIElement,
+  tanpa ikon Dock).
