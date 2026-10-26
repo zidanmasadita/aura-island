@@ -209,6 +209,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let about = NSMenuItem(title: "Tentang Aura Island", action: #selector(showAbout), keyEquivalent: "")
         about.target = self
         menu.addItem(about)
+        // One-click diagnostic: shows exactly what the sensors last
+        // reported, so a detection problem can be diagnosed from a
+        // screenshot without running from Terminal.
+        let diag = NSMenuItem(title: "Status Deteksi", action: #selector(showDiagnostics), keyEquivalent: "")
+        diag.target = self
+        menu.addItem(diag)
         let auto = NSMenuItem(title: "Mode: Auto (ikuti yang aktif)", action: #selector(setAuto), keyEquivalent: "")
         auto.target = self
         menu.addItem(auto)
@@ -230,6 +236,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let alert = NSAlert()
         alert.messageText = "Aura Island"
         alert.informativeText = "Pulau dinamis untuk Mac. Native, tanpa webview.\nMedia: MediaRemote + bridge ekstensi Chrome.\nLirik: LRCLIB."
+        alert.runModal()
+    }
+
+    @objc private func showDiagnostics() {
+        let alert = NSAlert()
+        alert.messageText = "Status Deteksi"
+        let session = sessions.current
+        let sessionText = session.map { "\($0.title) — \($0.artist) (\($0.isPlaying ? "playing" : "paused"))" } ?? "tidak ada"
+        let tabText: String
+        if let t = lastTabLog, !t.isEmpty {
+            tabText = t
+        } else {
+            tabText = "tidak ada"
+        }
+        alert.informativeText = "MediaRemote terakhir: \(lastMediaLog ?? "belum ada data")\nChrome tabs: \(tabText)\nSesi aktif: \(sessionText)"
         alert.runModal()
     }
 

@@ -64,8 +64,8 @@ Ekstensi melapor ke aplikasi lewat server lokal di `http://127.0.0.1:48123`
 - Kontrol: tombol play/pause/next/prev untuk sesi sistem dikirim sebagai
   media key macOS (menargetkan client aktif sistem). Untuk tab ekstensi,
   play/pause bekerja lewat content script; next/prev tab belum didukung v1.
-- Menu bar: Tentang, Mode Auto, Lepas pin, Jalankan saat login
-  (SMAppService), Keluar.
+- Menu bar: Tentang, Status Deteksi (diagnostik sensor), Mode Auto, Lepas
+  pin, Jalankan saat login (SMAppService), Keluar.
 
 ## Batasan v1 (jujur)
 
