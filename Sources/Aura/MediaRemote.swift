@@ -9,8 +9,13 @@ import Foundation
 /// non-sandboxed app, but would not pass App Store review. The framework
 /// binary exists on every macOS install at the path below.
 final class MediaRemote {
+    // NOTE: the block parameter MUST be @escaping. MRMediaRemoteGetNowPlayingInfo
+    // keeps the block and calls it later (async); without @escaping Swift
+    // treats it as @noescape and the runtime traps with
+    // "closure argument passed as @noescape to Objective-C has escaped"
+    // the moment the framework retains it — which crashed the app on launch.
     private typealias InfoBlock = @convention(block) (CFDictionary?) -> Void
-    private typealias GetInfoFn = @convention(c) (DispatchQueue, InfoBlock) -> Void
+    private typealias GetInfoFn = @convention(c) (DispatchQueue, @escaping InfoBlock) -> Void
 
     private var getInfo: GetInfoFn?
 
