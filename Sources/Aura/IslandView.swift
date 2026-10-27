@@ -790,16 +790,70 @@ final class IslandView: NSView, NSDraggingSource {
         }
     }
 
+    /// Right-click a tile: context menu. Open uses the file's
+    /// default app (Finder for folders); Share opens share mode
+    /// for the file; Remove drops the reference. Missing files
+    /// only get Remove.
+    override func rightMouseDown(with event: NSEvent) {
+        guard state == .expanded, cardPage == .tray, trayShareFile == nil else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        for tile in trayGridTileRects() where tile.rect.contains(point) {
+            trayMenuFile = tile.file
+            let menu = NSMenu()
+            if tile.exists {
+                let openItem = NSMenuItem(title: "Open", action: #selector(openTrayMenuFile), keyEquivalent: "")
+                openItem.target = self
+                menu.addItem(openItem)
+                let shareItem = NSMenuItem(title: "Share...", action: #selector(shareTrayMenuFile), keyEquivalent: "")
+                shareItem.target = self
+                menu.addItem(shareItem)
+            }
+            let removeItem = NSMenuItem(title: "Remove", action: #selector(removeTrayMenuFile), keyEquivalent: "")
+            removeItem.target = self
+            menu.addItem(removeItem)
+            menu.popUp(positioning: nil, at: point, in: self)
+            return
+        }
+    }
+
+    @objc private func openTrayMenuFile() {
+        guard let file = trayMenuFile, trayFileExists(file) else { return }
+        trayMenuFile = nil
+        NSWorkspace.shared.open(file.url)
+    }
+
+    @objc private func shareTrayMenuFile() {
+        guard let file = trayMenuFile else { return }
+        trayMenuFile = nil
+        trayShareFile = file
+        trayShareMethod = nil
+        traySharePeer = nil
+        trayShareStatus = nil
+        trayShareProgress = nil
+        needsDisplay = true
+    }
+
+    @objc private func removeTrayMenuFile() {
+        guard let file = trayMenuFile else { return }
+        trayMenuFile = nil
+        deleteTrayFile(id: file.id)
+    }
+
     func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
         [.copy]
     }
 
     func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
         isDraggingOut = false
-        // The drag ended outside the card: re-sync hover (the exit
-        // during the drag was suppressed) so the card collapses.
-        if let window, !window.frame.contains(NSEvent.mouseLocation) {
-            onHoverChanged?(false)
+        // Defer the hover re-sync to the next run loop: resizing
+        // the window synchronously inside drag teardown risks
+        // re-entrancy (the drag image window is still being torn
+        // down). The card collapses a tick later if the cursor is out.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if let window = self.window, !window.frame.contains(NSEvent.mouseLocation) {
+                self.onHoverChanged?(false)
+            }
         }
     }
 
@@ -2159,6 +2213,9 @@ final class IslandView: NSView, NSDraggingSource {
     /// ×), so a press-drag starts a drag session and a plain press
     /// is a tap (share, on mouseUp). Cleared on drag start or mouseUp.
     private var trayPendingDrag: (file: TrayFile, point: NSPoint)?
+    /// File the tray context menu was opened for (right-click).
+    /// Set on right-click, cleared by the chosen action.
+    private var trayMenuFile: TrayFile?
     /// Grid page (which page of tiles the shelf shows). 8 tiles per
     /// page (4x2); page count clamps, so delete/clear never leave
     /// it out of range.
@@ -2469,11 +2526,21 @@ final class IslandView: NSView, NSDraggingSource {
         drawTrayClearPill()
         let tiles = trayGridTileRects()
         if tiles.isEmpty {
+            // Empty state: dashed drop-target box + file icon (the
+            // tray is a drop target even when idle, not just mid-drag).
+            let zone = NSRect(x: 28, y: 44, width: 584, height: 212)
+            let dashed = NSBezierPath(roundedRect: zone, xRadius: 20, yRadius: 20)
+            dashed.setLineDash([8, 6], count: 2, phase: 0)
+            dashed.lineWidth = 1.5
+            NSColor.white.withAlphaComponent(0.5).setStroke()
+            dashed.stroke()
+            drawSymbol("doc.fill", size: 48, center: CGPoint(x: 320, y: 165), fallback: "D",
+                       color: NSColor.white.withAlphaComponent(0.6))
             let emptyFont = NSFont.systemFont(ofSize: 14)
             let emptyText = "Drag files here"
             let emptyW = (emptyText as NSString).size(withAttributes: [.font: emptyFont]).width
             drawText(emptyText, font: emptyFont, color: NSColor.white.withAlphaComponent(0.6),
-                     at: NSPoint(x: 320 - emptyW / 2, y: 140))
+                     at: NSPoint(x: 320 - emptyW / 2, y: 115))
             return
         }
         // Arrows (only when there is another page).
