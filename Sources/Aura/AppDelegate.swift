@@ -229,13 +229,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         islandView.session = current
         // Album artwork: the JXA sensor cannot read it from the system,
         // so look it up online (iTunes Search, no key) when missing.
-        // The lookup is cached per track; when it lands, refresh() runs
+        // The lookup is cached per track (title|artist|duration) and
+        // picks the best-matching candidate (title, artist, closest
+        // duration), so the cover matches the playing track instead
+        // of the first search result. When it lands, refresh() runs
         // again and the cached cover is attached here.
         if current.artwork == nil {
-            if let cached = ArtworkFetcher.shared.cachedArtwork(title: current.title, artist: current.artist) {
+            if let cached = ArtworkFetcher.shared.cachedArtwork(title: current.title, artist: current.artist, duration: current.duration) {
                 islandView.session = current.withArtwork(cached)
             } else {
-                ArtworkFetcher.shared.fetchArtwork(title: current.title, artist: current.artist) { [weak self] in
+                ArtworkFetcher.shared.fetchArtwork(title: current.title, artist: current.artist, duration: current.duration) { [weak self] in
                     self?.refresh()
                 }
             }
