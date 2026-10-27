@@ -28,26 +28,40 @@ function run() {
       var tiff = img.TIFFRepresentation;
       return tiff.base64EncodedStringWithOptions(0).js;
     }
+    function imageBase64(value) {
+      // Converts NSData / CGImage to base64, or null. Each
+      // conversion guarded; a wrong type just returns null.
+      if (!value) return null;
+      try { var b = value.base64EncodedStringWithOptions(0).js; if (b) return b; } catch (e) {}
+      try { var b2 = pngBase64(value); if (b2) return b2; } catch (e) {}
+      try { var b3 = tiffBase64(value); if (b3) return b3; } catch (e) {}
+      return null;
+    }
     var b64 = null;
     var artPresent = false;
     try {
       var art = info.valueForKey('kMRMediaRemoteNowPlayingInfoArtwork');
-      // Four shapes, in order: NSData (native players), CGImage
-      // (what Chrome sessions expose — truthy, no ObjC methods at
-      // all) via bitmap-to-PNG or via NSImage TIFF,
-      // MPMediaItemArtwork (imageWithSize). Each step guarded;
-      // failure falls through to the placeholder.
+      // The value is not always image data. For Chrome sessions
+      // the probe showed typeofArt "function": the value is an ObjC
+      // block (JXA bridges blocks as JS functions), i.e. a lazy
+      // artwork provider that must be CALLED to yield the image.
+      // That is why every earlier attempt failed — a function was
+      // treated as data, and forcing it into a CGImage slot passed
+      // NULL. Other shapes: NSData, CGImage, MPMediaItemArtwork
+      // (imageWithSize). Each step guarded; failure falls through
+      // to the placeholder.
       if (art) {
         artPresent = true;
-        try { b64 = art.base64EncodedStringWithOptions(0).js; } catch (e) {}
-        if (!b64) { try { b64 = pngBase64(art); } catch (e) {} }
-        if (!b64) { try { b64 = tiffBase64(art); } catch (e) {} }
-        if (!b64) {
-          try {
-            if (typeof art.imageWithSize === 'function') {
-              b64 = pngBase64(art.imageWithSize({ width: 600, height: 600 }));
-            }
-          } catch (e) {}
+        if (typeof art === 'function') {
+          try { b64 = imageBase64(art()); } catch (e) {}
+          if (!b64) {
+            try { b64 = imageBase64(art({ width: 600, height: 600 })); } catch (e) {}
+          }
+        } else {
+          b64 = imageBase64(art);
+          if (!b64 && typeof art.imageWithSize === 'function') {
+            try { b64 = imageBase64(art.imageWithSize({ width: 600, height: 600 })); } catch (e) {}
+          }
         }
       }
     } catch (e) {}
