@@ -6,7 +6,7 @@ import AppKit
 ///
 /// Layouts (flipped coordinates, y grows downward):
 /// - zen (140x32): the idle face — two white eyes.
-/// - compact: the closed notch — 320x32, both for plain playback
+/// - compact: the closed notch — 360x32, both for plain playback
 ///   (battery ring, clock, waveform, tight) and in lyrics mode
 ///   (note icon + lyric line).
 /// - expanded, wide and short (never tall): music is the normal Nusa
@@ -86,12 +86,12 @@ final class IslandView: NSView {
         }
     }
 
-    /// Size of the closed (compact/split) pill: half height (320x32),
+    /// Size of the closed (compact/split) pill: half height (360x32),
     /// both for plain playback and in lyrics mode (the note icon +
     /// lyric line fit in 32). AppDelegate uses this instead of the
     /// fixed state size for compact/split.
     var closedSize: NSSize {
-        NSSize(width: 320, height: 32)
+        NSSize(width: 360, height: 32)
     }
 
     private enum CardPage { case music, lyrics, sources }
@@ -348,9 +348,13 @@ final class IslandView: NSView {
         // at the bottom. Tangent-based arcs (not angle-based) so the
         // shape is correct in this flipped view regardless of angle
         // conventions.
+        // The closed pill (compact/split/zen) has NO tuck: its top
+        // corners are square and flush with the menu bar, so no
+        // see-through gap shows at the corners. The expanded card
+        // keeps the tuck as part of the notch look.
         let path = notchPath(
             rect: rect,
-            tuck: 12,
+            tuck: state == .expanded ? 12 : 0,
             // Full cards keep the 28pt bottom rounding from the Nusa
             // reference; short pills (compact, music strip) are fully
             // rounded like the closed pill.
@@ -412,9 +416,13 @@ final class IslandView: NSView {
         let rb = min(bottomRadius, w / 2, h / 2)
         path.move(to: CGPoint(x: x, y: y))
         path.addLine(to: CGPoint(x: x + w, y: y))
-        // Top-right: concave sweep into the bezel.
-        path.addArc(tangent1End: CGPoint(x: x + w - t, y: y),
-                    tangent2End: CGPoint(x: x + w - t, y: y + t), radius: t)
+        // Top-right: concave sweep into the bezel. Skipped when the
+        // tuck is zero (closed pill): the side then runs straight
+        // down from the top corner, leaving no see-through gap.
+        if t > 0 {
+            path.addArc(tangent1End: CGPoint(x: x + w - t, y: y),
+                        tangent2End: CGPoint(x: x + w - t, y: y + t), radius: t)
+        }
         path.addLine(to: CGPoint(x: x + w - t, y: y + h - rb))
         // Bottom-right: convex rounding.
         path.addArc(tangent1End: CGPoint(x: x + w - t, y: y + h),
@@ -424,9 +432,12 @@ final class IslandView: NSView {
         path.addArc(tangent1End: CGPoint(x: x + t, y: y + h),
                     tangent2End: CGPoint(x: x + t, y: y + h - rb), radius: rb)
         path.addLine(to: CGPoint(x: x + t, y: y + t))
-        // Top-left: concave sweep into the bezel.
-        path.addArc(tangent1End: CGPoint(x: x + t, y: y),
-                    tangent2End: CGPoint(x: x, y: y), radius: t)
+        // Top-left: concave sweep into the bezel (skipped when the
+        // tuck is zero, same as the top-right).
+        if t > 0 {
+            path.addArc(tangent1End: CGPoint(x: x + t, y: y),
+                        tangent2End: CGPoint(x: x, y: y), radius: t)
+        }
         path.closeSubpath()
         return path
     }
@@ -648,7 +659,7 @@ final class IslandView: NSView {
             font: NSFont.systemFont(ofSize: 15, weight: .semibold),
             color: .white, y: midY - 9)
         let waveHeight: CGFloat = bounds.height <= 40 ? 14 : 20
-        drawWaveform(in: NSRect(x: 250, y: midY - waveHeight / 2, width: 42, height: waveHeight))
+        drawWaveform(in: NSRect(x: bounds.width - 70, y: midY - waveHeight / 2, width: 42, height: waveHeight))
     }
 
     // MARK: - Expanded card
