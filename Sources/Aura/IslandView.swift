@@ -11,11 +11,12 @@ import AppKit
 ///   (note icon + lyric line).
 /// - expanded, wide and short (never tall): music is the normal Nusa
 ///   music card (640x220: header, artwork, title/artist, progress,
-///   controls, chevron, dots); opening lyrics keeps the same 640x220
-///   card but compresses the music part and puts the lyrics panel on
-///   the right, like Nusa; sources is the picker on the music card's
-///   footprint (640x220). The bubble toggles music/lyrics, the
-///   chevron advances a page, and the dots jump pages.
+///   controls, chevron, dots); opening lyrics extends the card
+///   slightly (700x220) and compresses the music part, putting the
+///   lyrics panel on the right, like Nusa; sources is the picker on
+///   the music card's footprint (640x220). The bubble toggles
+///   music/lyrics, the chevron advances a page, and the dots jump
+///   pages.
 /// - closed pill in lyrics mode: once the card was closed from the
 ///   lyrics page, the inactive pill shows a note icon + the current
 ///   lyric line — never clock, battery ring, or waveform — until the
@@ -73,14 +74,14 @@ final class IslandView: NSView {
         }
     }
 
-    /// Window size for the expanded card, per page. All pages share
-    /// the 640x220 card — like Nusa, opening lyrics does NOT widen
-    /// the card; the music part compresses and the lyrics panel takes
-    /// the right portion inside the same width.
+    /// Window size for the expanded card, per page. Music and
+    /// sources are the 640x220 card; lyrics extends it slightly to
+    /// 700x220 — like Nusa the music part compresses, and the extra
+    /// 60px goes entirely to the lyrics panel.
     var expandedSize: NSSize {
         switch currentPage {
         case .music: return NSSize(width: 640, height: 220)
-        case .lyrics: return NSSize(width: 640, height: 220)
+        case .lyrics: return NSSize(width: 700, height: 220)
         case .sources: return NSSize(width: 640, height: 220)
         }
     }
@@ -204,8 +205,8 @@ final class IslandView: NSView {
     var onNext: (() -> Void)?
     var onPrevious: (() -> Void)?
     /// Fired when the expanded card's page changes, so the window can
-    /// resize to the page. All pages share the 640 card, so this only
-    /// fires on a genuine size change; AppDelegate ignores it unless expanded.
+    /// resize to the page (music/sources 640, lyrics 700 wide).
+    /// AppDelegate ignores it unless expanded.
     var onExpandedSizeChanged: ((NSSize) -> Void)?
 
     override var isFlipped: Bool { true }
@@ -770,10 +771,10 @@ final class IslandView: NSView {
     }
 
     /// Lyrics panel for the lyrics page: a divider, then the lyrics
-    /// column on the right of the compressed music part (x 352..628,
-    /// 276 wide), inside the same 640-wide card. The divider sits
-    /// beside the song title: the title ends at most at 320
-    /// (108 + 212), and the divider is at 340.
+    /// column on the right of the compressed music part (x 352..688,
+    /// 336 wide), inside the slightly extended 700-wide card. The
+    /// divider sits beside the song title: the title ends at most at
+    /// 320 (108 + 212), and the divider is at 340.
     /// A long lyric line wraps onto a second line instead of being
     /// cut off with "…", so no lyric is ever truncated mid-line.
     private func drawLyricsPanel() {
@@ -783,7 +784,7 @@ final class IslandView: NSView {
         // Lyrics column: dim previous, bold current, dim next,
         // stacked as a block centered in the panel (44..176).
         let x: CGFloat = 352
-        let width: CGFloat = 276
+        let width: CGFloat = 336
         struct Entry { let lines: [String]; let font: NSFont; let color: NSColor }
         var entries: [Entry] = []
         if let prev = lyricPrev {

@@ -74,8 +74,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.sessions.previousTrack()
         }
         islandView.onExpandedSizeChanged = { [weak self] size in
-            // Only while expanded: all pages share the 640 card.
-            // Other states own their own size.
+            // Only while expanded: music/sources are the 640 card,
+            // lyrics the slightly wider 700 card. Other states own
+            // their own size.
             guard self?.islandView.state == .expanded else { return }
             self?.animator.animate(to: size)
         }
@@ -134,10 +135,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func setState(_ state: IslandState) {
         islandView.state = state
-        // Expanded size is the 640 card on every page; zen uses its
-        // fixed size; compact/split use the closed size (half height,
-        // 32). Setting state first matters: leaving expanded updates
-        // lyricsMode in didSet before closedSize is read.
+        // Expanded size follows the card's page (music/sources 640,
+        // lyrics 700 wide); zen uses its fixed size; compact/split use
+        // the closed size (half height, 32). Setting state first
+        // matters: leaving expanded updates lyricsMode in didSet
+        // before closedSize is read.
         let size: NSSize
         switch state {
         case .expanded: size = islandView.expandedSize
