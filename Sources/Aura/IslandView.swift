@@ -617,10 +617,41 @@ final class IslandView: NSView, NSTextFieldDelegate {
     /// on the Mac, flip the two moveSection signs (one line each).
     override func swipe(with event: NSEvent) {
         guard state == .expanded else { return }
+        guard !isAddingTodo else { return } // don't switch while typing a task
         if event.deltaX < 0 {
             moveSection(by: 1)
         } else if event.deltaX > 0 {
             moveSection(by: -1)
+        }
+    }
+
+    /// Two-finger vertical scroll switches sections (no system
+    /// setting needed: vertical scroll is never intercepted for
+    /// spaces, unlike horizontal three-finger swipe). Scroll down ->
+    /// next section, scroll up -> previous. Accumulates deltaY; a
+    /// firm scroll (>= 80) switches once, then resets. Momentum
+    /// (the coast after a scroll) is ignored so a fast scroll never
+    /// switches twice. Only when expanded (the closed pill has no
+    /// sections). NOTE: the deltaY sign convention (down = negative)
+    /// could not be verified in this VM (no trackpad); if the
+    /// direction feels backwards on the Mac, flip the two
+    /// moveSection signs (one line each).
+    private var scrollAccumulatedY: CGFloat = 0
+    override func scrollWheel(with event: NSEvent) {
+        guard state == .expanded else { return }
+        guard !isAddingTodo else { return } // don't switch while typing a task
+        guard event.momentumPhase.isEmpty else { return }
+        if event.phase == .ended || event.phase == .cancelled {
+            scrollAccumulatedY = 0
+            return
+        }
+        scrollAccumulatedY += event.scrollingDeltaY
+        if scrollAccumulatedY <= -80 {
+            moveSection(by: 1)
+            scrollAccumulatedY = 0
+        } else if scrollAccumulatedY >= 80 {
+            moveSection(by: -1)
+            scrollAccumulatedY = 0
         }
     }
 
