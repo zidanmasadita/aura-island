@@ -603,14 +603,18 @@ final class IslandView: NSView {
     /// swipe (>= 80) switches once, then resets (one swipe = one
     /// section). Momentum (the coast after a swipe) is ignored so a
     /// fast swipe never switches twice. Only when expanded (the
-    /// closed pill has no sections). NOTE: the deltaX sign convention
-    /// (left swipe = negative) could not be verified in this VM
-    /// (no trackpad); if the direction feels backwards on the Mac,
-    /// flip the two moveSection signs (one line each).
+    /// closed pill has no sections). NOTE: momentumPhase is an
+    /// OptionSet — empty means no momentum. Writing `.none` here
+    /// would be Optional.none (the compiler warns, and it is never
+    /// equal), which would block every swipe, not just momentum.
+    /// NOTE: the deltaX sign convention (left swipe = negative)
+    /// could not be verified in this VM (no trackpad); if the
+    /// direction feels backwards on the Mac, flip the two
+    /// moveSection signs (one line each).
     private var swipeAccumulatedX: CGFloat = 0
     override func scrollWheel(with event: NSEvent) {
         guard state == .expanded else { return }
-        guard event.momentumPhase == .none else { return }
+        guard event.momentumPhase.isEmpty else { return }
         if event.phase == .ended || event.phase == .cancelled {
             swipeAccumulatedX = 0
             return
