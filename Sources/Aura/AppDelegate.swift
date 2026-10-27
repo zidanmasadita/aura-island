@@ -40,6 +40,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var jxaInFlight = false
     private var isHovering = false
 
+    /// Previous tick's battery reading, for edge detection (charger
+    /// plug/unplug, low/full crossings). Nil until the first fetch,
+    /// so launching with an already-low battery never fires a
+    /// spurious alert.
+    private var prevBattery: (percent: Double, charging: Bool)?
+    /// How long a battery alert pill stays widened (wall clock).
+    private let batteryAlertDuration: TimeInterval = 4
+
     /// macOS 15.4+ denies direct MediaRemote reads to third-party
     /// clients (see NowPlayingJXA). Below that, the direct path works
     /// and keeps artwork + instant notifications.
@@ -144,6 +152,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func setState(_ state: IslandState) {
+        // Opening a card cancels a live battery alert: the user's
+        // action wins, and the alert must not resurrect when the
+        // card closes (its 4s would otherwise still be running).
+        if state == .expanded { islandView.batteryAlert = nil }
         islandView.state = state
         // Expanded size follows the card's page (music 520x180,
         // lyrics 700x180 — same height, only the width grows —
@@ -152,13 +164,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // wide, pomodoro 160, lyrics mode 360). Setting state first matters: leaving
         // expanded updates lyricsMode in didSet before closedSize is
         // read.
-        let size: NSSize
-        switch state {
-        case .expanded: size = islandView.expandedSize
-        case .zen: size = state.size
-        case .compact, .split: size = islandView.closedSize
+        animator.animate(to: windowSize(for: state))
+    }
+
+    /// Window size for a state. A live battery alert widens every
+    /// closed pill to 360x32 — horizontal only, the height never
+    /// changes for an alert. An expanded card is never overridden:
+    /// alerts do not fire while one is open, and opening one
+    /// cancels a live alert (see setState).
+    private func windowSize(for state: IslandState) -> NSSize {
+        if islandView.batteryAlert != nil && state != .expanded {
+            return NSSize(width: 360, height: 32)
         }
-        animator.animate(to: size)
+        switch state {
+        case .expanded: return islandView.expandedSize
+        case .zen: return state.size
+        case .compact, .split: return islandView.closedSize
+        }
     }
 
     // MARK: - Polling
@@ -213,13 +235,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             lastTabLog = tabKey
             print("[Aura] Chrome tabs: \(tabKey.isEmpty ? "(tidak ada)" : tabKey)")
         }
-        if let battery = Battery.fetch() {
+        let battery = Battery.fetch()
+        if let battery {
             islandView.batteryPercent = battery.percent
             islandView.batteryCharging = battery.charging
         } else {
             islandView.batteryPercent = nil
         }
+        updateBatteryAlert(with: battery)
         refresh()
+    }
+
+    /// Battery alert edges, checked each tick (horizontal pill
+    /// only, never vertical): charger plug/unplug, low crossing
+    /// (down through 20%), full crossing (up to 100% while
+    /// charging). One alert per tick; a newer event replaces a
+    /// live one (timer restarts). A live alert expires after
+    /// batteryAlertDuration and the pill shrinks back. Skipped
+    /// while a card is expanded (alerts never interrupt an open
+    /// card) and when there is no battery (desktops: fetch is nil
+    /// and prev is left alone, so a transient nil never fakes a
+    /// crossing when readings resume).
+    private func updateBatteryAlert(with battery: (percent: Double, charging: Bool)?) {
+        guard let battery else { return }
+        defer { prevBattery = battery }
+        if islandView.state != .expanded,
+           let kind = batteryAlertKind(prev: prevBattery, current: battery) {
+            islandView.batteryAlert = IslandView.BatteryAlert(
+                kind: kind, percent: battery.percent, charging: battery.charging,
+                until: Date() + batteryAlertDuration)
+            animator.animate(to: windowSize(for: islandView.state))
+            return
+        }
+        if let alert = islandView.batteryAlert, Date() >= alert.until {
+            islandView.batteryAlert = nil
+            animator.animate(to: windowSize(for: islandView.state))
+        }
+    }
+
+    /// Which battery event (if any) a tick's reading crosses, from
+    /// the previous tick. Thresholds first, then plug/unplug, so a
+    /// plug that lands exactly on 100% reports full, not charging.
+    /// Nil on the first fetch (no previous reading to cross from).
+    private func batteryAlertKind(prev: (percent: Double, charging: Bool)?,
+                                  current: (percent: Double, charging: Bool)) -> IslandView.BatteryAlert.Kind? {
+        guard let prev else { return nil }
+        if current.charging && current.percent >= 1.0 && prev.percent < 1.0 { return .fullPower }
+        if current.percent <= 0.20 && prev.percent > 0.20 { return .lowPower }
+        if !prev.charging && current.charging { return .charging }
+        if prev.charging && !current.charging { return .unplugged }
+        return nil
     }
 
     private func refresh() {
