@@ -72,6 +72,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         islandView.onPrevious = { [weak self] in
             self?.sessions.previousTrack()
         }
+        islandView.onExpandedSizeChanged = { [weak self] size in
+            // Only while expanded: the music strip is small, lyrics and
+            // sources are the full card. Other states own their own size.
+            guard self?.islandView.state == .expanded else { return }
+            self?.animator.animate(to: size)
+        }
         window.contentView = islandView
         animator = IslandAnimator(window: window)
         window.placeAtTopCenter()
@@ -127,7 +133,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func setState(_ state: IslandState) {
         islandView.state = state
-        animator.animate(to: state.size)
+        // Expanded size follows the card's page (music strip vs full
+        // card); other states use their fixed size.
+        animator.animate(to: state == .expanded ? islandView.expandedSize : state.size)
     }
 
     // MARK: - Polling
@@ -205,6 +213,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         islandView.session = current
+        // Album artwork: the JXA sensor cannot read it from the system,
+        // so look it up online (iTunes Search, no key) when missing.
+        // The lookup is cached per track; when it lands, refresh() runs
+        // again and the cached cover is attached here.
+        if current.artwork == nil {
+            if let cached = ArtworkFetcher.shared.cachedArtwork(title: current.title, artist: current.artist) {
+                islandView.session = current.withArtwork(cached)
+            } else {
+                ArtworkFetcher.shared.fetchArtwork(title: current.title, artist: current.artist) { [weak self] in
+                    self?.refresh()
+                }
+            }
+        }
         // Playback must visibly leave the idle eyes on its own: when
         // music starts, switch to compact without waiting for a hover;
         // when it stops, fall back to zen. Never touches an open

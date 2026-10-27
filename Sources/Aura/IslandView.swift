@@ -7,12 +7,12 @@ import AppKit
 /// Layouts (flipped coordinates, y grows downward):
 /// - zen (140x32): the idle face — two white eyes.
 /// - compact (380x64): the closed notch — battery ring, clock, waveform.
-/// - expanded (520x360): header (green dot, date+time, waveform), then
-///   one of three pages — music (artwork, title/artist, full-width
-///   progress, controls, chevron, page dots), lyrics (mini player +
-///   lyrics column), sources (the session picker, "pilih active").
-///   The chevron advances pages, the dots jump to a page, and the
-///   speech-bubble icon toggles music/lyrics.
+/// - expanded: size follows the page — music is a slim strip (460x112:
+///   artwork, title/artist, current lyric line, thin progress, controls),
+///   lyrics is the full card (520x360: header, mini player, lyrics
+///   column, dots), sources is a shorter card (520x260: session picker).
+///   The bubble (or the lyric line) opens lyrics, the dots jump pages,
+///   and the lyrics page's bubble goes back to music.
 final class IslandView: NSView {
     var state: IslandState = .zen {
         didSet {
@@ -35,7 +35,23 @@ final class IslandView: NSView {
 
     /// The expanded card's current page. View-internal display state;
     /// the chevron, dots, and bubble icon switch it, nothing else reads it.
-    private var cardPage: CardPage = .music
+    private var cardPage: CardPage = .music {
+        didSet {
+            if state == .expanded { onExpandedSizeChanged?(expandedSize) }
+            needsDisplay = true
+        }
+    }
+
+    /// Window size for the expanded card, per page: the music strip is
+    /// a slim bar (the "small pill" while lyrics are closed), lyrics and
+    /// sources are the full card.
+    var expandedSize: NSSize {
+        switch currentPage {
+        case .music: return NSSize(width: 460, height: 112)
+        case .lyrics: return NSSize(width: 520, height: 360)
+        case .sources: return NSSize(width: 520, height: 260)
+        }
+    }
 
     private enum CardPage { case music, lyrics, sources }
 
@@ -49,24 +65,20 @@ final class IslandView: NSView {
         availablePages.contains(cardPage) ? cardPage : .music
     }
 
-    private func advancePage() {
-        let pages = availablePages
-        let index = pages.firstIndex(of: currentPage) ?? 0
-        cardPage = pages[(index + 1) % pages.count]
-        needsDisplay = true
-    }
-
     /// Rects for the interactive elements of the expanded card.
-    private var chevronRect: NSRect { NSRect(x: 464, y: 88, width: 28, height: 28) }
-    private var musicBubbleRect: NSRect { NSRect(x: 18, y: 214, width: 28, height: 28) }
+    /// The music strip's bubble opens lyrics; the lyric line itself is
+    /// also tappable for the same. The lyrics page's bubble goes back.
+    private var stripBubbleRect: NSRect { NSRect(x: 310, y: 42, width: 28, height: 28) }
+    private var stripLyricRect: NSRect { NSRect(x: 100, y: 66, width: 200, height: 16) }
     private var lyricsBubbleRect: NSRect { NSRect(x: 14, y: 176, width: 28, height: 28) }
 
     /// Which control (0 = previous, 1 = play/pause, 2 = next) a point hits,
-    /// given the three control centers and the row's y range. Nil outside.
-    private func controlHit(at point: CGPoint, centers: [CGFloat], yMin: CGFloat, yMax: CGFloat) -> Int? {
+    /// given the control centers and the row's y range. Nil outside.
+    private func controlHit(at point: CGPoint, centers: [CGFloat], yMin: CGFloat, yMax: CGFloat,
+                            halfWidth: CGFloat = 20) -> Int? {
         guard point.y >= yMin && point.y <= yMax else { return nil }
         for (i, cx) in centers.enumerated() {
-            if point.x >= cx - 20 && point.x <= cx + 20 { return i }
+            if point.x >= cx - halfWidth && point.x <= cx + halfWidth { return i }
         }
         return nil
     }
@@ -82,14 +94,18 @@ final class IslandView: NSView {
         var rects: [NSRect] = []
         for i in pages.indices {
             let w: CGFloat = i == active ? 16 : 6
-            rects.append(NSRect(x: x, y: 324, width: w, height: 6))
+            rects.append(NSRect(x: x, y: dotsY, width: w, height: 6))
             x += w + 12
         }
         return rects
     }
 
+    /// Dots sit 36pt above the bottom edge, so they follow the window
+    /// height (lyrics card 360, sources card 260).
+    private var dotsY: CGFloat { bounds.height - 36 }
+
     private func dotIndex(at point: CGPoint) -> Int? {
-        guard point.y >= 318 && point.y <= 336 else { return nil }
+        guard point.y >= dotsY - 6 && point.y <= dotsY + 12 else { return nil }
         for (i, rect) in dotRects().enumerated() {
             if point.x >= rect.minX - 3 && point.x <= rect.maxX + 3 { return i }
         }
@@ -103,6 +119,10 @@ final class IslandView: NSView {
     var onPlayPause: (() -> Void)?
     var onNext: (() -> Void)?
     var onPrevious: (() -> Void)?
+    /// Fired when the expanded card's page changes, so the window can
+    /// resize to the page: the music strip is small, lyrics/sources are
+    /// the full card. AppDelegate ignores it unless expanded.
+    var onExpandedSizeChanged: ((NSSize) -> Void)?
 
     override var isFlipped: Bool { true }
 
@@ -156,8 +176,8 @@ final class IslandView: NSView {
             return
         }
         let point = convert(event.locationInWindow, from: nil)
-        // Page dots (all pages): jump straight to that page.
-        if let index = dotIndex(at: point) {
+        // Page dots (lyrics/sources pages only — the music strip has none).
+        if currentPage != .music, let index = dotIndex(at: point) {
             let pages = availablePages
             if index < pages.count {
                 cardPage = pages[index]
@@ -167,19 +187,15 @@ final class IslandView: NSView {
         }
         switch currentPage {
         case .music:
-            // Chevron: next page (music -> lyrics -> sources -> music).
-            if chevronRect.contains(point) {
-                advancePage()
-                return
-            }
-            // Speech bubble: lyrics page.
-            if musicBubbleRect.contains(point) {
+            // Speech bubble, or the lyric line itself: lyrics page
+            // (the card grows to the full lyrics view).
+            if stripBubbleRect.contains(point) || stripLyricRect.contains(point) {
                 cardPage = .lyrics
                 needsDisplay = true
                 return
             }
-            // Controls row.
-            if let hit = controlHit(at: point, centers: [204, 260, 316], yMin: 212, yMax: 244) {
+            // Controls row (right side of the strip).
+            if let hit = controlHit(at: point, centers: [362, 400, 438], yMin: 38, yMax: 74, halfWidth: 18) {
                 switch hit {
                 case 0: onPrevious?()
                 case 1: onPlayPause?()
@@ -243,21 +259,20 @@ final class IslandView: NSView {
         ctx.addPath(path)
         ctx.setFillColor(NSColor.black.withAlphaComponent(0.98).cgColor)
         ctx.fillPath()
-        if state == .expanded {
-            // Subtle blue glow at the bottom, like Nusa's expanded card.
+        // Pill tint: when album artwork is present, the background is a
+        // gradient from the cover's dominant color (darkened so white
+        // text stays readable) down to black. Without artwork, plain black.
+        if state != .zen, let topColor = gradientTopColor() {
             ctx.saveGState()
             ctx.addPath(path)
             ctx.clip()
-            let colors = [
-                NSColor.systemBlue.withAlphaComponent(0.35).cgColor,
-                NSColor.systemBlue.withAlphaComponent(0.0).cgColor,
-            ] as CFArray
+            let colors = [topColor.cgColor, NSColor.black.cgColor] as CFArray
             if let gradient = CGGradient(
                 colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: [0, 1]) {
                 ctx.drawLinearGradient(
                     gradient,
-                    start: CGPoint(x: 0, y: rect.maxY),
-                    end: CGPoint(x: 0, y: rect.height * 0.55),
+                    start: CGPoint(x: 0, y: rect.minY),
+                    end: CGPoint(x: 0, y: rect.maxY),
                     options: []
                 )
             }
@@ -392,6 +407,61 @@ final class IslandView: NSView {
         arc.stroke()
     }
 
+    private var cachedDominantKey: String?
+    private var cachedDominantColor: NSColor?
+
+    /// Darkened dominant cover color for the background gradient, or nil
+    /// when there is no artwork (plain black pill). Cached per track so
+    /// the 10x/second waveform redraw never re-samples the image.
+    private func gradientTopColor() -> NSColor? {
+        guard let session, let artwork = session.artwork else {
+            cachedDominantKey = nil
+            cachedDominantColor = nil
+            return nil
+        }
+        let key = "\(session.title)|\(session.artist)|art"
+        if key != cachedDominantKey {
+            cachedDominantKey = key
+            cachedDominantColor = dominantColor(of: artwork).map { darkenForText($0) }
+        }
+        return cachedDominantColor
+    }
+
+    /// Average color of the image, sampled at 32x32.
+    private func dominantColor(of image: NSImage) -> NSColor? {
+        guard let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        let w = 32, h = 32
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8,
+                                  bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        ctx.interpolationQuality = .low
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+        guard let data = ctx.data else { return nil }
+        let px = data.bindMemory(to: UInt8.self, capacity: w * h * 4)
+        var r = 0, g = 0, b = 0
+        for i in 0..<(w * h) {
+            r += Int(px[i * 4])
+            g += Int(px[i * 4 + 1])
+            b += Int(px[i * 4 + 2])
+        }
+        let n = CGFloat(w * h)
+        return NSColor(red: CGFloat(r) / n / 255.0,
+                       green: CGFloat(g) / n / 255.0,
+                       blue: CGFloat(b) / n / 255.0, alpha: 1.0)
+    }
+
+    /// Scales a color down so its luminance is at most 0.28 — white text
+    /// on top stays readable even for bright covers. Hue is preserved.
+    private func darkenForText(_ color: NSColor) -> NSColor {
+        guard let rgb = color.usingColorSpace(.deviceRGB) else { return color }
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        rgb.getRed(&r, green: &g, blue: &b, alpha: &a)
+        let luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
+        guard luminance > 0.28 else { return color }
+        let scale = 0.28 / luminance
+        return NSColor(red: r * scale, green: g * scale, blue: b * scale, alpha: 1.0)
+    }
+
     /// Animated bars; flat when paused, lively while playing.
     private func drawWaveform(in rect: NSRect) {
         let bars = 5
@@ -452,9 +522,32 @@ final class IslandView: NSView {
     // MARK: - Expanded card
 
     private func drawExpanded() {
-        // Header, like Nusa's music card: green dot + date/time centered,
-        // waveform top-right. No battery ring here — the reference card
-        // has none; the ring lives in the closed (compact) state instead.
+        guard let session else {
+            drawCentered("Tidak ada media yang diputar",
+                         font: NSFont.systemFont(ofSize: 13),
+                         color: NSColor.white.withAlphaComponent(0.7),
+                         y: bounds.height / 2 - 8)
+            return
+        }
+        switch currentPage {
+        case .music:
+            // The music strip has no header and no dots — just the song.
+            drawMusicStrip(session)
+        case .lyrics, .sources:
+            drawCardHeader()
+            if currentPage == .lyrics {
+                drawLyricsPage(session)
+            } else {
+                drawPicker(startY: 80)
+            }
+            drawPageDots()
+        }
+    }
+
+    /// Header for the full card pages, like Nusa's music card: green dot
+    /// + date/time centered, waveform top-right. No battery ring here —
+    /// the reference card has none; the ring lives in the closed state.
+    private func drawCardHeader() {
         let dateStr = Self.headerDateFormatter.string(from: Date())
         let dateFont = NSFont.systemFont(ofSize: 13, weight: .medium)
         let dateWidth = (dateStr as NSString).size(withAttributes: [.font: dateFont]).width
@@ -464,46 +557,44 @@ final class IslandView: NSView {
         NSBezierPath(ovalIn: NSRect(x: groupX, y: 21, width: 8, height: 8)).fill()
         drawText(dateStr, font: dateFont, color: .white, at: NSPoint(x: groupX + 16, y: 18))
         drawWaveform(in: NSRect(x: 452, y: 18, width: 48, height: 18))
-
-        guard let session else {
-            drawCentered("Tidak ada media yang diputar",
-                         font: NSFont.systemFont(ofSize: 13),
-                         color: NSColor.white.withAlphaComponent(0.7), y: 60)
-            return
-        }
-        switch currentPage {
-        case .music: drawMusicPage(session)
-        case .lyrics: drawLyricsPage(session)
-        case .sources: drawPicker(startY: 80)
-        }
-        drawPageDots()
     }
 
-    /// Music page, modelled on Nusa's music card: big artwork, large
-    /// title/artist, full-width progress, controls, chevron, page dots.
-    private func drawMusicPage(_ session: DisplaySession) {
-        drawArtwork(session.artwork, in: NSRect(x: 20, y: 56, width: 92, height: 92), cornerRadius: 14)
-        let titleFont = NSFont.boldSystemFont(ofSize: 25)
-        drawText(truncated(session.title, toWidth: 322, font: titleFont),
-                 font: titleFont, color: .white, at: NSPoint(x: 128, y: 64))
-        let artistFont = NSFont.systemFont(ofSize: 16)
-        drawText(truncated(session.artist, toWidth: 322, font: artistFont),
+    /// Music strip (460x112): the "small pill" while lyrics are closed —
+    /// artwork, title/artist, the current lyric line, a thin progress
+    /// bar, and controls. The bubble (or the lyric line) opens lyrics.
+    private func drawMusicStrip(_ session: DisplaySession) {
+        drawArtwork(session.artwork, in: NSRect(x: 16, y: 20, width: 72, height: 72), cornerRadius: 12)
+        let titleFont = NSFont.boldSystemFont(ofSize: 16)
+        drawText(truncated(session.title, toWidth: 200, font: titleFont),
+                 font: titleFont, color: .white, at: NSPoint(x: 100, y: 24))
+        let artistFont = NSFont.systemFont(ofSize: 12)
+        drawText(truncated(session.artist, toWidth: 200, font: artistFont),
                  font: artistFont, color: NSColor.white.withAlphaComponent(0.65),
-                 at: NSPoint(x: 128, y: 100))
-        drawProgress(session, elapsedX: 20, barX: 78, barWidth: 352, rightX: 500,
-                     y: 176, font: NSFont.systemFont(ofSize: 16), barHeight: 6)
-        // Controls row.
-        drawSymbol("ellipsis.bubble.fill", size: 22, center: CGPoint(x: 32, y: 228), fallback: "···")
-        drawSymbol("backward.fill", size: 24, center: CGPoint(x: 204, y: 228), fallback: "‹")
-        drawSymbol(session.isPlaying ? "pause.fill" : "play.fill", size: 24,
-                   center: CGPoint(x: 260, y: 228), fallback: session.isPlaying ? "❚❚" : "▶")
-        drawSymbol("forward.fill", size: 24, center: CGPoint(x: 316, y: 228), fallback: "›")
-        // Chevron: stroked circle + chevron, advances to the next page.
-        let chevron = chevronRect
-        NSColor.white.withAlphaComponent(0.3).setStroke()
-        NSBezierPath(ovalIn: chevron).stroke()
-        drawSymbol("chevron.right", size: 14,
-                   center: CGPoint(x: chevron.midX, y: chevron.midY), fallback: "›")
+                 at: NSPoint(x: 100, y: 48))
+        if let line = lyricCurrent {
+            let lyricFont = NSFont.systemFont(ofSize: 12)
+            drawText(truncated(line, toWidth: 200, font: lyricFont),
+                     font: lyricFont, color: NSColor.white.withAlphaComponent(0.55),
+                     at: NSPoint(x: 100, y: 68))
+        }
+        // Thin progress bar along the bottom of the strip.
+        if session.duration > 0 {
+            let bg = NSBezierPath(roundedRect: NSRect(x: 16, y: 102, width: 428, height: 3),
+                                  xRadius: 1.5, yRadius: 1.5)
+            NSColor.white.withAlphaComponent(0.25).setFill()
+            bg.fill()
+            let filled = min(1.0, session.position / session.duration)
+            let fg = NSBezierPath(roundedRect: NSRect(x: 16, y: 102, width: 428 * CGFloat(filled), height: 3),
+                                  xRadius: 1.5, yRadius: 1.5)
+            NSColor.white.setFill()
+            fg.fill()
+        }
+        // Controls (right side).
+        drawSymbol("ellipsis.bubble.fill", size: 20, center: CGPoint(x: 324, y: 56), fallback: "···")
+        drawSymbol("backward.fill", size: 20, center: CGPoint(x: 362, y: 56), fallback: "‹")
+        drawSymbol(session.isPlaying ? "pause.fill" : "play.fill", size: 20,
+                   center: CGPoint(x: 400, y: 56), fallback: session.isPlaying ? "❚❚" : "▶")
+        drawSymbol("forward.fill", size: 20, center: CGPoint(x: 438, y: 56), fallback: "›")
     }
 
     /// Lyrics page, modelled on Nusa's lyrics card: mini player on the
