@@ -327,6 +327,13 @@ final class IslandView: NSView {
         let message: String
         let detail: Detail?
         let until: Date
+        /// Display priority, lower wins: 0 battery, 1 volume,
+        /// 2 brightness, 3 caps lock and anything else. A new alert
+        /// preempts a displayed one only when its priority is equal
+        /// or higher; a lower-priority event is dropped (level
+        /// alerts keep their old baseline, so they resurface once
+        /// the higher alert expires - see presentAlert).
+        let priority: Int
     }
     var pillAlert: PillAlert? {
         didSet { needsDisplay = true }

@@ -288,6 +288,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// source that reads nil (no battery, no volume device, no
     /// brightness control) simply never fires and leaves its
     /// baseline alone, so a transient failure never fakes an edge.
+    /// Shows an alert unless a higher-priority one is currently
+    /// displayed. Priority lives on PillAlert (lower wins): battery
+    /// 0, volume 1, brightness 2, caps and everything else 3. Equal
+    /// priority replaces (a new event of the same kind refreshes
+    /// the display); lower priority is dropped. Returns whether
+    /// the alert is now displayed - callers advance level baselines
+    /// only on true, so a dropped change resurfaces later.
+    private func presentAlert(_ alert: IslandView.PillAlert) -> Bool {
+        if let current = islandView.pillAlert, Date() < current.until,
+           alert.priority > current.priority {
+            return false
+        }
+        islandView.pillAlert = alert
+        return true
+    }
+
     private func updatePillAlerts() {
         let battery = Battery.fetch()
         let caps = CapsLock.fetch()
@@ -302,17 +318,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         var fired = false
         if islandView.state != .expanded {
-            if let alert = batteryAlert(for: battery) { islandView.pillAlert = alert; fired = true }
-            if let alert = capsAlert(for: caps) { islandView.pillAlert = alert; fired = true }
-            if let alert = volumeAlert(for: volume) { islandView.pillAlert = alert; fired = true; prevVolume = volume }
+            if let alert = batteryAlert(for: battery) { fired = presentAlert(alert) || fired }
+            if let alert = capsAlert(for: caps) { fired = presentAlert(alert) || fired }
+            if let alert = volumeAlert(for: volume), presentAlert(alert) { fired = true; prevVolume = volume }
             if let powerChangeRecent = lastPowerChange, Date().timeIntervalSince(powerChangeRecent) < brightnessSuppressAfterPowerChange {
                 // Suppressed: absorb the auto-adjust into the
                 // baseline (a manual adjustment in this window is
                 // also absorbed — a 2s, rare tradeoff for keeping
                 // the charging alert visible).
                 if let brightness { prevBrightness = brightness }
-            } else if let alert = brightnessAlert(for: brightness) {
-                islandView.pillAlert = alert; fired = true; prevBrightness = brightness
+            } else if let alert = brightnessAlert(for: brightness), presentAlert(alert) {
+                fired = true; prevBrightness = brightness
             }
             if fired {
                 animator.animate(to: windowSize(for: islandView.state))
@@ -322,7 +338,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // detection); volume/brightness advance on fire (level
         // tracking, so slow drags accumulate) — except while
         // expanded (sync them, dropping missed changes) and on
-        // first read (initialize silently).
+        // first read (initialize silently). A level change dropped
+        // by presentAlert (lower priority than the displayed alert)
+        // keeps its old baseline, so it resurfaces once the higher
+        // alert expires instead of being lost.
         if let battery { prevBattery = battery }
         prevCaps = caps
         if islandView.state == .expanded || prevVolume == nil {
@@ -362,7 +381,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             icon: .battery(percent: battery.percent, charging: battery.charging),
             message: message,
             detail: .text("\(Int(round(battery.percent * 100)))%", tint),
-            until: Date() + pillAlertDuration)
+            until: Date() + pillAlertDuration,
+            priority: 0)
     }
 
     /// Caps Lock pill alert on toggle, or nil when unchanged.
@@ -373,7 +393,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             icon: .symbol(name: caps ? "capslock.fill" : "capslock", fallback: "A", size: 20),
             message: caps ? "Caps Lock On" : "Caps Lock Off",
             detail: nil,
-            until: Date() + pillAlertDuration)
+            until: Date() + pillAlertDuration,
+            priority: 3)
     }
 
     /// Volume pill alert on a level/mute change, or nil. Fires when
@@ -388,7 +409,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 icon: .symbol(name: "speaker.slash", fallback: "♪", size: 20),
                 message: "Muted",
                 detail: nil,
-                until: Date() + pillAlertDuration)
+                until: Date() + pillAlertDuration,
+                priority: 1)
         }
         let symbol: String
         if volume.level <= 0 {
@@ -402,7 +424,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             icon: .symbol(name: symbol, fallback: "♪", size: 20),
             message: "Volume",
             detail: .bar(volume.level),
-            until: Date() + pillAlertDuration)
+            until: Date() + pillAlertDuration,
+            priority: 1)
     }
 
     /// Brightness pill alert on a level change of at least 1% from
@@ -418,7 +441,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             icon: .symbol(name: "sun.max", fallback: "○", size: 20),
             message: "Brightness",
             detail: .bar(brightness),
-            until: Date() + pillAlertDuration)
+            until: Date() + pillAlertDuration,
+            priority: 2)
     }
 
     private func refresh() {
