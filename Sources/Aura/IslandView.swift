@@ -830,7 +830,13 @@ final class IslandView: NSView {
         base.draw(in: NSRect(x: 0, y: 0, width: size, height: size), from: .zero,
                   operation: .sourceOver, fraction: 1.0)
         NSColor.white.set()
-        NSRect(x: 0, y: 0, width: size, height: size).fill(using: .destinationIn)
+        // Tint: source-in keeps the SOURCE color (white) masked by the
+        // symbol's alpha. destination-in would keep the DESTINATION
+        // color — the symbol rasterizes black — which is why the
+        // buttons rendered black-on-black and looked dim instead of
+        // white. (The cached image is per-launch, so a fresh build
+        // picks the white version up.)
+        NSRect(x: 0, y: 0, width: size, height: size).fill(using: .sourceIn)
         img.unlockFocus()
         Self.symbolCache[key] = img
         img.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1.0)

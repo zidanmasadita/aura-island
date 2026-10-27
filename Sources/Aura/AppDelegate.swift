@@ -241,7 +241,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let key = "\(current.title)|\(current.artist)"
         if key != currentTrackKey {
             currentTrackKey = key
-            lyrics.fetchLyrics(title: current.title, artist: current.artist) { [weak self] lines in
+            lyrics.fetchLyrics(title: current.title, artist: current.artist, duration: current.duration) { [weak self] lines in
                 self?.lyricsLines = lines
                 self?.refreshLyricLine()
             }
