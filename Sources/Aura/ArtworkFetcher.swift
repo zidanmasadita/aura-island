@@ -10,11 +10,21 @@ import Foundation
 /// for the session so a failed lookup is not retried every second,
 /// and the placeholder simply stays.
 ///
+/// Fallback 1 (Chrome tab, no extension): when the system path yields
+/// no image for this track, the playing tab's own thumbnail is tried
+/// (ChromeTabArtwork: match the tab by song title, video ID ->
+/// i.ytimg.com thumbnail). That image is the tab's own cover, not a
+/// search result — the "from the playing app" rule still holds, only
+/// the channel changes. A fallback miss counts as a miss like any
+/// other (failed set), so the tab list is not re-run every second.
+///
 /// Race guard: the artwork read returns the title/artist it belongs
 /// to. If the track changed mid-fetch, the result is discarded (not
 /// cached, not marked failed) — the new track's own refresh cycle
 /// fetches its artwork. Only a title-matching result is cached, and
-/// only a title-matching nil marks the track failed.
+/// only a title-matching nil marks the track failed. The tab fallback
+/// needs no extra guard: its image is matched by the requested title
+/// itself, so it always belongs to the track key it is cached under.
 final class ArtworkFetcher {
     static let shared = ArtworkFetcher()
 
@@ -42,21 +52,35 @@ final class ArtworkFetcher {
         inFlight.insert(cacheKey)
         NowPlayingJXA.fetchArtwork { [weak self] artTitle, artArtist, image in
             guard let self else { return }
-            inFlight.remove(cacheKey)
-            if artTitle.isEmpty {
-                // Script failed or no item: throttle like any miss.
-                failed.insert(cacheKey)
-            } else if artTitle == title && artArtist == artist {
-                if let image {
-                    cache[cacheKey] = image
+            // System path hit: matching image, cache it and finish.
+            if artTitle == title && artArtist == artist, let image {
+                cache[cacheKey] = image
+                inFlight.remove(cacheKey)
+                completion()
+                return
+            }
+            // Different non-empty track: the track changed mid-fetch.
+            // Discard, fail nothing, no fallback — the new track
+            // fetches its own artwork.
+            if !artTitle.isEmpty && (artTitle != title || artArtist != artist) {
+                inFlight.remove(cacheKey)
+                completion()
+                return
+            }
+            // System path yielded nothing for THIS track (matched but
+            // nil, or the script failed): try the Chrome tab fallback
+            // before marking the track failed.
+            ChromeTabArtwork.fetch(title: title, artist: artist) { [weak self] tabImage in
+                guard let self else { return }
+                if let tabImage {
+                    cache[cacheKey] = tabImage
                 } else {
-                    // Player provides no artwork for this track.
+                    // Neither system nor tab provided artwork.
                     failed.insert(cacheKey)
                 }
+                inFlight.remove(cacheKey)
+                completion()
             }
-            // Title mismatch = track changed mid-fetch: cache nothing,
-            // fail nothing; the new track fetches its own artwork.
-            completion()
         }
     }
 }

@@ -32,6 +32,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <true/>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Aura membaca daftar tab Google Chrome untuk menemukan tab YouTube Music yang sedang memutar, supaya cover lagu bisa ditampilkan tanpa ekstensi.</string>
 </dict>
 </plist>
 PLIST
