@@ -87,7 +87,7 @@ final class IslandView: NSView {
     private var lyricSlideFrom: CGFloat = 0
     private var lyricSlideStart: Date = Date()
     private var lyricSlideTimer: Timer?
-    private let lyricSlideDuration: TimeInterval = 0.45
+    private let lyricSlideDuration: TimeInterval = 0.65
     private let lyricSlideDistance: CGFloat = 26
 
     private func startLyricSlide() {
@@ -100,11 +100,15 @@ final class IslandView: NSView {
             guard let self else { timer.invalidate(); return }
             self.stepLyricSlide(timer: timer)
         }
+        // Fire in common modes too, so a mouse drag or menu tracking
+        // never stalls the animation mid-flight (a default-mode timer
+        // pauses during event tracking, which reads as a stutter).
+        if let timer = lyricSlideTimer { RunLoop.main.add(timer, forMode: .common) }
     }
 
     private func stepLyricSlide(timer: Timer) {
         let p = min(1.0, Date().timeIntervalSince(lyricSlideStart) / lyricSlideDuration)
-        let e = 1.0 - pow(1.0 - p, 3.0) // easeOutCubic, like the window animator
+        let e = p < 0.5 ? 4.0 * p * p * p : 1.0 - pow(-2.0 * p + 2.0, 3.0) / 2.0 // easeInOutCubic: gentle start and landing, no opening lurch
         lyricSlideOffset = lyricSlideFrom * (1.0 - e)
         if p >= 1.0 {
             lyricSlideOffset = 0
@@ -881,17 +885,17 @@ final class IslandView: NSView {
         struct Entry { let lines: [String]; let font: NSFont; let isCurrent: Bool; let isPrev: Bool }
         var entries: [Entry] = []
         if let prev = lyricPrev {
-            let font = NSFont.systemFont(ofSize: 16)
+            let font = NSFont.systemFont(ofSize: 15)
             entries.append(Entry(lines: wrappedLines(prev, font: font, width: width, maxLines: 2),
                                  font: font, isCurrent: false, isPrev: true))
         }
         if let current = lyricCurrent {
-            let font = NSFont.boldSystemFont(ofSize: 21)
+            let font = NSFont.boldSystemFont(ofSize: 19)
             entries.append(Entry(lines: wrappedLines(current, font: font, width: width, maxLines: 2),
                                  font: font, isCurrent: true, isPrev: false))
         }
         if let next = lyricNext {
-            let font = NSFont.systemFont(ofSize: 16)
+            let font = NSFont.systemFont(ofSize: 15)
             entries.append(Entry(lines: wrappedLines(next, font: font, width: width, maxLines: 2),
                                  font: font, isCurrent: false, isPrev: false))
         }
@@ -913,7 +917,7 @@ final class IslandView: NSView {
         let gap: CGFloat = gapCount > 0 ? min(10, max(0, (130 - textHeight) / CGFloat(gapCount))) : 0
         // Spotify-style transition while a slide runs (see
         // lyricSlideOffset): the block rolls up into place (offset
-        // 26 -> 0), the incoming line zooms in (scale 0.90 -> 1.0)
+        // 26 -> 0), the incoming line zooms in (scale 0.94 -> 1.0)
         // and fades into focus (alpha 0.5 -> 1.0), and the outgoing
         // line fades to dim (alpha 1.0 -> 0.35). All three are
         // driven by the same offset, so restarting mid-flight (fast
@@ -924,7 +928,7 @@ final class IslandView: NSView {
         let slideT = min(1.0, max(0.0, lyricSlideOffset / lyricSlideDistance))
         var y = 28 + (130 - (textHeight + gap * CGFloat(gapCount))) / 2 + lyricSlideOffset
         for entry in entries {
-            let scale: CGFloat = entry.isCurrent ? (1.0 - 0.10 * slideT) : 1.0
+            let scale: CGFloat = entry.isCurrent ? (1.0 - 0.06 * slideT) : 1.0
             let alpha: CGFloat
             if entry.isCurrent {
                 alpha = 1.0 - 0.5 * slideT
