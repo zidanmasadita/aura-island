@@ -2,15 +2,16 @@ ObjC.import('Foundation');
 ObjC.import('AppKit');
 // Diagnostic only — NOT shipped in the app. Run while music plays:
 //   osascript -l JavaScript scripts/artwork-probe.jxa
-// Finding so far: the artwork value is a block that JXA cannot call
-// in ANY form (no-arg, size, handler, via the dict or via the item
-// accessor — all "Object is not a function"). The call-based path is
-// therefore closed. This final probe dumps the ENTIRE nowPlayingInfo
-// dictionary: every key, each value's type, and — for string values
-// (a possible artwork URL) and NSData values — the content itself.
-// No values are called, so nothing here can throw from invocation.
-// If no key besides the block carries artwork, the system path via
-// JXA is proven closed and only the Chrome extension's Media Session
+// v5 failed on a JXA bridging quirk, not on the system: `allKeys.js`
+// leaves NSArray elements as ObjC wrappers (null in JSON), and using
+// an NSString wrapper as a JS object key stringifies to its class
+// name ("[id __NSCFString]"), collapsing 13 keys into 2 meaningless
+// entries. v6 converts every key to a real JS string explicitly
+// (per-element `.js`) before using it, so keys stay distinct and
+// printable. No values are called, so nothing here can throw from
+// invocation. This is the final system check: if no key besides the
+// uncallable artwork block carries artwork, the JXA system path is
+// proven closed and only the Chrome extension's Media Session
 // artwork URL remains.
 function run() {
   try {
@@ -23,8 +24,19 @@ function run() {
     if (!item) return JSON.stringify(null);
     var info = item.nowPlayingInfo;
     if (!info) return JSON.stringify(null);
+    // Explicit per-element conversion: NSArray elements stay ObjC
+    // wrappers after a bare `.js` on the array, so convert each one.
     var keys = [];
-    try { keys = info.allKeys.js; } catch (e) { keys = ['allKeys-error: ' + String(e)]; }
+    try {
+      var raw = info.allKeys;
+      var count = raw.count;
+      for (var i = 0; i < count; i++) {
+        var el = raw.objectAtIndex(i);
+        var jsKey = null;
+        try { jsKey = (el && typeof el.js !== 'undefined') ? el.js : String(el); } catch (e) { jsKey = 'key-error-' + i; }
+        keys.push(jsKey);
+      }
+    } catch (e) { keys = ['allKeys-error: ' + String(e)]; }
     var entries = {};
     keys.forEach(function (key) {
       var entry = {};
