@@ -284,7 +284,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lyricsLines: [(time: Double, text: String)] = []
 
     private func refreshLyricLine() {
-        guard let session = sessions.current else {
+        guard sessions.current != nil else {
             islandView.lyricPrev = nil
             islandView.lyricCurrent = nil
             islandView.lyricNext = nil

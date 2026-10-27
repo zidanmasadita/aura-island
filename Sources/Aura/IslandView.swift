@@ -754,7 +754,7 @@ final class IslandView: NSView {
                          y: progressY, font: NSFont.systemFont(ofSize: 12), barHeight: 4)
         }
         drawSymbol("ellipsis.bubble.fill", size: 20, center: CGPoint(x: 56, y: controlsY), fallback: "···")
-        let controls = lyricsOpen ? [118, 170, 222] : [268, 320, 372]
+        let controls: [CGFloat] = lyricsOpen ? [118, 170, 222] : [268, 320, 372]
         drawSymbol("backward.fill", size: 20, center: CGPoint(x: controls[0], y: controlsY), fallback: "‹")
         drawSymbol(session.isPlaying ? "pause.fill" : "play.fill", size: 20,
                    center: CGPoint(x: controls[1], y: controlsY), fallback: session.isPlaying ? "❚❚" : "▶")
