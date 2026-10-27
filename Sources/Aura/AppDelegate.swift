@@ -59,6 +59,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// change, which would otherwise overwrite the charging alert.
     private let brightnessSuppressAfterPowerChange: TimeInterval = 2
     private var lastPowerChange: Date?
+    /// When a brightness change was first noticed but held (see the
+    /// brightness branch): a plug/unplug auto-adjusts brightness,
+    /// and the power flip is sometimes polled a tick AFTER the
+    /// brightness change, so showing at once would flash Brightness
+    /// before Charging. Nil when nothing is held.
+    private var brightnessHoldSince: Date?
+    /// How long a brightness change is held before showing, to let
+    /// a following power flip cancel it as auto-adjust.
+    private let brightnessHold: TimeInterval = 0.75
     private var alertTimer: Timer?
 
     /// macOS 15.4+ denies direct MediaRemote reads to third-party
@@ -325,10 +334,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // Suppressed: absorb the auto-adjust into the
                 // baseline (a manual adjustment in this window is
                 // also absorbed — a 2s, rare tradeoff for keeping
-                // the charging alert visible).
+                // the charging alert visible). This also cancels a
+                // held brightness change: it was the auto-adjust.
                 if let brightness { prevBrightness = brightness }
-            } else if let alert = brightnessAlert(for: brightness), presentAlert(alert) {
-                fired = true; prevBrightness = brightness
+                brightnessHoldSince = nil
+            } else if let brightness, let prev = prevBrightness, abs(brightness - prev) >= 0.01 {
+                // Hold before showing: the power flip is sometimes
+                // polled a tick AFTER the brightness change, and
+                // neither suppression (needs the flip first) nor
+                // priority (only preempts after the flip) can prevent
+                // a Brightness flash before Charging. Holding 0.75s
+                // lets a following flip cancel it via the branch
+                // above; a genuine manual change shows after the
+                // hold with the latest level. A brightness alert
+                // already on screen skips the hold, so drag
+                // follow-ups stay responsive.
+                let showingBrightness = islandView.pillAlert?.priority == 2
+                    && Date() < (islandView.pillAlert?.until ?? .distantPast)
+                if showingBrightness,
+                   let alert = brightnessAlert(for: brightness), presentAlert(alert) {
+                    fired = true; prevBrightness = brightness
+                    brightnessHoldSince = nil
+                } else if let since = brightnessHoldSince,
+                          Date().timeIntervalSince(since) >= brightnessHold,
+                          let alert = brightnessAlert(for: brightness), presentAlert(alert) {
+                    fired = true; prevBrightness = brightness
+                    brightnessHoldSince = nil
+                } else if brightnessHoldSince == nil {
+                    brightnessHoldSince = Date()
+                }
+                // Else: still holding, or presentAlert dropped it
+                // (higher priority showing) — the hold stays expired
+                // so the next tick retries, and the baseline is left
+                // alone so the change resurfaces after expiry.
+            } else {
+                brightnessHoldSince = nil
             }
             if fired {
                 animator.animate(to: windowSize(for: islandView.state))
