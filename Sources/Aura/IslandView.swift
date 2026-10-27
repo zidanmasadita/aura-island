@@ -8,7 +8,7 @@ import UserNotifications
 /// Layouts (flipped coordinates, y grows downward):
 /// - zen (140x32): the idle face — two white eyes.
 /// - compact: the closed notch, boxy with a concave bezel sweep
-///   (12pt tuck) — plain music 160x32 (battery icon + clock + waveform),
+///   (12pt tuck) — plain music 180x32 (battery icon + clock + waveform),
 ///   lyrics mode 360x32 (note icon + lyric line).
 /// - expanded, wide and short (never tall): music is the dense Nusa
 ///   music card (520x180: header, artwork, title/artist, progress,
@@ -323,16 +323,18 @@ final class IslandView: NSView {
     }
 
     /// Size of the closed (compact/split) pill: the plain music pill
-    /// is 160x32 — a bit wider than the idle pill (140x32) so the
-    /// ring + clock + waveform are not crammed; the lyrics-mode
-    /// pill stays wider (360x32) so the lyric line still fits.
-    /// A live pomodoro takes the 160x32 pill (same size as plain
-    /// music, so starting/stopping it never resizes the pill).
+    /// is 180x32 — a bit wider than the idle pill (140x32) so the
+    /// battery icon + clock + waveform are not crammed (160 was too
+    /// tight once the battery icon replaced the ring); the
+    /// lyrics-mode pill stays wider (360x32) so the lyric line
+    /// still fits. A live pomodoro keeps the 160x32 pill (its ring +
+    /// countdown are roomy there), so starting/stopping it resizes
+    /// the pill between 160 and 180 (animated, like lyrics mode).
     /// AppDelegate uses this instead of the fixed state size for
     /// compact/split.
     var closedSize: NSSize {
         if isPomodoroActive { return NSSize(width: 160, height: 32) }
-        return lyricsMode ? NSSize(width: 360, height: 32) : NSSize(width: 160, height: 32)
+        return lyricsMode ? NSSize(width: 360, height: 32) : NSSize(width: 180, height: 32)
     }
 
     private enum CardPage { case music, lyrics, pomodoro, todo, water, sources }
@@ -1052,7 +1054,7 @@ final class IslandView: NSView {
                          font: font, color: .white, y: midY - 8)
             return
         }
-        // The plain music pill is 160 wide: battery icon + clock +
+        // The plain music pill is 180 wide: battery icon + clock +
         // waveform, tightened to fit — smaller battery icon left,
         // clock centered, narrower waveform at the right edge. All
         // three stay inside the 12pt tuck (sides at 12 and width-12).

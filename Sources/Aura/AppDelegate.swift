@@ -15,9 +15,9 @@ enum IslandState {
     var size: NSSize {
         switch self {
         case .zen: return NSSize(width: 140, height: 32)
-        // Default closed size (plain music 160 wide); the view's
-        // closedSize overrides it (lyrics mode is wider).
-        case .compact, .split: return NSSize(width: 160, height: 32)
+        // Default closed size (plain music 180 wide); the view's
+        // closedSize overrides it (lyrics mode is wider, pomodoro narrower).
+        case .compact, .split: return NSSize(width: 180, height: 32)
         case .expanded: return NSSize(width: 640, height: 220)
         }
     }
@@ -148,8 +148,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Expanded size follows the card's page (music 520x180,
         // lyrics 700x180 — same height, only the width grows —
         // pomodoro/water 640x180, todo/sources 640x220); zen uses its fixed size;
-        // compact/split use the closed size (32 tall; plain music and
-        // pomodoro 160 wide, lyrics mode 360). Setting state first matters: leaving
+        // compact/split use the closed size (32 tall; plain music 180
+        // wide, pomodoro 160, lyrics mode 360). Setting state first matters: leaving
         // expanded updates lyricsMode in didSet before closedSize is
         // read.
         let size: NSSize
