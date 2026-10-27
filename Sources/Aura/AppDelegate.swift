@@ -120,13 +120,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.islandView.showTray()
             self?.setState(.expanded)
         }
-        islandView.onTraySizeChanged = { [weak self] in
-            // Re-apply the current state so windowSize (headroom
-            // while hovering/bouncing, normal otherwise) is
-            // animated to.
-            guard let self else { return }
-            self.setState(self.islandView.state)
-        }
         islandView.onTrayShareAirDrop = { [weak self] file in
             self?.shareViaAirDrop(file)
         }
@@ -302,16 +295,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// alerts do not fire while one is open, and opening one
     /// cancels a live alert (see setState).
     private func windowSize(for state: IslandState) -> NSSize {
-        // Base size lives in IslandView (single source of truth);
-        // while a file drag hovers or a bounce runs, the window is
-        // headroom-sized so the bouncing card never clips (the
-        // margin is transparent).
-        let base = islandView.unbulgedSize(for: state)
-        if islandView.trayDropHighlight || islandView.isTrayBouncing {
-            return NSSize(width: base.width * IslandView.bounceHeadroomFactor,
-                          height: base.height * IslandView.bounceHeadroomFactor)
-        }
-        return base
+        // Base size lives in IslandView (single source of truth).
+        // The window is exactly the card size: Nusa-style, the panel
+        // never grows, shrinks, or highlights during a drag.
+        return islandView.unbulgedSize(for: state)
     }
 
     // MARK: - Polling

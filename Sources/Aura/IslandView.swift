@@ -1051,22 +1051,6 @@ final class IslandView: NSView, NSDraggingSource {
         // later one). Clearing to transparent keeps the intended
         // 0.98 translucency (over the desktop, not over old text).
         ctx.clear(rect)
-        // Bubble bounce (whole island). No restore is needed: the
-        // context is fresh per draw, and everything below is meant
-        // to be transformed; inner save/restores nest correctly on
-        // top of this. The window is headroom-sized while hovering
-        // or bouncing, so the bouncing card never clips.
-        let springScale = traySpringScale(now: Date())
-        if springScale != 1.0 {
-            // Scale around the TOP-CENTER (the bezel; the view is
-            // flipped, so minY is the top): the card stays glued to
-            // the menu bar like the normal pill and only bounces
-            // downward — never a floating pill. Base is unbulged.
-            let base = unbulgedSize(for: state)
-            ctx.translateBy(x: rect.midX, y: rect.minY)
-            ctx.scaleBy(x: springScale, y: springScale)
-            ctx.translateBy(x: -base.width / 2, y: 0)
-        }
         ctx.saveGState()
         ctx.addPath(path)
         ctx.setFillColor(NSColor.black.withAlphaComponent(0.98).cgColor)
@@ -2241,67 +2225,11 @@ final class IslandView: NSView, NSDraggingSource {
 
     private var trayFiles: [TrayFile] = []
     private var trayFilesLoaded = false
-    /// While a drag hovers with a valid file URL. Read by
-    /// AppDelegate.windowSize (bounce headroom) — hence internal,
-    /// not private.
+    /// While a drag hovers with a valid file URL. The card keeps
+    /// its exact shape while hovering (Nusa-style — only the drop
+    /// zone inside highlights); the window does not grow.
     var trayDropHighlight = false {
-        didSet {
-            needsDisplay = true
-            if oldValue != trayDropHighlight {
-                // No scale while hovering: the card keeps its exact
-                // shape (DynamicNotch-style — only the drop zone
-                // inside highlights). The window still grows to
-                // headroom so the drop bounce that follows fits.
-                onTraySizeChanged?()
-            }
-        }
-    }
-    /// Bounce headroom: while a drag hovers or a bounce runs, the
-    /// window is this much larger than the card so the bouncing
-    /// card (up to ~1.12x) never clips; the margin is transparent.
-    static let bounceHeadroomFactor: CGFloat = 1.15
-    /// Called when the tray's size factors change (drop highlight
-    /// flips, bounce settles) so AppDelegate re-applies window size.
-    var onTraySizeChanged: (() -> Void)?
-    /// Bubble bounce: a damped-cosine spring around a target,
-    /// scale(t) = to + (from - to) * e^(-3t) * cos(4πt) — the
-    /// island pops and bounces like a bubble, then settles.
-    /// Only the drop bounces (pops to 1.12 then springs to 1.0);
-    /// hovering never scales, so the card keeps its exact shape.
-    private var traySpringFrom: CGFloat = 1.0
-    private var traySpringTo: CGFloat = 1.0
-    private var traySpringStart: Date?
-    private var traySpringTimer: Timer?
-    private func traySpringScale(now: Date) -> CGFloat {
-        guard let start = traySpringStart else { return traySpringTo }
-        let t = now.timeIntervalSince(start)
-        let decay = CGFloat(exp(-3 * t))
-        let osc = CGFloat(cos(4 * Double.pi * t))
-        return traySpringTo + (traySpringFrom - traySpringTo) * decay * osc
-    }
-    /// True while a bounce is running (window stays headroom-sized).
-    var isTrayBouncing: Bool { traySpringTimer != nil }
-    private func triggerTraySpring(to: CGFloat, from impulse: CGFloat? = nil) {
-        let now = Date()
-        traySpringFrom = impulse ?? traySpringScale(now: now)
-        traySpringTo = to
-        traySpringStart = now
-        guard traySpringTimer == nil else { return }
-        traySpringTimer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
-            guard let self, let start = self.traySpringStart else {
-                self?.traySpringTimer?.invalidate()
-                self?.traySpringTimer = nil
-                return
-            }
-            self.needsDisplay = true
-            let t = Date().timeIntervalSince(start)
-            if CGFloat(exp(-3 * t)) * abs(self.traySpringFrom - self.traySpringTo) < 0.002 {
-                self.traySpringTimer?.invalidate()
-                self.traySpringTimer = nil
-                self.onTraySizeChanged?()
-            }
-        }
-        if let traySpringTimer { RunLoop.main.add(traySpringTimer, forMode: .common) }
+        didSet { needsDisplay = true }
     }
     /// The island's size without the drop bulge (single source of
     /// truth for AppDelegate.windowSize's base).
@@ -2346,10 +2274,6 @@ final class IslandView: NSView, NSDraggingSource {
     /// page (4x2); page count clamps, so delete/clear never leave
     /// it out of range.
     private var trayGridPage = 0
-    /// Pop animation starts (file id -> start time) for tiles that
-    /// just entered the tray. Staggered 0.05s per file in one drop.
-    private var trayPopStarts: [UUID: Date] = [:]
-    private var trayPopTimer: Timer?
     /// True while a drag-out session is in flight (set on drag
     /// start, cleared when the session ends). AppDelegate skips
     /// hover-collapse while this is true.
@@ -2401,9 +2325,6 @@ final class IslandView: NSView, NSDraggingSource {
         }
         if !addedFiles.isEmpty {
             saveTrayFiles()
-            startTrayPops(for: addedFiles)
-            // Drop pops the bubble, then it bounces back to normal.
-        triggerTraySpring(to: 1.0, from: 1.12)
             needsDisplay = true
         }
         return addedFiles.count
@@ -2412,7 +2333,6 @@ final class IslandView: NSView, NSDraggingSource {
     private func deleteTrayFile(id: UUID) {
         loadTrayFilesIfNeeded()
         trayFiles.removeAll { $0.id == id }
-        trayPopStarts.removeValue(forKey: id)
         saveTrayFiles()
         needsDisplay = true
     }
@@ -2506,7 +2426,6 @@ final class IslandView: NSView, NSDraggingSource {
         loadTrayFilesIfNeeded()
         trayFiles.removeAll()
         trayGridPage = 0
-        trayPopStarts.removeAll()
         saveTrayFiles()
         needsDisplay = true
     }
@@ -2609,42 +2528,6 @@ final class IslandView: NSView, NSDraggingSource {
                  at: NSPoint(x: deleteRect.midX - xW / 2, y: deleteRect.midY - 8))
     }
 
-    /// Pop scale for a tile (0.6 -> 1.0 with an overshoot, 0.4s).
-    /// Nil when the tile is not popping.
-    private func trayPopScale(for id: UUID, now: Date) -> CGFloat? {
-        guard let start = trayPopStarts[id] else { return nil }
-        let t = now.timeIntervalSince(start) / 0.4
-        guard t >= 0, t < 1 else { return nil }
-        // easeOutBack (c1 = 1.70158): 0 -> ~1.1 -> 1.
-        let c1: CGFloat = 1.70158
-        let c3 = c1 + 1
-        let u = CGFloat(t) - 1
-        let ease = 1 + c3 * u * u * u + c1 * u * u
-        return 0.6 + 0.4 * ease
-    }
-
-    /// Record pops for newly added files (staggered 0.05s) and run
-    /// a 60fps redraw timer while any pop is active.
-    private func startTrayPops(for files: [TrayFile]) {
-        let now = Date()
-        for (i, file) in files.enumerated() {
-            trayPopStarts[file.id] = now.addingTimeInterval(Double(i) * 0.05)
-        }
-        guard trayPopTimer == nil else { return }
-        trayPopTimer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            let now = Date()
-            // Keep future starts (negative interval, staggered) and
-            // active pops; drop finished ones (interval >= 0.4).
-            trayPopStarts = trayPopStarts.filter { now.timeIntervalSince($0.value) < 0.4 }
-            self.needsDisplay = true
-            if self.trayPopStarts.isEmpty {
-                self.trayPopTimer?.invalidate()
-                self.trayPopTimer = nil
-            }
-        }
-        if let trayPopTimer { RunLoop.main.add(trayPopTimer, forMode: .common) }
-    }
 
     /// Grid list view (DynamicNotch-style): tiles 4x2 per page,
     /// arrows + page dots when there is another page, Clear.
@@ -2682,20 +2565,9 @@ final class IslandView: NSView, NSDraggingSource {
             drawSymbol("chevron.left", size: 16, center: CGPoint(x: arrows.left.midX, y: arrows.left.midY), fallback: "<")
             drawSymbol("chevron.right", size: 16, center: CGPoint(x: arrows.right.midX, y: arrows.right.midY), fallback: ">")
         }
-        // Tiles (popping tiles scale around their center).
-        let now = Date()
+        // Tiles (Nusa-style: items appear together, no pop).
         for tile in tiles {
-            if let scale = trayPopScale(for: tile.file.id, now: now),
-               let ctx = NSGraphicsContext.current?.cgContext {
-                ctx.saveGState()
-                ctx.translateBy(x: tile.rect.midX, y: tile.rect.midY)
-                ctx.scaleBy(x: scale, y: scale)
-                ctx.translateBy(x: -tile.rect.midX, y: -tile.rect.midY)
-                drawTrayTile(file: tile.file, rect: tile.rect, deleteRect: tile.deleteRect, exists: tile.exists)
-                ctx.restoreGState()
-            } else {
-                drawTrayTile(file: tile.file, rect: tile.rect, deleteRect: tile.deleteRect, exists: tile.exists)
-            }
+            drawTrayTile(file: tile.file, rect: tile.rect, deleteRect: tile.deleteRect, exists: tile.exists)
         }
         drawTrayPageDots()
     }
