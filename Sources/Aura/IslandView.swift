@@ -417,6 +417,18 @@ final class IslandView: NSView {
             bottomRadius: state == .expanded && rect.height > 100 ? 28 : rect.height / 2
         )
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+        // Clear first: this window is transparent and the view is
+        // non-opaque, so AppKit does NOT erase previous frames — and
+        // the card fill below is 0.98 black, not fully opaque, so
+        // without an explicit clear every redraw leaves 2% of the old
+        // text behind. At 10fps discrete updates that ghosting was
+        // invisible, but the 60fps lyric slide moves the block 26px
+        // over 0.45s, smearing it across its path — which is exactly
+        // the overlapping lines in the screenshot (the lower line of
+        // an earlier position showing through the upper line of a
+        // later one). Clearing to transparent keeps the intended
+        // 0.98 translucency (over the desktop, not over old text).
+        ctx.clear(rect)
         ctx.saveGState()
         ctx.addPath(path)
         ctx.setFillColor(NSColor.black.withAlphaComponent(0.98).cgColor)

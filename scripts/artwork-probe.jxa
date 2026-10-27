@@ -3,13 +3,16 @@ ObjC.import('AppKit');
 // Diagnostic only — NOT shipped in the app. Run while music plays:
 //   osascript -l JavaScript scripts/artwork-probe.jxa
 // Finding so far: for Chrome sessions the artwork value is a FUNCTION
-// (typeofArt "function", String "[id nil]") — an ObjC block bridged
-// as a JS function, i.e. a lazy artwork provider that must be CALLED.
-// This probe calls it (no-arg, then with a size) and reports what each
-// call returns and whether it converts to image bytes. If a call
-// crashes the process (no JSON output at all), that itself says the
-// block expects a completion handler — the next variant then waits
-// on the runloop for the callback.
+// (an ObjC block bridged as a JS function), but calling it directly
+// fails from JXA ("Object is not a function") for both no-arg and
+// size calls. The remaining JXA direction is the well-supported one:
+// instead of calling a bridged block OUT, pass a real JS function IN
+// as a completion handler and let the framework call it — then wait
+// on the runloop for the callback. This probe tries that on both the
+// dict block and the item's artwork accessor (with a size, and with
+// a handler). Each attempt is guarded; a call that throws is
+// reported, not fatal. If an attempt yields image bytes, that route
+// is the fix.
 function run() {
   try {
     var bundle = $.NSBundle.bundleWithPath('/System/Library/PrivateFrameworks/MediaRemote.framework/');
@@ -27,12 +30,6 @@ function run() {
     }
     var art = null;
     try { art = info.valueForKey('kMRMediaRemoteNowPlayingInfoArtwork'); } catch (e) {}
-    // Safe typeof probes on the item itself (no calls): is there an
-    // artwork method on the item that resolves the block internally?
-    var itemMethods = {};
-    ['artwork', 'nowPlayingArtwork', 'artworkData', 'loadArtwork', 'requestArtwork'].forEach(function (name) {
-      try { itemMethods[name] = typeof item[name]; } catch (e) { itemMethods[name] = 'error'; }
-    });
     function pngBase64(cgImage) {
       var rep = $.NSBitmapImageRep.alloc.initWithCGImage(cgImage);
       var data = rep.representationUsingTypeProperties(4, $.NSDictionary.dictionary);
@@ -44,42 +41,53 @@ function run() {
       return tiff.base64EncodedStringWithOptions(0).js;
     }
     function imageBase64(value) {
-      if (!value) return { converted: 'null-value' };
-      try { var b = value.base64EncodedStringWithOptions(0).js; if (b) return { converted: 'nsdata len ' + b.length }; } catch (e) {}
-      try { var b2 = pngBase64(value); if (b2) return { converted: 'png len ' + b2.length }; } catch (e) {}
-      try { var b3 = tiffBase64(value); if (b3) return { converted: 'tiff len ' + b3.length }; } catch (e) {}
-      return { converted: 'none' };
+      if (!value) return 'null-value';
+      try { var b = value.base64EncodedStringWithOptions(0).js; if (b) return 'nsdata len ' + b.length; } catch (e) {}
+      try { var b2 = pngBase64(value); if (b2) return 'png len ' + b2.length; } catch (e) {}
+      try { var b3 = tiffBase64(value); if (b3) return 'tiff len ' + b3.length; } catch (e) {}
+      return 'none';
     }
-    function describeResult(value) {
+    function describeValue(value) {
       var d = {};
-      try { d.typeofResult = typeof value; } catch (e) { d.typeofResult = 'error'; }
+      try { d.typeofValue = typeof value; } catch (e) { d.typeofValue = 'error'; }
       try { d.string = value ? String(value).slice(0, 120) : 'null'; } catch (e) { d.string = 'error'; }
-      var conv = imageBase64(value);
-      d.converted = conv.converted;
+      d.converted = imageBase64(value);
       return d;
     }
-    var calls = {};
-    if (typeof art === 'function') {
+    function waitRunloop(seconds) {
+      // Let async callbacks fire: run the runloop briefly.
       try {
-        var r0 = art();
-        calls.noArg = describeResult(r0);
-      } catch (e) { calls.noArg = { error: String(e) }; }
-      if (!calls.noArg.converted || calls.noArg.converted === 'none') {
-        try {
-          var r1 = art({ width: 600, height: 600 });
-          calls.withSize = describeResult(r1);
-        } catch (e) { calls.withSize = { error: String(e) }; }
-      }
-    } else {
-      calls.note = 'art is not a function (typeof ' + (typeof art) + ')';
+        $.NSRunLoop.currentRunLoop.runUntilDate($.NSDate.dateWithTimeIntervalSinceNow(seconds));
+      } catch (e) {}
     }
+    var attempts = {};
+    // A: item.artwork with a size (if it is an args-taking method
+    // rather than the zero-arg accessor that returns the block).
+    try {
+      var rA = item.artwork({ width: 600, height: 600 });
+      attempts.itemArtworkWithSize = describeValue(rA);
+    } catch (e) { attempts.itemArtworkWithSize = { error: String(e) }; }
+    // B: item.artwork with a completion handler + runloop wait.
+    try {
+      var capturedB = null;
+      item.artwork(function (img) { capturedB = img; });
+      waitRunloop(3);
+      attempts.itemArtworkWithHandler = describeValue(capturedB);
+    } catch (e) { attempts.itemArtworkWithHandler = { error: String(e) }; }
+    // C: dict block with a completion handler + runloop wait.
+    try {
+      var capturedC = null;
+      art(function (img) { capturedC = img; });
+      waitRunloop(3);
+      attempts.dictBlockWithHandler = describeValue(capturedC);
+    } catch (e) { attempts.dictBlockWithHandler = { error: String(e) }; }
     return JSON.stringify({
       title: str('kMRMediaRemoteNowPlayingInfoTitle'),
       artist: str('kMRMediaRemoteNowPlayingInfoArtist'),
       artworkPresent: !!art,
       typeofArt: (function () { try { return typeof art; } catch (e) { return 'error'; } })(),
-      itemMethods: itemMethods,
-      calls: calls
+      typeofItemArtwork: (function () { try { return typeof item.artwork; } catch (e) { return 'error'; } })(),
+      attempts: attempts
     });
   } catch (e) {
     return JSON.stringify({ error: String(e) });
