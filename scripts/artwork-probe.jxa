@@ -2,17 +2,16 @@ ObjC.import('Foundation');
 ObjC.import('AppKit');
 // Diagnostic only — NOT shipped in the app. Run while music plays:
 //   osascript -l JavaScript scripts/artwork-probe.jxa
-// Finding so far: for Chrome sessions the artwork value is a FUNCTION
-// (an ObjC block bridged as a JS function), but calling it directly
-// fails from JXA ("Object is not a function") for both no-arg and
-// size calls. The remaining JXA direction is the well-supported one:
-// instead of calling a bridged block OUT, pass a real JS function IN
-// as a completion handler and let the framework call it — then wait
-// on the runloop for the callback. This probe tries that on both the
-// dict block and the item's artwork accessor (with a size, and with
-// a handler). Each attempt is guarded; a call that throws is
-// reported, not fatal. If an attempt yields image bytes, that route
-// is the fix.
+// Finding so far: the artwork value is a block that JXA cannot call
+// in ANY form (no-arg, size, handler, via the dict or via the item
+// accessor — all "Object is not a function"). The call-based path is
+// therefore closed. This final probe dumps the ENTIRE nowPlayingInfo
+// dictionary: every key, each value's type, and — for string values
+// (a possible artwork URL) and NSData values — the content itself.
+// No values are called, so nothing here can throw from invocation.
+// If no key besides the block carries artwork, the system path via
+// JXA is proven closed and only the Chrome extension's Media Session
+// artwork URL remains.
 function run() {
   try {
     var bundle = $.NSBundle.bundleWithPath('/System/Library/PrivateFrameworks/MediaRemote.framework/');
@@ -24,70 +23,36 @@ function run() {
     if (!item) return JSON.stringify(null);
     var info = item.nowPlayingInfo;
     if (!info) return JSON.stringify(null);
-    function str(key) {
-      var v = info.valueForKey(key);
-      return v ? v.js : '';
-    }
-    var art = null;
-    try { art = info.valueForKey('kMRMediaRemoteNowPlayingInfoArtwork'); } catch (e) {}
-    function pngBase64(cgImage) {
-      var rep = $.NSBitmapImageRep.alloc.initWithCGImage(cgImage);
-      var data = rep.representationUsingTypeProperties(4, $.NSDictionary.dictionary);
-      return data.base64EncodedStringWithOptions(0).js;
-    }
-    function tiffBase64(cgImage) {
-      var img = $.NSImage.alloc.initWithCGImageSize(cgImage, { width: 600, height: 600 });
-      var tiff = img.TIFFRepresentation;
-      return tiff.base64EncodedStringWithOptions(0).js;
-    }
-    function imageBase64(value) {
-      if (!value) return 'null-value';
-      try { var b = value.base64EncodedStringWithOptions(0).js; if (b) return 'nsdata len ' + b.length; } catch (e) {}
-      try { var b2 = pngBase64(value); if (b2) return 'png len ' + b2.length; } catch (e) {}
-      try { var b3 = tiffBase64(value); if (b3) return 'tiff len ' + b3.length; } catch (e) {}
-      return 'none';
-    }
-    function describeValue(value) {
-      var d = {};
-      try { d.typeofValue = typeof value; } catch (e) { d.typeofValue = 'error'; }
-      try { d.string = value ? String(value).slice(0, 120) : 'null'; } catch (e) { d.string = 'error'; }
-      d.converted = imageBase64(value);
-      return d;
-    }
-    function waitRunloop(seconds) {
-      // Let async callbacks fire: run the runloop briefly.
+    var keys = [];
+    try { keys = info.allKeys.js; } catch (e) { keys = ['allKeys-error: ' + String(e)]; }
+    var entries = {};
+    keys.forEach(function (key) {
+      var entry = {};
+      var value = null;
+      try { value = info.valueForKey(key); } catch (e) { entry.error = 'valueForKey: ' + String(e); entries[key] = entry; return; }
+      try { entry.typeofValue = typeof value; } catch (e) { entry.typeofValue = 'error'; }
+      // Strings: print (truncated) — an artwork URL would show here.
       try {
-        $.NSRunLoop.currentRunLoop.runUntilDate($.NSDate.dateWithTimeIntervalSinceNow(seconds));
+        if (typeof value === 'string') entry.string = value.slice(0, 300);
       } catch (e) {}
-    }
-    var attempts = {};
-    // A: item.artwork with a size (if it is an args-taking method
-    // rather than the zero-arg accessor that returns the block).
-    try {
-      var rA = item.artwork({ width: 600, height: 600 });
-      attempts.itemArtworkWithSize = describeValue(rA);
-    } catch (e) { attempts.itemArtworkWithSize = { error: String(e) }; }
-    // B: item.artwork with a completion handler + runloop wait.
-    try {
-      var capturedB = null;
-      item.artwork(function (img) { capturedB = img; });
-      waitRunloop(3);
-      attempts.itemArtworkWithHandler = describeValue(capturedB);
-    } catch (e) { attempts.itemArtworkWithHandler = { error: String(e) }; }
-    // C: dict block with a completion handler + runloop wait.
-    try {
-      var capturedC = null;
-      art(function (img) { capturedC = img; });
-      waitRunloop(3);
-      attempts.dictBlockWithHandler = describeValue(capturedC);
-    } catch (e) { attempts.dictBlockWithHandler = { error: String(e) }; }
+      // NSData: base64 length only (bytes stay out of the output).
+      try {
+        if (value && typeof value.base64EncodedStringWithOptions === 'function') {
+          var b = value.base64EncodedStringWithOptions(0).js;
+          entry.nsdataLength = b ? b.length : 0;
+        }
+      } catch (e) {}
+      // Numbers/booleans: print directly (tiny, safe).
+      try {
+        if (typeof value === 'number' || typeof value === 'boolean') entry.scalar = value;
+      } catch (e) {}
+      entries[key] = entry;
+    });
     return JSON.stringify({
-      title: str('kMRMediaRemoteNowPlayingInfoTitle'),
-      artist: str('kMRMediaRemoteNowPlayingInfoArtist'),
-      artworkPresent: !!art,
-      typeofArt: (function () { try { return typeof art; } catch (e) { return 'error'; } })(),
-      typeofItemArtwork: (function () { try { return typeof item.artwork; } catch (e) { return 'error'; } })(),
-      attempts: attempts
+      title: (function () { try { var v = info.valueForKey('kMRMediaRemoteNowPlayingInfoTitle'); return v ? v.js : ''; } catch (e) { return ''; } })(),
+      artist: (function () { try { var v = info.valueForKey('kMRMediaRemoteNowPlayingInfoArtist'); return v ? v.js : ''; } catch (e) { return ''; } })(),
+      keys: keys,
+      entries: entries
     });
   } catch (e) {
     return JSON.stringify({ error: String(e) });
