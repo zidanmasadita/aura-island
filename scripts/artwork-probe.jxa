@@ -1,0 +1,74 @@
+ObjC.import('Foundation');
+ObjC.import('AppKit');
+// Diagnostic only — NOT shipped in the app. Run while music plays:
+//   osascript -l JavaScript scripts/artwork-probe.jxa
+// The artwork value exists for Chrome sessions (artworkPresent true)
+// but is not NSData, so base64 fails. This probe identifies what it
+// actually is, and attempts the extraction for the likely type
+// (MPMediaItemArtwork, which Chrome exposes via MPNowPlayingInfoCenter:
+// imageWithSize: -> NSBitmapImageRep -> PNG data -> base64). Paste the
+// whole JSON output back; it decides the real fix.
+function run() {
+  try {
+    var bundle = $.NSBundle.bundleWithPath('/System/Library/PrivateFrameworks/MediaRemote.framework/');
+    // Zero-argument ObjC methods fire on bare property access.
+    bundle.load;
+    var MRNowPlayingRequest = $.NSClassFromString('MRNowPlayingRequest');
+    if (!MRNowPlayingRequest) return JSON.stringify(null);
+    var item = MRNowPlayingRequest.localNowPlayingItem;
+    if (!item) return JSON.stringify(null);
+    var info = item.nowPlayingInfo;
+    if (!info) return JSON.stringify(null);
+    function str(key) {
+      var v = info.valueForKey(key);
+      return v ? v.js : '';
+    }
+    var art = null;
+    try { art = info.valueForKey('kMRMediaRemoteNowPlayingInfoArtwork'); } catch (e) {}
+    var desc = null;
+    try { if (art) desc = String(art.description.js).slice(0, 160); } catch (e) { desc = 'description-error'; }
+    var probes = {};
+    try { probes.hasImageWithSize = typeof art.imageWithSize === 'function'; } catch (e) { probes.hasImageWithSize = 'error'; }
+    try { probes.hasData = typeof art.data !== 'undefined' && art.data !== null; } catch (e) { probes.hasData = 'error'; }
+    try { probes.hasArtworkData = typeof art.artworkData !== 'undefined' && art.artworkData !== null; } catch (e) { probes.hasArtworkData = 'error'; }
+    // Attempt 1: MPMediaItemArtwork path (imageWithSize -> bitmap -> PNG).
+    var extracted = null;
+    var step = 'not-attempted';
+    try {
+      if (art && typeof art.imageWithSize === 'function') {
+        step = 'imageWithSize-call';
+        var cg = art.imageWithSize({ width: 600, height: 600 });
+        step = 'bitmap-init';
+        var rep = $.NSBitmapImageRep.alloc.initWithCGImage(cg);
+        step = 'png-data';
+        var data = rep.representationUsingTypeProperties(4, $.NSDictionary.dictionary);
+        step = 'base64';
+        extracted = data.base64EncodedStringWithOptions(0).js;
+        step = 'ok';
+      } else {
+        step = 'no-imageWithSize';
+      }
+    } catch (e) { step = 'failed-at-' + step + ': ' + String(e); }
+    // Attempt 2: a data-ish property holding NSData.
+    if (!extracted) {
+      try {
+        var cand = null;
+        try { cand = art.data; } catch (e) {}
+        if (!cand) { try { cand = art.artworkData; } catch (e) {} }
+        if (!cand) { try { cand = art.imageData; } catch (e) {} }
+        if (cand) extracted = cand.base64EncodedStringWithOptions(0).js;
+      } catch (e) {}
+    }
+    return JSON.stringify({
+      title: str('kMRMediaRemoteNowPlayingInfoTitle'),
+      artist: str('kMRMediaRemoteNowPlayingInfoArtist'),
+      artworkPresent: !!art,
+      artworkDescription: desc,
+      probes: probes,
+      extractedLength: extracted ? extracted.length : 0,
+      extractStep: step
+    });
+  } catch (e) {
+    return JSON.stringify({ error: String(e) });
+  }
+}
