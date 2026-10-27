@@ -53,6 +53,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var prevBrightness: Double?
     /// How long a pill alert stays widened (wall clock).
     private let pillAlertDuration: TimeInterval = 4
+    /// How long after a charger plug/unplug brightness changes are
+    /// treated as the power change's auto-adjust (absorbed, not
+    /// alerted): macOS re-adjusts brightness on power-source
+    /// change, which would otherwise overwrite the charging alert.
+    private let brightnessSuppressAfterPowerChange: TimeInterval = 2
+    private var lastPowerChange: Date?
     private var alertTimer: Timer?
 
     /// macOS 15.4+ denies direct MediaRemote reads to third-party
@@ -278,12 +284,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let caps = CapsLock.fetch()
         let volume = Volume.fetch()
         let brightness = Brightness.fetch()
+        // A charger plug/unplug also re-adjusts brightness (system
+        // auto-adjust), which must not overwrite the charging
+        // alert: remember the flip so brightness changes in the
+        // next 2s are absorbed into the baseline, not alerted.
+        if let battery, let prev = prevBattery, battery.charging != prev.charging {
+            lastPowerChange = Date()
+        }
         var fired = false
         if islandView.state != .expanded {
             if let alert = batteryAlert(for: battery) { islandView.pillAlert = alert; fired = true }
             if let alert = capsAlert(for: caps) { islandView.pillAlert = alert; fired = true }
             if let alert = volumeAlert(for: volume) { islandView.pillAlert = alert; fired = true; prevVolume = volume }
-            if let alert = brightnessAlert(for: brightness) { islandView.pillAlert = alert; fired = true; prevBrightness = brightness }
+            if let powerChangeRecent = lastPowerChange, Date().timeIntervalSince(powerChangeRecent) < brightnessSuppressAfterPowerChange {
+                // Suppressed: absorb the auto-adjust into the
+                // baseline (a manual adjustment in this window is
+                // also absorbed — a 2s, rare tradeoff for keeping
+                // the charging alert visible).
+                if let brightness { prevBrightness = brightness }
+            } else if let alert = brightnessAlert(for: brightness) {
+                islandView.pillAlert = alert; fired = true; prevBrightness = brightness
+            }
             if fired {
                 animator.animate(to: windowSize(for: islandView.state))
             }
@@ -331,8 +352,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return IslandView.PillAlert(
             icon: .battery(percent: battery.percent, charging: battery.charging),
             message: message,
-            detail: "\(Int(round(battery.percent * 100)))%",
-            tint: tint,
+            detail: .text("\(Int(round(battery.percent * 100)))%", tint),
             until: Date() + pillAlertDuration)
     }
 
@@ -344,7 +364,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             icon: .symbol(name: caps ? "capslock.fill" : "capslock", fallback: "A", size: 20),
             message: caps ? "Caps Lock On" : "Caps Lock Off",
             detail: nil,
-            tint: .white,
             until: Date() + pillAlertDuration)
     }
 
@@ -360,7 +379,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 icon: .symbol(name: "speaker.slash", fallback: "♪", size: 20),
                 message: "Muted",
                 detail: nil,
-                tint: .white,
                 until: Date() + pillAlertDuration)
         }
         let symbol: String
@@ -374,8 +392,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return IslandView.PillAlert(
             icon: .symbol(name: symbol, fallback: "♪", size: 20),
             message: "Volume",
-            detail: "\(Int(round(volume.level * 100)))%",
-            tint: .white,
+            detail: .bar(volume.level),
             until: Date() + pillAlertDuration)
     }
 
@@ -391,8 +408,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return IslandView.PillAlert(
             icon: .symbol(name: "sun.max", fallback: "○", size: 20),
             message: "Brightness",
-            detail: "\(Int(round(brightness * 100)))%",
-            tint: .white,
+            detail: .bar(brightness),
             until: Date() + pillAlertDuration)
     }
 

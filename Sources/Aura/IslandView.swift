@@ -307,9 +307,15 @@ final class IslandView: NSView {
             case symbol(name: String, fallback: String, size: CGFloat)
         }
         let icon: Icon
+        /// Trailing content: a tinted text (battery percent) or a
+        /// level bar (volume, brightness). Nil for toggles (caps
+        /// lock, mute).
+        enum Detail {
+            case text(String, NSColor)
+            case bar(Double)
+        }
         let message: String
-        let detail: String?
-        let tint: NSColor
+        let detail: Detail?
         let until: Date
     }
     var pillAlert: PillAlert? {
@@ -1058,13 +1064,23 @@ final class IslandView: NSView {
     /// Pill alert (360x32, horizontal only): icon + message +
     /// optional detail, centered as one group. Battery icons use
     /// the alert's snapshot (not the live values); symbols draw
-    /// white in a square slot of their size.
+    /// white in a square slot of their size. Text details draw in
+    /// their tint; bar details draw a 120x6 level bar (track white
+    /// 0.15, fill white).
     private func drawPillAlert() {
         guard let alert = pillAlert else { return }
         let midY = bounds.height / 2
         let font = NSFont.systemFont(ofSize: 14, weight: .semibold)
         let messageWidth = (alert.message as NSString).size(withAttributes: [.font: font]).width
-        let detailWidth = alert.detail.map { ($0 as NSString).size(withAttributes: [.font: font]).width } ?? 0
+        let detailWidth: CGFloat
+        switch alert.detail {
+        case .text(let text, _):
+            detailWidth = (text as NSString).size(withAttributes: [.font: font]).width
+        case .bar:
+            detailWidth = 120
+        case nil:
+            detailWidth = 0
+        }
         let iconWidth: CGFloat
         switch alert.icon {
         case .battery: iconWidth = 27
@@ -1079,9 +1095,24 @@ final class IslandView: NSView {
         case .symbol(let name, let fallback, let size):
             drawSymbol(name, size: size, center: CGPoint(x: startX + iconWidth / 2, y: midY), fallback: fallback)
         }
+        let detailX = startX + iconWidth + 10 + messageWidth + 8
         drawText(alert.message, font: font, color: .white, at: NSPoint(x: startX + iconWidth + 10, y: midY - 8))
-        if let detail = alert.detail {
-            drawText(detail, font: font, color: alert.tint, at: NSPoint(x: startX + iconWidth + 10 + messageWidth + 8, y: midY - 8))
+        switch alert.detail {
+        case .text(let text, let tint):
+            drawText(text, font: font, color: tint, at: NSPoint(x: detailX, y: midY - 8))
+        case .bar(let level):
+            let clamped = max(0, min(1, level))
+            NSColor.white.withAlphaComponent(0.15).setFill()
+            NSBezierPath(roundedRect: NSRect(x: detailX, y: midY - 3, width: 120, height: 6),
+                         xRadius: 3, yRadius: 3).fill()
+            let fillWidth = 120 * clamped
+            if fillWidth > 0 {
+                NSColor.white.setFill()
+                NSBezierPath(roundedRect: NSRect(x: detailX, y: midY - 3, width: fillWidth, height: 6),
+                             xRadius: min(3, fillWidth / 2), yRadius: min(3, fillWidth / 2)).fill()
+            }
+        case nil:
+            break
         }
     }
 
