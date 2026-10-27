@@ -280,10 +280,8 @@ final class IslandView: NSView {
                 needsDisplay = true
                 return
             }
-            if chevronRect.contains(point) {
-                advancePage()
-                return
-            }
+            // No chevron here: the widened lyrics panel occupies the
+            // music card's right edge where the chevron lives.
             // Controls are the music card's own row (the lyrics page
             // keeps the full music card on its left).
             if let hit = controlHit(at: point, centers: [268, 320, 372], yMin: 154, yMax: 174) {
@@ -651,7 +649,9 @@ final class IslandView: NSView {
         case .lyrics:
             // Same music card on the left, lyrics panel extending it to
             // the right — same height, so the card only grows sideways.
-            drawMusicCard(session)
+            // The panel takes space from the progress bar: on this page
+            // the bar is shorter and the panel wider (see drawMusicCard).
+            drawMusicCard(session, lyricsOpen: true)
             drawLyricsPanel()
             drawPageDots()
         case .sources:
@@ -684,25 +684,36 @@ final class IslandView: NSView {
     /// a chevron that advances a page. Compressed vertically — smaller
     /// artwork, tighter gaps — so the card does not reach far down.
     /// This is the normal active card; the lyrics page reuses it
-    /// unchanged on its left side.
-    private func drawMusicCard(_ session: DisplaySession) {
+    /// unchanged on its left side, except when lyricsOpen: the panel
+    /// takes space from the progress bar, so the bar is shorter, the
+    /// title/artist narrower, and the chevron (which would sit inside
+    /// the widened panel) is omitted.
+    private func drawMusicCard(_ session: DisplaySession, lyricsOpen: Bool = false) {
         drawCardHeader()
         drawArtwork(artworkThumb(for: session), in: NSRect(x: 28, y: 44, width: 64, height: 64), cornerRadius: 12)
+        let textWidth: CGFloat = lyricsOpen ? 440 : 460
         let titleFont = NSFont.boldSystemFont(ofSize: 25)
-        drawText(truncated(session.title, toWidth: 460, font: titleFont),
+        drawText(truncated(session.title, toWidth: textWidth, font: titleFont),
                  font: titleFont, color: .white, at: NSPoint(x: 108, y: 44))
         let artistFont = NSFont.systemFont(ofSize: 16)
-        drawText(truncated(session.artist, toWidth: 460, font: artistFont),
+        drawText(truncated(session.artist, toWidth: textWidth, font: artistFont),
                  font: artistFont, color: NSColor.white.withAlphaComponent(0.65),
                  at: NSPoint(x: 108, y: 80))
-        drawProgress(session, elapsedX: 28, barX: 88, barWidth: 452, rightX: 612,
-                     y: 126, font: NSFont.systemFont(ofSize: 12), barHeight: 4)
+        if lyricsOpen {
+            drawProgress(session, elapsedX: 28, barX: 88, barWidth: 372, rightX: 532,
+                         y: 126, font: NSFont.systemFont(ofSize: 12), barHeight: 4)
+        } else {
+            drawProgress(session, elapsedX: 28, barX: 88, barWidth: 452, rightX: 612,
+                         y: 126, font: NSFont.systemFont(ofSize: 12), barHeight: 4)
+        }
         drawSymbol("ellipsis.bubble.fill", size: 20, center: CGPoint(x: 28, y: 164), fallback: "···")
         drawSymbol("backward.fill", size: 20, center: CGPoint(x: 268, y: 164), fallback: "‹")
         drawSymbol(session.isPlaying ? "pause.fill" : "play.fill", size: 20,
                    center: CGPoint(x: 320, y: 164), fallback: session.isPlaying ? "❚❚" : "▶")
         drawSymbol("forward.fill", size: 20, center: CGPoint(x: 372, y: 164), fallback: "›")
-        drawSymbol("chevron.right", size: 20, center: CGPoint(x: 604, y: 110), fallback: "›")
+        if !lyricsOpen {
+            drawSymbol("chevron.right", size: 20, center: CGPoint(x: 604, y: 110), fallback: "›")
+        }
     }
 
     private var cachedThumbKey: String?
@@ -738,16 +749,18 @@ final class IslandView: NSView {
     }
 
     /// Lyrics panel for the lyrics page: a divider, then the lyrics
-    /// column on the right of the music card (x 664..916). The panel
-    /// extends the card horizontally only — same 220 height as music.
+    /// column on the right of the music card (x 576..916, 340 wide —
+    /// wider than before, taking space from the progress bar: the bar
+    /// on this page is shorter, see drawMusicCard). The panel extends
+    /// the card horizontally only — same 220 height as music.
     private func drawLyricsPanel() {
-        // Divider between the music card (left 640) and the panel.
+        // Divider between the music card (left) and the panel.
         NSColor.white.withAlphaComponent(0.12).setFill()
-        NSRect(x: 648, y: 44, width: 1, height: 132).fill()
+        NSRect(x: 560, y: 44, width: 1, height: 132).fill()
         // Lyrics column: dim previous, bold current, dim next,
         // vertically centered in the panel.
-        let x: CGFloat = 664
-        let width: CGFloat = 252
+        let x: CGFloat = 576
+        let width: CGFloat = 340
         if let prev = lyricPrev {
             let font = NSFont.systemFont(ofSize: 16)
             drawText(truncated(prev, toWidth: width, font: font),
