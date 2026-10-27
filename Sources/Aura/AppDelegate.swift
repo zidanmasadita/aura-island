@@ -224,9 +224,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func refresh() {
         guard let current = sessions.current else {
             islandView.session = nil
-            islandView.lyricPrev = nil
-            islandView.lyricCurrent = nil
-            islandView.lyricNext = nil
+            islandView.clearLyricLines()
             // No session: fall back to idle eyes, unless the card is
             // open or the cursor is still hovering the island.
             if (islandView.state == .compact || islandView.state == .split) && !isHovering {
@@ -270,9 +268,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // until the new lyrics land).
             lyricsLinesRaw = []
             lyricsLines = []
-            islandView.lyricPrev = nil
-            islandView.lyricCurrent = nil
-            islandView.lyricNext = nil
+            islandView.clearLyricLines()
             lyrics.fetchLyrics(title: current.title, artist: current.artist, duration: current.duration) { [weak self] lines in
                 // A slow fetch for an older track must not overwrite
                 // the current track's lines if the song changed again
@@ -318,9 +314,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func refreshLyricLine() {
         guard sessions.current != nil else {
-            islandView.lyricPrev = nil
-            islandView.lyricCurrent = nil
-            islandView.lyricNext = nil
+            islandView.clearLyricLines()
             return
         }
         let t = islandView.livePosition
@@ -328,9 +322,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for (i, entry) in lyricsLines.enumerated() where entry.time <= t {
             index = i
         }
-        islandView.lyricPrev = index.flatMap { $0 > 0 ? lyricsLines[$0 - 1].text : nil }
-        islandView.lyricCurrent = index.map { lyricsLines[$0].text }
-        islandView.lyricNext = index.flatMap { $0 + 1 < lyricsLines.count ? lyricsLines[$0 + 1].text : nil }
+        islandView.updateLyricLines(
+            prev: index.flatMap { $0 > 0 ? lyricsLines[$0 - 1].text : nil },
+            current: index.map { lyricsLines[$0].text },
+            next: index.flatMap { $0 + 1 < lyricsLines.count ? lyricsLines[$0 + 1].text : nil })
     }
 
     // MARK: - Menu bar

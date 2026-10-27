@@ -58,62 +58,215 @@ final class IslandView: NSView {
         }
     }
     var lyricPrev: String?
-    var lyricCurrent: String? {
-        didSet {
-            // Spotify-style transition: when the sung line changes
-            // while the lyrics page is visible, the stack rolls up
-            // into place, the incoming line zooms in and fades into
-            // focus, and the outgoing line fades to dim — instead of
-            // jumping. Only on a real change (refreshLyricLine sets
-            // all three every tick, usually to the same values) and
-            // only when the page is visible — otherwise the offset
-            // just stays at rest.
-            if oldValue != lyricCurrent, state == .expanded, currentPage == .lyrics {
-                startLyricSlide()
-            }
-        }
-    }
+    var lyricCurrent: String?
     var lyricNext: String?
 
-    // MARK: - Lyrics transition animation (Spotify-style)
+    // MARK: - Lyrics slot-machine roll
 
-    /// Extra Y offset for the lyrics block while it rolls into place.
-    /// 0 at rest; set to about one line height when the sung line
-    /// changes, then eased back to 0 at 60fps. Only the text block
-    /// moves — the divider stays fixed. The same offset also drives
-    /// the zoom and focus (see drawLyricsPanel), so all three stay
-    /// in sync and restarts never pop.
-    private var lyricSlideOffset: CGFloat = 0
-    private var lyricSlideFrom: CGFloat = 0
-    private var lyricSlideStart: Date = Date()
-    private var lyricSlideTimer: Timer?
-    private let lyricSlideDuration: TimeInterval = 0.65
-    private let lyricSlideDistance: CGFloat = 26
+    /// A slot-machine reel for the lyrics panel: the panel is a fixed
+    /// window, and on a line change the strip of lines rolls upward
+    /// through it — the previously active line moves up and out the
+    /// top, the upcoming line rolls up from below into the center
+    /// window, where it lands focused (bold, full opacity). The old
+    /// "rise" (swap lines, then slide the new block 26px) did not
+    /// read as a reel because the lines swapped instantly; here the
+    /// lines themselves travel, continuously, with no swap mid-roll.
+    ///
+    /// How it works: AppDelegate calls updateLyricLines (never the
+    /// three vars directly). On a one-line advance while the lyrics
+    /// page is visible, the old triple (A=prev, B=current, C=next)
+    /// and the new triple (B, C, D) are laid out as centered blocks;
+    /// the roll strip [A, B, C, D] starts at the old block's
+    /// positions and translates up by T, where T is chosen so C (the
+    /// focus line) lands exactly on its new centered position. B and
+    /// D may settle a few px at commit (dim lines, only when wrapping
+    /// is asymmetric — typically 0-5px); C is always exact. Focus
+    /// transfers during the roll: B shrinks (bold 19 -> 15 size) and
+    /// dims (1.0 -> 0.35), C grows (15 -> bold 19 size) and brightens
+    /// (0.45 -> 1.0), A fades out (0.35 -> 0), D fades in (0 -> 0.45).
+    /// Sizes change via a scale transform about each line's center
+    /// (never by swapping fonts mid-roll), so wrapped lines never
+    /// reflow during the roll; C is drawn with its NEW font (bold 19)
+    /// so its wrapped lines already match the commit. The divider
+    /// stays fixed — it is the window's frame, not part of the reel.
+    ///
+    /// A change arriving mid-roll discards the in-flight strip and
+    /// starts a fresh roll from the stored triple (which is already
+    /// the previous roll's target) — a small jump, but only for fast
+    /// lyrics, and a new roll starts immediately. A seek jump (new
+    /// current is not the old next) does not roll at all — it jumps,
+    /// which is correct for a skip.
+    private struct RollLine {
+        let lines: [String]
+        let font: NSFont
+        let startTop: CGFloat
+        let height: CGFloat
+        let scaleFrom: CGFloat
+        let scaleTo: CGFloat
+        let alphaFrom: CGFloat
+        let alphaTo: CGFloat
+    }
+    private var rollLines: [RollLine] = []
+    private var rollDistance: CGFloat = 0
+    private var rollProgress: CGFloat = 0 // eased 0...1, for drawing
+    private var rollStart: Date = Date()
+    private var rollTimer: Timer?
+    private let rollDuration: TimeInterval = 0.7
+    private var isRolling: Bool { rollTimer != nil }
 
-    private func startLyricSlide() {
-        // Restarting mid-flight keeps the current offset instead of
-        // jumping back to full distance (fast lyrics would stutter).
-        lyricSlideFrom = lyricSlideTimer == nil ? lyricSlideDistance : lyricSlideOffset
-        lyricSlideStart = Date()
-        lyricSlideTimer?.invalidate()
-        lyricSlideTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] timer in
-            guard let self else { timer.invalidate(); return }
-            self.stepLyricSlide(timer: timer)
+    /// Single entry point for lyric-line updates (AppDelegate calls
+    /// this, never the three vars directly). Rolls on a one-line
+    /// advance while the page is visible; otherwise just stores the
+    /// lines. A tick with the same line leaves an in-flight roll
+    /// alone — it finishes on its own and must not be aborted.
+    func updateLyricLines(prev: String?, current: String?, next: String?) {
+        let oldPrev = lyricPrev, oldCurrent = lyricCurrent, oldNext = lyricNext
+        lyricPrev = prev
+        lyricCurrent = current
+        lyricNext = next
+        guard current != oldCurrent else { return }
+        // Changed: any in-flight roll is stale (its target is no
+        // longer current) — cancel it, then maybe start a new one.
+        cancelLyricRoll()
+        guard let oldCurrent, let current, oldNext == current,
+              state == .expanded, currentPage == .lyrics else {
+            needsDisplay = true
+            return
         }
-        // Fire in common modes too, so a mouse drag or menu tracking
-        // never stalls the animation mid-flight (a default-mode timer
-        // pauses during event tracking, which reads as a stutter).
-        if let timer = lyricSlideTimer { RunLoop.main.add(timer, forMode: .common) }
+        startLyricRoll(oldPrev: oldPrev, oldCurrent: oldCurrent, oldNext: oldNext,
+                       newPrev: prev, newCurrent: current, newNext: next)
+        needsDisplay = true
     }
 
-    private func stepLyricSlide(timer: Timer) {
-        let p = min(1.0, Date().timeIntervalSince(lyricSlideStart) / lyricSlideDuration)
-        let e = p < 0.5 ? 4.0 * p * p * p : 1.0 - pow(-2.0 * p + 2.0, 3.0) / 2.0 // easeInOutCubic: gentle start and landing, no opening lurch
-        lyricSlideOffset = lyricSlideFrom * (1.0 - e)
+    /// Clears the lyrics (no session, track change, no lines) and
+    /// cancels any in-flight roll so stale lines never keep rolling.
+    func clearLyricLines() {
+        cancelLyricRoll()
+        lyricPrev = nil
+        lyricCurrent = nil
+        lyricNext = nil
+        needsDisplay = true
+    }
+
+    private func cancelLyricRoll() {
+        rollTimer?.invalidate()
+        rollTimer = nil
+        rollLines = []
+        rollProgress = 0
+    }
+
+    private func lyricLineHeight(_ font: NSFont) -> CGFloat {
+        ceil(font.ascender - font.descender + font.leading)
+    }
+
+    /// Centers a block of lyric lines in the panel (28..158, 130 tall)
+    /// and returns each line's top Y, height, and the inter-line gap.
+    /// Shared by the static panel and the roll, so both agree on
+    /// positions.
+    private func lyricBlockLayout(for lines: [(text: String, font: NSFont)]) -> (tops: [CGFloat], heights: [CGFloat], gap: CGFloat) {
+        let width: CGFloat = 336
+        var heights: [CGFloat] = []
+        for line in lines {
+            let w = wrappedLines(line.text, font: line.font, width: width, maxLines: 2)
+            heights.append(CGFloat(w.count) * lyricLineHeight(line.font))
+        }
+        let textHeight = heights.reduce(0, +)
+        let gapCount = max(0, lines.count - 1)
+        let gap: CGFloat = gapCount > 0 ? min(10, max(0, (130 - textHeight) / CGFloat(gapCount))) : 0
+        let blockTop = 28 + (130 - (textHeight + gap * CGFloat(gapCount))) / 2
+        var tops: [CGFloat] = []
+        var y = blockTop
+        for h in heights {
+            tops.append(y)
+            y += h + gap
+        }
+        return (tops, heights, gap)
+    }
+
+    private func startLyricRoll(oldPrev: String?, oldCurrent: String, oldNext: String?,
+                                newPrev: String?, newCurrent: String, newNext: String?) {
+        cancelLyricRoll()
+        let prevFont = NSFont.systemFont(ofSize: 15)
+        let currentFont = NSFont.boldSystemFont(ofSize: 19)
+        // Old block: [A?, B, C]; new block: [B, C, D?] (a one-line
+        // advance, guaranteed by updateLyricLines: new current is the
+        // old next, so new prev is the old current).
+        var oldLines: [(text: String, font: NSFont)] = []
+        if let oldPrev { oldLines.append((oldPrev, prevFont)) }
+        oldLines.append((oldCurrent, currentFont))
+        if let oldNext { oldLines.append((oldNext, prevFont)) }
+        var newLines: [(text: String, font: NSFont)] = []
+        if let newPrev { newLines.append((newPrev, prevFont)) }
+        newLines.append((newCurrent, currentFont))
+        if let newNext { newLines.append((newNext, prevFont)) }
+        let oldLayout = lyricBlockLayout(for: oldLines)
+        let newLayout = lyricBlockLayout(for: newLines)
+        // C (the focus line) is last in the old block and at index 1
+        // in the new block (after B, the new prev).
+        let oldCIndex = oldLines.count - 1
+        let newCIndex = 1
+        guard oldCIndex >= 0, newCIndex < newLayout.tops.count else { return }
+        let distance = oldLayout.tops[oldCIndex] - newLayout.tops[newCIndex]
+        guard distance > 0 else { return }
+        // Strip [A?, B, C, D?]: A and B keep their old fonts, C takes
+        // its NEW font (bold 19) so its wrapped lines already match
+        // the commit (no line-count snap for the focus line), D its
+        // new font. Scales make the rendered sizes travel between the
+        // old and new sizes: B bold 19 -> prev 15, C next 15 -> bold 19.
+        var strip: [RollLine] = []
+        var oldIndex = 0
+        if let oldPrev {
+            let w = wrappedLines(oldPrev, font: prevFont, width: 336, maxLines: 2)
+            strip.append(RollLine(lines: w, font: prevFont,
+                                  startTop: oldLayout.tops[oldIndex], height: oldLayout.heights[oldIndex],
+                                  scaleFrom: 1.0, scaleTo: 1.0, alphaFrom: 0.35, alphaTo: 0.0))
+            oldIndex += 1
+        }
+        let bWrapped = wrappedLines(oldCurrent, font: currentFont, width: 336, maxLines: 2)
+        strip.append(RollLine(lines: bWrapped, font: currentFont,
+                              startTop: oldLayout.tops[oldIndex], height: oldLayout.heights[oldIndex],
+                              scaleFrom: 1.0, scaleTo: 15.0 / 19.0, alphaFrom: 1.0, alphaTo: 0.35))
+        oldIndex += 1
+        // C: old position (as next), new font (bold 19), growing.
+        let cWrapped = wrappedLines(newCurrent, font: currentFont, width: 336, maxLines: 2)
+        let cHeight = CGFloat(cWrapped.count) * lyricLineHeight(currentFont)
+        let cTop = oldLayout.tops[oldIndex]
+        strip.append(RollLine(lines: cWrapped, font: currentFont,
+                              startTop: cTop, height: cHeight,
+                              scaleFrom: 15.0 / 19.0, scaleTo: 1.0, alphaFrom: 0.45, alphaTo: 1.0))
+        // D starts below C's roll block (old gap), fading in from
+        // below the window.
+        if let newNext {
+            let dWrapped = wrappedLines(newNext, font: prevFont, width: 336, maxLines: 2)
+            let dHeight = CGFloat(dWrapped.count) * lyricLineHeight(prevFont)
+            strip.append(RollLine(lines: dWrapped, font: prevFont,
+                                  startTop: cTop + cHeight + oldLayout.gap, height: dHeight,
+                                  scaleFrom: 1.0, scaleTo: 1.0, alphaFrom: 0.0, alphaTo: 0.45))
+        }
+        rollLines = strip
+        rollDistance = distance
+        rollProgress = 0
+        rollStart = Date()
+        rollTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] timer in
+            guard let self else { timer.invalidate(); return }
+            self.stepLyricRoll(timer: timer)
+        }
+        // Common modes: a mouse drag or menu tracking must never
+        // stall the reel mid-spin (a default-mode timer pauses during
+        // event tracking, which reads as a stutter).
+        if let timer = rollTimer { RunLoop.main.add(timer, forMode: .common) }
+    }
+
+    private func stepLyricRoll(timer: Timer) {
+        let p = min(1.0, Date().timeIntervalSince(rollStart) / rollDuration)
+        // easeInOutCubic: the reel spins up and settles, like a real
+        // slot machine, instead of lurching or stopping dead.
+        rollProgress = p < 0.5 ? 4.0 * p * p * p : 1.0 - pow(-2.0 * p + 2.0, 3.0) / 2.0
         if p >= 1.0 {
-            lyricSlideOffset = 0
-            timer.invalidate()
-            lyricSlideTimer = nil
+            rollTimer?.invalidate()
+            rollTimer = nil
+            rollLines = []
+            rollProgress = 0
         }
         needsDisplay = true
     }
@@ -880,24 +1033,59 @@ final class IslandView: NSView {
         NSRect(x: 340, y: 28, width: 1, height: 130).fill()
         // Lyrics column: dim previous, bold current, dim next,
         // stacked as a block centered in the panel (28..158).
+        // While a slot roll runs, the roll strip replaces this block
+        // (see startLyricRoll); the divider above stays fixed — it
+        // is the window's frame, not part of the reel.
         let x: CGFloat = 352
         let width: CGFloat = 336
-        struct Entry { let lines: [String]; let font: NSFont; let isCurrent: Bool; let isPrev: Bool }
+        if isRolling {
+            for line in rollLines {
+                let y = line.startTop - rollDistance * rollProgress
+                let scale = line.scaleFrom + (line.scaleTo - line.scaleFrom) * rollProgress
+                let alpha = line.alphaFrom + (line.alphaTo - line.alphaFrom) * rollProgress
+                let color = NSColor.white.withAlphaComponent(alpha)
+                let centerY = y + line.height / 2
+                if scale != 1.0, let ctx = NSGraphicsContext.current?.cgContext {
+                    // Scale about the line block's own center, so the
+                    // block grows/shrinks in place while it travels;
+                    // wrapped lines were fixed at roll start, so the
+                    // scale never reflows text.
+                    ctx.saveGState()
+                    ctx.translateBy(x: x + width / 2, y: centerY)
+                    ctx.scaleBy(x: scale, y: scale)
+                    ctx.translateBy(x: -(x + width / 2), y: -centerY)
+                    var ly = y
+                    for text in line.lines {
+                        drawText(text, font: line.font, color: color, at: NSPoint(x: x, y: ly))
+                        ly += lyricLineHeight(line.font)
+                    }
+                    ctx.restoreGState()
+                } else {
+                    var ly = y
+                    for text in line.lines {
+                        drawText(text, font: line.font, color: color, at: NSPoint(x: x, y: ly))
+                        ly += lyricLineHeight(line.font)
+                    }
+                }
+            }
+            return
+        }
+        struct Entry { let lines: [String]; let font: NSFont; let color: NSColor }
         var entries: [Entry] = []
         if let prev = lyricPrev {
             let font = NSFont.systemFont(ofSize: 15)
             entries.append(Entry(lines: wrappedLines(prev, font: font, width: width, maxLines: 2),
-                                 font: font, isCurrent: false, isPrev: true))
+                                 font: font, color: NSColor.white.withAlphaComponent(0.35)))
         }
         if let current = lyricCurrent {
             let font = NSFont.boldSystemFont(ofSize: 19)
             entries.append(Entry(lines: wrappedLines(current, font: font, width: width, maxLines: 2),
-                                 font: font, isCurrent: true, isPrev: false))
+                                 font: font, color: .white))
         }
         if let next = lyricNext {
             let font = NSFont.systemFont(ofSize: 15)
             entries.append(Entry(lines: wrappedLines(next, font: font, width: width, maxLines: 2),
-                                 font: font, isCurrent: false, isPrev: false))
+                                 font: font, color: NSColor.white.withAlphaComponent(0.45)))
         }
         guard !entries.isEmpty else {
             drawText("Lirik tidak tersedia",
@@ -909,57 +1097,14 @@ final class IslandView: NSView {
         // Stack the entries with a small fixed gap that shrinks to
         // zero if every entry wraps to two lines (the caps keep the
         // text itself within the panel height).
-        func lineHeight(_ font: NSFont) -> CGFloat {
-            ceil(font.ascender - font.descender + font.leading)
-        }
-        let textHeight = entries.reduce(0) { $0 + CGFloat($1.lines.count) * lineHeight($1.font) }
+        let textHeight = entries.reduce(0) { $0 + CGFloat($1.lines.count) * lyricLineHeight($1.font) }
         let gapCount = max(0, entries.count - 1)
         let gap: CGFloat = gapCount > 0 ? min(10, max(0, (130 - textHeight) / CGFloat(gapCount))) : 0
-        // Spotify-style transition while a slide runs (see
-        // lyricSlideOffset): the block rolls up into place (offset
-        // 26 -> 0), the incoming line zooms in (scale 0.94 -> 1.0)
-        // and fades into focus (alpha 0.5 -> 1.0), and the outgoing
-        // line fades to dim (alpha 1.0 -> 0.35). All three are
-        // driven by the same offset, so restarting mid-flight (fast
-        // lyrics) never pops: scale and alpha are functions of the
-        // current offset, not of a reset progress value. At rest
-        // (offset 0) every value is exactly its static value, so
-        // the resting panel looks identical to before.
-        let slideT = min(1.0, max(0.0, lyricSlideOffset / lyricSlideDistance))
-        var y = 28 + (130 - (textHeight + gap * CGFloat(gapCount))) / 2 + lyricSlideOffset
+        var y = 28 + (130 - (textHeight + gap * CGFloat(gapCount))) / 2
         for entry in entries {
-            let scale: CGFloat = entry.isCurrent ? (1.0 - 0.06 * slideT) : 1.0
-            let alpha: CGFloat
-            if entry.isCurrent {
-                alpha = 1.0 - 0.5 * slideT
-            } else if entry.isPrev {
-                alpha = 0.35 + 0.65 * slideT
-            } else {
-                alpha = 0.45
-            }
-            let color = NSColor.white.withAlphaComponent(alpha)
-            let entryHeight = CGFloat(entry.lines.count) * lineHeight(entry.font)
-            let entryCenterY = y + entryHeight / 2
-            if scale != 1.0, let ctx = NSGraphicsContext.current?.cgContext {
-                // Zoom about the entry's own center: the wrapped
-                // lines were laid out with the base font, so scaling
-                // here only affects rendering, never reflows text,
-                // and the y bookkeeping below stays unscaled so the
-                // next entry never drifts.
-                ctx.saveGState()
-                ctx.translateBy(x: x + width / 2, y: entryCenterY)
-                ctx.scaleBy(x: scale, y: scale)
-                ctx.translateBy(x: -(x + width / 2), y: -entryCenterY)
-                for line in entry.lines {
-                    drawText(line, font: entry.font, color: color, at: NSPoint(x: x, y: y))
-                    y += lineHeight(entry.font)
-                }
-                ctx.restoreGState()
-            } else {
-                for line in entry.lines {
-                    drawText(line, font: entry.font, color: color, at: NSPoint(x: x, y: y))
-                    y += lineHeight(entry.font)
-                }
+            for line in entry.lines {
+                drawText(line, font: entry.font, color: entry.color, at: NSPoint(x: x, y: y))
+                y += lyricLineHeight(entry.font)
             }
             y += gap
         }
