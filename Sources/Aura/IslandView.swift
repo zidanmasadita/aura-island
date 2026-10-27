@@ -33,6 +33,25 @@ import UserNotifications
 /// livePosition), so the bar moves smoothly at the 10x/second redraw
 /// while playing, and only re-anchors on track/state change, a seek,
 /// or when the sensor runs ahead of the display.
+/// Pasteboard writer for a tray drag-out (DynamicNotch-style:
+/// a dedicated writer instead of NSURL). Provides the file URL
+/// as .fileURL and .URL so Finder and other apps accept the drop.
+private final class AuraTrayPasteboardWriter: NSObject, NSPasteboardWriting {
+    private let url: URL
+    init(url: URL) { self.url = url.standardizedFileURL }
+    func writableTypes(for pasteboard: NSPasteboard) -> [NSPasteboard.PasteboardType] {
+        [.fileURL, .URL]
+    }
+    func pasteboardPropertyList(forType type: NSPasteboard.PasteboardType) -> Any? {
+        switch type {
+        case .fileURL, .URL:
+            return url.absoluteString
+        default:
+            return nil
+        }
+    }
+}
+
 final class IslandView: NSView, NSDraggingSource {
     var state: IslandState = .zen {
         didSet {
@@ -771,18 +790,20 @@ final class IslandView: NSView, NSDraggingSource {
         trayPendingDrag = nil
         guard trayFileExists(pending.file) else { return }
         isDraggingOut = true
-        let item = NSDraggingItem(pasteboardWriter: pending.file.url as NSURL)
-        // Explicit drag image (the file's icon): without it AppKit
-        // generates one from the pasteboard writer, which is the
-        // remaining drag-start path not under our control.
-        let filePath = pending.file.path
-        item.imageComponentsProvider = {
-            let icon = NSWorkspace.shared.icon(forFile: filePath)
-            let component = NSDraggingImageComponent(key: .icon)
-            component.contents = icon
-            component.frame = NSRect(x: 0, y: 0, width: 64, height: 64)
-            return [component]
-        }
+        // DynamicNotch-style drag-out: a dedicated pasteboard
+        // writer (file URL as .fileURL/.URL) plus an explicit
+        // dragging frame + icon image — no NSURL writer and no
+        // imageComponentsProvider, the two drag-start paths that
+        // were in play when the segfault was reported.
+        let item = NSDraggingItem(pasteboardWriter: AuraTrayPasteboardWriter(url: pending.file.url))
+        let dragSize = NSSize(width: 48, height: 48)
+        let dragFrame = NSRect(x: point.x - dragSize.width / 2,
+                               y: point.y - dragSize.height / 2,
+                               width: dragSize.width, height: dragSize.height)
+        let icon = NSWorkspace.shared.icon(forFile: pending.file.path)
+        let dragImage = (icon.copy() as? NSImage) ?? icon
+        dragImage.size = dragSize
+        item.setDraggingFrame(dragFrame, contents: dragImage)
         beginDraggingSession(with: [item], event: event, source: self)
     }
 
@@ -2227,9 +2248,10 @@ final class IslandView: NSView, NSDraggingSource {
         didSet {
             needsDisplay = true
             if oldValue != trayDropHighlight {
-                // Spring into the bulge (hover) or back to normal
-                // (drag leaves without dropping).
-                triggerTraySpring(to: trayDropHighlight ? 1.05 : 1.0)
+                // No scale while hovering: the card keeps its exact
+                // shape (DynamicNotch-style — only the drop zone
+                // inside highlights). The window still grows to
+                // headroom so the drop bounce that follows fits.
                 onTraySizeChanged?()
             }
         }
@@ -2244,8 +2266,8 @@ final class IslandView: NSView, NSDraggingSource {
     /// Bubble bounce: a damped-cosine spring around a target,
     /// scale(t) = to + (from - to) * e^(-3t) * cos(4πt) — the
     /// island pops and bounces like a bubble, then settles.
-    /// Hover enter springs to 1.05 (bulged); hover exit springs
-    /// back to 1.0; drop pops to 1.12 then springs to 1.0.
+    /// Only the drop bounces (pops to 1.12 then springs to 1.0);
+    /// hovering never scales, so the card keeps its exact shape.
     private var traySpringFrom: CGFloat = 1.0
     private var traySpringTo: CGFloat = 1.0
     private var traySpringStart: Date?
