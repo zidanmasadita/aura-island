@@ -6,9 +6,8 @@ import AppKit
 ///
 /// Layouts (flipped coordinates, y grows downward):
 /// - zen (140x32): the idle face — two white eyes.
-/// - compact: the closed notch — 360x32, both for plain playback
-///   (battery ring, clock, waveform, tight) and in lyrics mode
-///   (note icon + lyric line).
+/// - compact: the closed notch, a full capsule — plain music 140x32
+///   (same as idle), lyrics mode 360x32 (note icon + lyric line).
 /// - expanded, wide and short (never tall): music is the normal Nusa
 ///   music card (640x220: header, artwork, title/artist, progress,
 ///   controls, chevron, dots); opening lyrics extends the card
@@ -86,12 +85,13 @@ final class IslandView: NSView {
         }
     }
 
-    /// Size of the closed (compact/split) pill: half height (360x32),
-    /// both for plain playback and in lyrics mode (the note icon +
-    /// lyric line fit in 32). AppDelegate uses this instead of the
-    /// fixed state size for compact/split.
+    /// Size of the closed (compact/split) pill: the plain music pill
+    /// is the same size as the idle pill (140x32); the lyrics-mode
+    /// pill stays wider (360x32) so the lyric line still fits.
+    /// AppDelegate uses this instead of the fixed state size for
+    /// compact/split.
     var closedSize: NSSize {
-        NSSize(width: 360, height: 32)
+        lyricsMode ? NSSize(width: 360, height: 32) : NSSize(width: 140, height: 32)
     }
 
     private enum CardPage { case music, lyrics, sources }
@@ -348,17 +348,19 @@ final class IslandView: NSView {
         // at the bottom. Tangent-based arcs (not angle-based) so the
         // shape is correct in this flipped view regardless of angle
         // conventions.
-        // The closed pill (compact/split/zen) has NO tuck: its top
-        // corners are square and flush with the menu bar, so no
-        // see-through gap shows at the corners. The expanded card
-        // keeps the tuck as part of the notch look.
+        // The closed pill (compact/split/zen) is a full capsule: all
+        // corners rounded with radius height/2, so the top corners
+        // follow the generous curve from the reference sketch. The
+        // expanded card keeps the concave tuck as part of the notch
+        // look.
         let path = notchPath(
             rect: rect,
             tuck: state == .expanded ? 12 : 0,
             // Full cards keep the 28pt bottom rounding from the Nusa
             // reference; short pills (compact, music strip) are fully
             // rounded like the closed pill.
-            bottomRadius: state == .expanded && rect.height > 100 ? 28 : rect.height / 2
+            bottomRadius: state == .expanded && rect.height > 100 ? 28 : rect.height / 2,
+            topRadius: state == .expanded ? 0 : rect.height / 2
         )
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
         ctx.saveGState()
@@ -409,11 +411,36 @@ final class IslandView: NSView {
     ///   at the full width and tangent to the tucked side edge, so the
     ///   notch reads as flowing out of the bezel rather than stuck onto
     ///   it.
-    private func notchPath(rect: NSRect, tuck: CGFloat, bottomRadius: CGFloat) -> CGPath {
+    /// - topRadius: when positive, the top corners are convex rounded
+    ///   with this radius instead of the tuck (closed pill capsule).
+    ///   Takes precedence over the tuck.
+    private func notchPath(rect: NSRect, tuck: CGFloat, bottomRadius: CGFloat,
+                           topRadius: CGFloat = 0) -> CGPath {
         let path = CGMutablePath()
         let x = rect.minX, y = rect.minY, w = rect.width, h = rect.height
         let t = min(tuck, w / 2, h / 2)
         let rb = min(bottomRadius, w / 2, h / 2)
+        let tr = min(topRadius, w / 2, h / 2)
+        if tr > 0 {
+            // Convex rounded top corners: capsule top. Zero-length
+            // straight sides are fine (a 32-tall pill with radius 16
+            // is a pure capsule).
+            path.move(to: CGPoint(x: x + tr, y: y))
+            path.addLine(to: CGPoint(x: x + w - tr, y: y))
+            path.addArc(tangent1End: CGPoint(x: x + w, y: y),
+                        tangent2End: CGPoint(x: x + w, y: y + tr), radius: tr)
+            path.addLine(to: CGPoint(x: x + w, y: y + h - rb))
+            path.addArc(tangent1End: CGPoint(x: x + w, y: y + h),
+                        tangent2End: CGPoint(x: x + w - rb, y: y + h), radius: rb)
+            path.addLine(to: CGPoint(x: x + rb, y: y + h))
+            path.addArc(tangent1End: CGPoint(x: x, y: y + h),
+                        tangent2End: CGPoint(x: x, y: y + h - rb), radius: rb)
+            path.addLine(to: CGPoint(x: x, y: y + tr))
+            path.addArc(tangent1End: CGPoint(x: x, y: y),
+                        tangent2End: CGPoint(x: x + tr, y: y), radius: tr)
+            path.closeSubpath()
+            return path
+        }
         path.move(to: CGPoint(x: x, y: y))
         path.addLine(to: CGPoint(x: x + w, y: y))
         // Top-right: concave sweep into the bezel. Skipped when the
@@ -482,12 +509,6 @@ final class IslandView: NSView {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US")
         formatter.dateFormat = "EEE d MMM yyyy HH:mm"
-        return formatter
-    }()
-
-    private static let clockFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm"
         return formatter
     }()
 
@@ -654,10 +675,9 @@ final class IslandView: NSView {
             return
         }
         drawBatteryRing(center: CGPoint(x: 28, y: midY), radius: 10)
-        drawCentered(
-            Self.clockFormatter.string(from: Date()),
-            font: NSFont.systemFont(ofSize: 15, weight: .semibold),
-            color: .white, y: midY - 9)
+        // The plain music pill is idle-sized (140 wide), so it shows
+        // only the ring + waveform — the clock lives in the menu bar
+        // already, and all three would not fit without cramming.
         let waveHeight: CGFloat = bounds.height <= 40 ? 14 : 20
         drawWaveform(in: NSRect(x: bounds.width - 70, y: midY - waveHeight / 2, width: 42, height: waveHeight))
     }
