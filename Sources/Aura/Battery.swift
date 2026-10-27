@@ -7,7 +7,7 @@ import IOKit.ps
 
 /// Battery level via IOKit power sources. Returns nil on Macs without a
 /// battery (desktops) or when the info is unavailable, so callers can
-/// simply hide the ring.
+/// simply hide the icon.
 enum Battery {
     static func fetch() -> (percent: Double, charging: Bool)? {
         guard let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),

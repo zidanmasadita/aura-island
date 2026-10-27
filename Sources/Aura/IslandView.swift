@@ -2,13 +2,13 @@ import AppKit
 import UserNotifications
 
 /// Draws the island in Nusa's visual language: solid black card, white
-/// type, green battery ring, live-looking waveform, album art, and
+/// type, iOS battery icon, live-looking waveform, album art, and
 /// expanded music/lyrics pages modelled on Nusa's music card.
 ///
 /// Layouts (flipped coordinates, y grows downward):
 /// - zen (140x32): the idle face — two white eyes.
 /// - compact: the closed notch, boxy with a concave bezel sweep
-///   (12pt tuck) — plain music 160x32 (ring + clock + waveform),
+///   (12pt tuck) — plain music 160x32 (battery icon + clock + waveform),
 ///   lyrics mode 360x32 (note icon + lyric line).
 /// - expanded, wide and short (never tall): music is the dense Nusa
 ///   music card (520x180: header, artwork, title/artist, progress,
@@ -22,7 +22,7 @@ import UserNotifications
 ///   section, and the dots jump sections.
 /// - closed pill in lyrics mode: once the card was closed from the
 ///   lyrics page, the inactive pill shows a note icon + the current
-///   lyric line — never clock, battery ring, or waveform — until the
+///   lyric line — never clock, battery icon, or waveform — until the
 ///   card is next closed from the music page.
 ///
 /// Position is realtime, not sensor-bound: the sensor's elapsed value
@@ -870,22 +870,36 @@ final class IslandView: NSView {
         }
     }
 
-    /// Battery ring: dim track + green arc for the charge level.
-    private func drawBatteryRing(center: CGPoint, radius: CGFloat) {
+    /// iOS battery icon (status-bar style): white outline + nub,
+    /// fill proportional to the charge level. Fill is white, red
+    /// at 20% and below (iOS low battery), green while charging.
+    /// Hidden when there is no battery (desktops) or the level is
+    /// unknown.
+    private func drawBatteryIcon(center: CGPoint) {
         guard let percent = batteryPercent else { return }
-        let frame = NSRect(x: center.x - radius, y: center.y - radius,
-                           width: radius * 2, height: radius * 2)
-        let track = NSBezierPath(ovalIn: frame)
-        NSColor.white.withAlphaComponent(0.25).setStroke()
-        track.lineWidth = 2.5
-        track.stroke()
-        let arc = NSBezierPath()
-        arc.appendArc(withCenter: center, radius: radius,
-                      startAngle: 90, endAngle: 90 - 360 * CGFloat(percent),
-                      clockwise: true)
-        NSColor.systemGreen.setStroke()
-        arc.lineWidth = 2.5
-        arc.stroke()
+        let level = max(0, min(1, percent))
+        let width: CGFloat = 24
+        let height: CGFloat = 12
+        let x = center.x - width / 2
+        let y = center.y - height / 2
+        // Outline + nub (white).
+        NSColor.white.setStroke()
+        let outline = NSBezierPath(roundedRect: NSRect(x: x, y: y, width: width, height: height),
+                                   xRadius: 3.5, yRadius: 3.5)
+        outline.lineWidth = 1.5
+        outline.stroke()
+        NSColor.white.setFill()
+        NSBezierPath(roundedRect: NSRect(x: x + width + 1, y: center.y - 2.5, width: 2, height: 5),
+                     xRadius: 1, yRadius: 1).fill()
+        // Fill (inset 2pt, proportional to level).
+        let fillColor = batteryCharging ? NSColor.systemGreen
+            : (level <= 0.20 ? NSColor.systemRed : NSColor.white)
+        let fillWidth = (width - 4) * level
+        if fillWidth > 0 {
+            fillColor.setFill()
+            NSBezierPath(roundedRect: NSRect(x: x + 2, y: y + 2, width: fillWidth, height: height - 4),
+                         xRadius: min(1.5, fillWidth / 2), yRadius: min(1.5, fillWidth / 2)).fill()
+        }
     }
 
     private var cachedDominantKey: String?
@@ -1028,7 +1042,7 @@ final class IslandView: NSView {
         }
         // Lyrics mode (card was closed from the lyrics page): note icon
         // + current lyric line, the line centered on the pill — never
-        // clock, battery ring, or waveform. Without a synced line, the
+        // clock, battery icon, or waveform. Without a synced line, the
         // song title stands in.
         if lyricsMode, let session {
             drawSymbol("music.note", size: 20, center: CGPoint(x: 28, y: midY), fallback: "♪")
@@ -1038,15 +1052,15 @@ final class IslandView: NSView {
                          font: font, color: .white, y: midY - 8)
             return
         }
-        // The plain music pill is 160 wide: ring + clock + waveform,
-        // tightened to fit — smaller ring left, clock centered,
-        // narrower waveform at the right edge. All three stay
-        // inside the 12pt tuck (sides at 12 and width-12).
-        // Padding: the ring sits 10pt inside the left edge and the
-        // waveform ends 10pt before the right edge, so the contents
-        // never hug the pill's border (at any width, including
-        // mid-collapse-animation frames).
-        drawBatteryRing(center: CGPoint(x: 30, y: midY), radius: 8)
+        // The plain music pill is 160 wide: battery icon + clock +
+        // waveform, tightened to fit — smaller battery icon left,
+        // clock centered, narrower waveform at the right edge. All
+        // three stay inside the 12pt tuck (sides at 12 and width-12).
+        // Padding: the battery icon sits 6pt inside the left edge
+        // and the waveform ends 10pt before the right edge, so the
+        // contents never hug the pill's border (at any width,
+        // including mid-collapse-animation frames).
+        drawBatteryIcon(center: CGPoint(x: 30, y: midY))
         drawCentered(Self.clockFormatter.string(from: Date()),
                      font: NSFont.systemFont(ofSize: 15, weight: .semibold),
                      color: .white, y: midY - 9)
@@ -1102,8 +1116,8 @@ final class IslandView: NSView {
     /// Header for the card pages, like Nusa's music card: green dot
     /// + date/time, waveform top-right. Used on the music, pomodoro, and sources
     /// pages; the lyrics page has no header at all — no
-    /// clock, no waveform. No battery ring here — the reference card
-    /// has none; the ring lives in the closed state.
+    /// clock, no waveform. No battery icon here — the reference card
+    /// has none; the icon lives in the closed state.
     private func drawCardHeader(width: CGFloat = 640) {
         let dateStr = Self.headerDateFormatter.string(from: Date())
         let dateFont = NSFont.systemFont(ofSize: 13, weight: .medium)
