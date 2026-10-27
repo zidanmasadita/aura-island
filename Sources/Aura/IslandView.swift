@@ -706,8 +706,8 @@ final class IslandView: NSView {
     /// its left side, except when lyricsOpen: like Nusa, opening
     /// lyrics compresses the music part into 340px (title/artist 212,
     /// progress bar 172, header centered on 340, controls centered on
-    /// 170) and the lyrics panel takes the right portion inside the
-    /// same 640-wide card — the card does not grow. The chevron
+    /// 170) and the lyrics panel takes the right portion of the
+    /// slightly wider 700-wide card. The chevron
     /// (which would sit inside the panel) is omitted.
     private func drawMusicCard(_ session: DisplaySession, lyricsOpen: Bool = false) {
         drawCardHeader(width: lyricsOpen ? 340 : 640)
