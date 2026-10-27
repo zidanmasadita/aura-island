@@ -296,6 +296,7 @@ final class IslandView: NSView {
     /// the dots, three-finger swipe, and bubble icon switch it, nothing else reads it.
     private var cardPage: CardPage = .music {
         didSet {
+            if cardPage == .water { ensureWaterStarted() }
             if state == .expanded { onExpandedSizeChanged?(expandedSize) }
             needsDisplay = true
         }
@@ -1796,17 +1797,31 @@ final class IslandView: NSView {
     /// yet). When the countdown hits zero the section shows
     /// "Waktunya minum!" and a system notification fires (the
     /// notification is scheduled alongside the timer, so it
-    /// arrives even if the card is closed).
+    /// arrives even if the card is closed). Notifications are
+    /// skipped when run as a raw binary (no bundle identifier —
+    /// the notification system cannot register it, and calling
+    /// it there crashed the app); the section still works as a
+    /// timer there, and notifications work from the packaged
+    /// Aura.app. The timer is started from cardPage didSet
+    /// (event handling), never from draw.
     private var waterInterval: TimeInterval = 60 * 60
     private var waterEndDate: Date?
 
+    /// Pure (no side effects): the timer is started from
+    /// cardPage didSet (ensureWaterStarted), never from draw.
     private func waterRemainingNow() -> TimeInterval {
-        if waterEndDate == nil {
-            waterEndDate = Date().addingTimeInterval(waterInterval)
-            scheduleWaterNotification()
-        }
         guard let end = waterEndDate else { return waterInterval }
         return max(0, end.timeIntervalSinceNow)
+    }
+
+    /// Starts the water timer on first navigation to the section
+    /// (called from cardPage didSet, i.e. event handling — never
+    /// from draw, so the notification authorization prompt never
+    /// appears mid-draw/mid-animation).
+    private func ensureWaterStarted() {
+        guard waterEndDate == nil else { return }
+        waterEndDate = Date().addingTimeInterval(waterInterval)
+        scheduleWaterNotification()
     }
 
     private func resetWater() {
@@ -1820,21 +1835,46 @@ final class IslandView: NSView {
         resetWater()
     }
 
+    private var waterAuthRequested = false
+    private var waterAuthGranted = false
+
     private func scheduleWaterNotification() {
+        // Notifications need a bundled app (bundle identifier).
+        // Running the raw .build/release binary has none, and the
+        // notification system cannot register it — calling it there
+        // crashed the app on first scroll to water. Skip silently
+        // there (the section still works as a timer); notifications
+        // work from the packaged Aura.app.
+        guard Bundle.main.bundleIdentifier != nil else { return }
         let center = UNUserNotificationCenter.current()
         center.removePendingNotificationRequests(withIdentifiers: ["water-reminder"])
         guard let end = waterEndDate else { return }
+        guard max(0, end.timeIntervalSinceNow) > 0 else { return }
+        if waterAuthGranted {
+            addWaterNotification(center: center)
+        } else if !waterAuthRequested {
+            waterAuthRequested = true
+            center.requestAuthorization(options: [.alert, .sound]) { [weak self] granted, _ in
+                guard let self else { return }
+                self.waterAuthGranted = granted
+                guard granted else { return }
+                self.addWaterNotification(center: center)
+            }
+        }
+        // If requested but not granted (denied, or the prompt is
+        // still showing), do nothing — the grant completion above
+        // schedules it once granted.
+    }
+
+    private func addWaterNotification(center: UNUserNotificationCenter) {
+        guard let end = waterEndDate else { return }
         let remaining = max(0, end.timeIntervalSinceNow)
         guard remaining > 0 else { return }
-        center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
-            guard granted else { return }
-            let content = UNMutableNotificationContent()
-            content.title = "Waktunya minum"
-            content.body = "Minum air sekarang."
-            let trigger = UNTimeIntervalNotificationTrigger(timeInterval: remaining, repeats: false)
-            let request = UNNotificationRequest(identifier: "water-reminder", content: content, trigger: trigger)
-            center.add(request)
-        }
+        let content = UNMutableNotificationContent()
+        content.title = "Waktunya minum"
+        content.body = "Minum air sekarang."
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: remaining, repeats: false)
+        center.add(UNNotificationRequest(identifier: "water-reminder", content: content, trigger: trigger))
     }
 
     /// Pills (same layout as drawn): "Sudah minum" (blue action)
