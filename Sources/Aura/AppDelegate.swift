@@ -307,6 +307,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         UserDefaults.standard.set(current + delta, forKey: "lyricNudge.\(key)")
         applyLyricNudge()
     }
+
+    private func refreshLyricLine() {
         guard sessions.current != nil else {
             islandView.lyricPrev = nil
             islandView.lyricCurrent = nil

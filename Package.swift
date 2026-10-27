@@ -7,7 +7,11 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "Aura",
-            path: "Sources/Aura"
+            path: "Sources/Aura",
+            // The .jxa files are standalone manual-test scripts (run
+            // directly with osascript); the app itself runs the
+            // embedded script strings, so these are not build inputs.
+            exclude: ["now-playing.jxa", "now-playing-artwork.jxa"]
         )
     ]
 )
