@@ -317,10 +317,13 @@ final class IslandView: NSView {
     /// is 160x32 — a bit wider than the idle pill (140x32) so the
     /// ring + clock + waveform are not crammed; the lyrics-mode
     /// pill stays wider (360x32) so the lyric line still fits.
+    /// A live pomodoro takes the 160x32 pill (same size as plain
+    /// music, so starting/stopping it never resizes the pill).
     /// AppDelegate uses this instead of the fixed state size for
     /// compact/split.
     var closedSize: NSSize {
-        lyricsMode ? NSSize(width: 360, height: 32) : NSSize(width: 160, height: 32)
+        if isPomodoroActive { return NSSize(width: 160, height: 32) }
+        return lyricsMode ? NSSize(width: 360, height: 32) : NSSize(width: 160, height: 32)
     }
 
     private enum CardPage { case music, lyrics, pomodoro, sources }
@@ -349,13 +352,15 @@ final class IslandView: NSView {
     /// Rects for the interactive elements of the expanded card.
     /// The bubble toggles music/lyrics. Section arrows are circled
     /// chevrons at the card's left/right edges, mid-height; they move
-    /// to the previous/next section and never open lyrics. The bubble
+    /// to the previous/next section and never open lyrics. Arrows are
+    /// 24px circles in a 6px edge gutter; content is shifted so at
+    /// least 6px of padding separates arrow and content. The bubble
     /// sits further right than the card edge so it does not hug the
     /// corner. Both music pages share the dense row (controls at
     /// y140, bubble y126).
     private var musicBubbleRect: NSRect { NSRect(x: 42, y: 126, width: 28, height: 28) }
-    private var leftArrowRect: NSRect { NSRect(x: 12, y: bounds.height / 2 - 14, width: 28, height: 28) }
-    private var rightArrowRect: NSRect { NSRect(x: bounds.width - 40, y: bounds.height / 2 - 14, width: 28, height: 28) }
+    private var leftArrowRect: NSRect { NSRect(x: 6, y: bounds.height / 2 - 12, width: 24, height: 24) }
+    private var rightArrowRect: NSRect { NSRect(x: bounds.width - 30, y: bounds.height / 2 - 12, width: 24, height: 24) }
 
     // MARK: - Realtime position
 
@@ -590,6 +595,34 @@ final class IslandView: NSView {
         // the controls, picker rows, and pomodoro buttons responded, the
         // rest did nothing.
         onClicked?()
+    }
+
+    /// Trackpad/mouse horizontal swipe switches sections (same as the
+    /// side arrows): swipe left -> next section, swipe right ->
+    /// previous. Accumulates deltaX across the swipe's events; a firm
+    /// swipe (>= 80) switches once, then resets (one swipe = one
+    /// section). Momentum (the coast after a swipe) is ignored so a
+    /// fast swipe never switches twice. Only when expanded (the
+    /// closed pill has no sections). NOTE: the deltaX sign convention
+    /// (left swipe = negative) could not be verified in this VM
+    /// (no trackpad); if the direction feels backwards on the Mac,
+    /// flip the two moveSection signs (one line each).
+    private var swipeAccumulatedX: CGFloat = 0
+    override func scrollWheel(with event: NSEvent) {
+        guard state == .expanded else { return }
+        guard event.momentumPhase == .none else { return }
+        if event.phase == .ended || event.phase == .cancelled {
+            swipeAccumulatedX = 0
+            return
+        }
+        swipeAccumulatedX += event.scrollingDeltaX
+        if swipeAccumulatedX <= -80 {
+            moveSection(by: 1)
+            swipeAccumulatedX = 0
+        } else if swipeAccumulatedX >= 80 {
+            moveSection(by: -1)
+            swipeAccumulatedX = 0
+        }
     }
 
     private func performControl(_ hit: Int) {
@@ -922,6 +955,23 @@ final class IslandView: NSView {
         // tall, and the collapse animation passes through intermediate
         // heights — fixed y values would drift off-center.
         let midY = bounds.height / 2
+        // Pomodoro live (running or paused mid-countdown) takes the
+        // pill over lyrics/music: a running timer is a live activity,
+        // like DynamicNotch's timer indicator. Small ring (mode color,
+        // remaining fraction) + countdown in the 160x32 pill — no
+        // clock, battery, or waveform. Paused reads dimmer (frozen).
+        if isPomodoroActive {
+            let remaining = pomodoroRemainingNow()
+            let fraction = pomodoroDuration > 0 ? max(0, min(1, remaining / pomodoroDuration)) : 0
+            let dim = pomodoroIsRunning ? 1.0 : 0.5
+            drawProgressRing(center: CGPoint(x: 30, y: midY), radius: 8, width: 2,
+                             fraction: fraction, color: pomodoroColor.withAlphaComponent(dim))
+            drawCentered(pomodoroTimeString(remaining),
+                         font: NSFont.systemFont(ofSize: 15, weight: .semibold),
+                         color: pomodoroIsRunning ? .white : NSColor.white.withAlphaComponent(0.7),
+                         y: midY - 9)
+            return
+        }
         // Lyrics mode (card was closed from the lyrics page): note icon
         // + current lyric line, the line centered on the pill — never
         // clock, battery ring, or waveform. Without a synced line, the
@@ -963,6 +1013,11 @@ final class IslandView: NSView {
                              font: NSFont.systemFont(ofSize: 13),
                              color: NSColor.white.withAlphaComponent(0.7),
                              y: bounds.height / 2 - 8)
+                // Still draw dots + arrows: without music the only
+                // usable section is pomodoro, and the user reaches it
+                // from here (arrow right or the pomodoro dot).
+                drawPageDots()
+                drawSectionArrows()
                 return
             }
             switch currentPage {
@@ -1024,20 +1079,20 @@ final class IslandView: NSView {
         // Dense vertical layout, shared by both pages: cover 36,
         // progress 104, controls 140. Only the horizontal compression
         // differs (lyrics page: 340-wide music part).
-        drawArtwork(artworkThumb(for: session), in: NSRect(x: 28, y: 36, width: 56, height: 56), cornerRadius: 12)
+        drawArtwork(artworkThumb(for: session), in: NSRect(x: 36, y: 36, width: 56, height: 56), cornerRadius: 12)
         let textWidth: CGFloat = lyricsOpen ? 212 : 340
         let titleFont = NSFont.boldSystemFont(ofSize: 25)
         drawText(truncated(session.title, toWidth: textWidth, font: titleFont),
-                 font: titleFont, color: .white, at: NSPoint(x: 108, y: 36))
+                 font: titleFont, color: .white, at: NSPoint(x: 116, y: 36))
         let artistFont = NSFont.systemFont(ofSize: 16)
         drawText(truncated(session.artist, toWidth: textWidth, font: artistFont),
                  font: artistFont, color: NSColor.white.withAlphaComponent(0.65),
-                 at: NSPoint(x: 108, y: 68))
+                 at: NSPoint(x: 116, y: 68))
         if lyricsOpen {
-            drawProgress(session, elapsedX: 28, barX: 88, barWidth: 172, rightX: 320,
+            drawProgress(session, elapsedX: 36, barX: 96, barWidth: 164, rightX: 320,
                          y: 104, font: NSFont.systemFont(ofSize: 12), barHeight: 4)
         } else {
-            drawProgress(session, elapsedX: 28, barX: 88, barWidth: 332, rightX: 492,
+            drawProgress(session, elapsedX: 36, barX: 96, barWidth: 324, rightX: 484,
                          y: 104, font: NSFont.systemFont(ofSize: 12), barHeight: 4)
         }
         drawSymbol("ellipsis.bubble.fill", size: 20, center: CGPoint(x: 56, y: 140), fallback: "···")
@@ -1084,7 +1139,7 @@ final class IslandView: NSView {
     /// column on the right of the compressed music part (x 352..688,
     /// 336 wide), inside the slightly extended 700-wide card. The
     /// divider sits beside the song title: the title ends at most at
-    /// 320 (108 + 212), and the divider is at 340.
+    /// 328 (116 + 212), and the divider is at 340.
     /// A long lyric line wraps onto a second line instead of being
     /// cut off with "…", so no lyric is ever truncated mid-line.
     private func drawLyricsPanel() {
@@ -1312,14 +1367,14 @@ final class IslandView: NSView {
             : "Sumber: Pin aktif — klik sumber untuk lepas"
         drawText(header, font: NSFont.systemFont(ofSize: 11),
                  color: NSColor.white.withAlphaComponent(0.55),
-                 at: NSPoint(x: 20, y: startY))
+                 at: NSPoint(x: 40, y: startY))
         var y = startY + 24
         let rowFont = NSFont.systemFont(ofSize: 12)
         for item in sessionsForPicker.prefix(4) {
             let mark = item.id == pinnedId ? "● " : "○ "
             let label = "\(mark)\(item.label) — \(item.title)"
-            drawText(truncated(label, toWidth: 480, font: rowFont),
-                     font: rowFont, color: .white, at: NSPoint(x: 20, y: y))
+            drawText(truncated(label, toWidth: 460, font: rowFont),
+                     font: rowFont, color: .white, at: NSPoint(x: 40, y: y))
             y += 22
         }
     }
@@ -1341,6 +1396,15 @@ final class IslandView: NSView {
     private var pomodoroIsRunning = false
     private var pomodoroEndDate: Date?
     private var pomodoroRemaining: TimeInterval = 25 * 60
+
+    /// True when a pomodoro countdown is live (running, or paused
+    /// mid-countdown). Fresh (full duration, never started) and
+    /// finished (0 remaining) do not count — the pill reverts to
+    /// music/zen then. AppDelegate uses this to keep the pill in
+    /// compact (not zen) while a pomodoro runs without music.
+    var isPomodoroActive: Bool {
+        pomodoroIsRunning || (pomodoroRemaining > 0 && pomodoroRemaining < pomodoroDuration)
+    }
 
     private var pomodoroDuration: TimeInterval {
         pomodoroMode == .focus ? 25 * 60 : 5 * 60
@@ -1422,39 +1486,47 @@ final class IslandView: NSView {
         return 12 + 16 + 6 + textWidth + 12
     }
 
+    /// Progress ring: background circle (white 0.15) + remaining-
+    /// fraction arc (color, clockwise from the top). Built
+    /// point-by-point, not with NSBezierPath arcs, so the direction
+    /// is correct in this flipped view regardless of angle
+    /// conventions. Shared by the big pomodoro ring and the small
+    /// closed-pill ring.
+    private func drawProgressRing(center: CGPoint, radius: CGFloat, width: CGFloat,
+                                  fraction: Double, color: NSColor) {
+        NSColor.white.withAlphaComponent(0.15).setStroke()
+        let bg = NSBezierPath(ovalIn: NSRect(x: center.x - radius, y: center.y - radius,
+                                             width: radius * 2, height: radius * 2))
+        bg.lineWidth = width
+        bg.stroke()
+        guard fraction > 0 else { return }
+        let steps = max(2, Int(fraction * 72))
+        let path = NSBezierPath()
+        for i in 0...steps {
+            let theta = -Double.pi / 2 + (Double(i) / Double(steps)) * fraction * 2 * Double.pi
+            let pt = NSPoint(x: center.x + radius * CGFloat(cos(theta)),
+                             y: center.y + radius * CGFloat(sin(theta)))
+            if i == 0 { path.move(to: pt) } else { path.line(to: pt) }
+        }
+        color.setStroke()
+        path.lineWidth = width
+        path.lineCapStyle = .round
+        path.lineJoinStyle = .round
+        path.stroke()
+    }
+
     private func drawPomodoro() {
         drawCardHeader(width: 640)
         drawText("Pomodoro", font: NSFont.boldSystemFont(ofSize: 20), color: .white, at: NSPoint(x: 28, y: 10))
-        // Progress ring (left): background + remaining arc + tinted
-        // interior + stopwatch. The arc is built point-by-point
-        // (increasing angle from the top, clockwise on screen in this
-        // flipped view) to avoid the flipped-arc direction gotcha in
-        // NSBezierPath/CGContext arcs.
+        // Progress ring (left): background + remaining arc (shared
+        // helper) + tinted interior + stopwatch.
         let ringCenter = CGPoint(x: 130, y: 100)
         let ringRadius: CGFloat = 42
         let ringWidth: CGFloat = 8
-        NSColor.white.withAlphaComponent(0.15).setStroke()
-        let bgRing = NSBezierPath(ovalIn: NSRect(x: ringCenter.x - ringRadius, y: ringCenter.y - ringRadius,
-                                                 width: ringRadius * 2, height: ringRadius * 2))
-        bgRing.lineWidth = ringWidth
-        bgRing.stroke()
         let remaining = pomodoroRemainingNow()
         let fraction = pomodoroDuration > 0 ? max(0, min(1, remaining / pomodoroDuration)) : 0
-        if fraction > 0 {
-            let steps = max(2, Int(fraction * 72))
-            let path = NSBezierPath()
-            for i in 0...steps {
-                let theta = -Double.pi / 2 + (Double(i) / Double(steps)) * Double(fraction) * 2 * Double.pi
-                let pt = NSPoint(x: ringCenter.x + ringRadius * CGFloat(cos(theta)),
-                                 y: ringCenter.y + ringRadius * CGFloat(sin(theta)))
-                if i == 0 { path.move(to: pt) } else { path.line(to: pt) }
-            }
-            pomodoroColor.setStroke()
-            path.lineWidth = ringWidth
-            path.lineCapStyle = .round
-            path.lineJoinStyle = .round
-            path.stroke()
-        }
+        drawProgressRing(center: ringCenter, radius: ringRadius, width: ringWidth,
+                         fraction: fraction, color: pomodoroColor)
         pomodoroColor.withAlphaComponent(0.15).setFill()
         NSBezierPath(ovalIn: NSRect(x: ringCenter.x - 33, y: ringCenter.y - 33, width: 66, height: 66)).fill()
         drawSymbol("stopwatch", size: 36, center: ringCenter, fallback: "◷")
@@ -1496,7 +1568,7 @@ final class IslandView: NSView {
         func arrow(_ rect: NSRect, _ symbol: String, _ fallback: String) {
             NSColor.white.withAlphaComponent(0.18).setFill()
             NSBezierPath(ovalIn: rect).fill()
-            drawSymbol(symbol, size: 16, center: CGPoint(x: rect.midX, y: rect.midY), fallback: fallback)
+            drawSymbol(symbol, size: 14, center: CGPoint(x: rect.midX, y: rect.midY), fallback: fallback)
         }
         arrow(leftArrowRect, "chevron.left", "‹")
         if currentPage != .lyrics {

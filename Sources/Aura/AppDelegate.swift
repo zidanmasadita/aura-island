@@ -128,8 +128,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             // Leaving the island always closes it — including an expanded
             // card, so closing never needs a second click. Playing music
-            // falls back to the closed (compact) state, silence to zen.
-            setState(sessions.current?.isPlaying == true ? .compact : .zen)
+            // falls back to the closed (compact) state, silence to zen —
+            // unless a pomodoro is live, which keeps the pill compact.
+            setState((sessions.current?.isPlaying == true || islandView.isPomodoroActive) ? .compact : .zen)
         }
     }
 
@@ -144,11 +145,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func setState(_ state: IslandState) {
         islandView.state = state
-        // Expanded size follows the card's page (music 640x180,
+        // Expanded size follows the card's page (music 520x180,
         // lyrics 700x180 — same height, only the width grows —
-        // sources 640x220); zen uses its fixed size; compact/split use
-        // the closed size (32 tall; plain music 160 wide,
-        // lyrics mode 360). Setting state first matters: leaving
+        // pomodoro 640x180, sources 640x220); zen uses its fixed size;
+        // compact/split use the closed size (32 tall; plain music and
+        // pomodoro 160 wide, lyrics mode 360). Setting state first matters: leaving
         // expanded updates lyricsMode in didSet before closedSize is
         // read.
         let size: NSSize
@@ -226,8 +227,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             islandView.session = nil
             islandView.clearLyricLines()
             // No session: fall back to idle eyes, unless the card is
-            // open or the cursor is still hovering the island.
-            if (islandView.state == .compact || islandView.state == .split) && !isHovering {
+            // open or the cursor is still hovering the island — or a
+            // pomodoro is live, which keeps the pill compact.
+            if (islandView.state == .compact || islandView.state == .split) && !isHovering && !islandView.isPomodoroActive {
                 setState(.zen)
             }
             return
@@ -256,7 +258,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // broken, because the pill would keep showing eyes until hovered.
         if islandView.state == .zen && current.isPlaying {
             setState(.compact)
-        } else if (islandView.state == .compact || islandView.state == .split) && !current.isPlaying && !isHovering {
+        } else if (islandView.state == .compact || islandView.state == .split) && !current.isPlaying && !isHovering && !islandView.isPomodoroActive {
             setState(.zen)
         }
         let key = "\(current.title)|\(current.artist)"

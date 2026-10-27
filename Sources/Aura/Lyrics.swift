@@ -1,7 +1,8 @@
 import Foundation
 
 /// LRCLIB lyrics client (no API key needed).
-/// https://lrclib.net — same source Nusa uses.
+/// https://lrclib.net — same source Nusa uses. When LRCLIB has
+/// nothing for a song, falls back to lyrics.ovh (plain lyrics).
 final class LyricsClient {
     func fetchLyrics(title: String, artist: String, duration: Double,
                      completion: @escaping ([(time: Double, text: String)]) -> Void) {
@@ -17,10 +18,19 @@ final class LyricsClient {
         var request = URLRequest(url: url)
         request.setValue("Aura-Island/1.0 (macOS)", forHTTPHeaderField: "User-Agent")
         URLSession.shared.dataTask(with: request) { data, _, _ in
+            // LRCLIB has nothing for this song — fall back to lyrics.ovh
+            // (plain lyrics, no timestamps), parsed through the same
+            // even-spacing path as plain LRCLIB results.
+            let fallbackToOvh: () -> Void = {
+                Self.fetchOvhLyrics(title: title, artist: artist) { ovhText in
+                    let ovhLines = Self.parsePlain(ovhText, duration: duration) ?? []
+                    DispatchQueue.main.async { completion(ovhLines) }
+                }
+            }
             guard let data,
                   let array = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]],
                   !array.isEmpty else {
-                DispatchQueue.main.async { completion([]) }
+                fallbackToOvh()
                 return
             }
             // Pick the best version, not just the first hit: LRCLIB
@@ -67,7 +77,40 @@ final class LyricsClient {
             let lines = Self.parseSynced(best["syncedLyrics"] as? String)
                 ?? Self.parsePlain(best["plainLyrics"] as? String, duration: duration)
                 ?? []
+            if lines.isEmpty {
+                fallbackToOvh()
+                return
+            }
             DispatchQueue.main.async { completion(lines) }
+        }.resume()
+    }
+
+    /// lyrics.ovh fallback (no API key): plain lyrics for songs
+    /// LRCLIB does not have at all. Returns nil on any failure
+    /// (network, 404, no lyrics field) — the caller then shows
+    /// nothing, as before. 15s timeout so a slow fallback never
+    /// hangs the lyrics display.
+    private static func fetchOvhLyrics(title: String, artist: String,
+                                       completion: @escaping (String?) -> Void) {
+        var allowed = CharacterSet.urlPathAllowed
+        allowed.remove("/")
+        guard let artistEsc = artist.addingPercentEncoding(withAllowedCharacters: allowed),
+              let titleEsc = title.addingPercentEncoding(withAllowedCharacters: allowed),
+              let url = URL(string: "https://api.lyrics.ovh/v1/\(artistEsc)/\(titleEsc)") else {
+            completion(nil)
+            return
+        }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 15
+        request.setValue("Aura-Island/1.0 (macOS)", forHTTPHeaderField: "User-Agent")
+        URLSession.shared.dataTask(with: request) { data, _, _ in
+            guard let data,
+                  let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  let lyrics = json["lyrics"] as? String, !lyrics.isEmpty else {
+                completion(nil)
+                return
+            }
+            completion(lyrics)
         }.resume()
     }
 
