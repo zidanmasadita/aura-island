@@ -15,7 +15,9 @@ enum IslandState {
     var size: NSSize {
         switch self {
         case .zen: return NSSize(width: 140, height: 32)
-        case .compact, .split: return NSSize(width: 320, height: 64)
+        // Default closed size; lyrics mode uses the view's closedSize
+        // (64 tall) instead, see setState.
+        case .compact, .split: return NSSize(width: 320, height: 32)
         case .expanded: return NSSize(width: 640, height: 220)
         }
     }
@@ -135,8 +137,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func setState(_ state: IslandState) {
         islandView.state = state
         // Expanded size follows the card's page (music/sources 640,
-        // lyrics 940 wide); other states use their fixed size.
-        animator.animate(to: state == .expanded ? islandView.expandedSize : state.size)
+        // lyrics 940 wide); zen uses its fixed size; compact/split use
+        // the closed size — half height, except full height in lyrics
+        // mode. Setting state first matters: leaving expanded updates
+        // lyricsMode in didSet before closedSize is read.
+        let size: NSSize
+        switch state {
+        case .expanded: size = islandView.expandedSize
+        case .zen: size = state.size
+        case .compact, .split: size = islandView.closedSize
+        }
+        animator.animate(to: size)
     }
 
     // MARK: - Polling

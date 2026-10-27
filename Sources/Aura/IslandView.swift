@@ -6,8 +6,9 @@ import AppKit
 ///
 /// Layouts (flipped coordinates, y grows downward):
 /// - zen (140x32): the idle face — two white eyes.
-/// - compact (320x64): the closed notch — battery ring, clock, waveform,
-///   pulled tighter so the gaps between them are not wide.
+/// - compact: the closed notch — 320x32 when playing without lyrics
+///   (battery ring, clock, waveform, tight), 320x64 in lyrics mode
+///   (note icon + lyric line, so the line fits).
 /// - expanded, wide and short (never tall): music is the normal Nusa
 ///   music card (640x220: header, artwork, title/artist, progress,
 ///   controls, chevron, dots); opening lyrics EXTENDS it horizontally
@@ -83,6 +84,14 @@ final class IslandView: NSView {
         }
     }
 
+    /// Size of the closed (compact/split) pill: half height (320x32)
+    /// for plain music playback, full height (320x64) in lyrics mode
+    /// so the lyric line fits. AppDelegate uses this instead of the
+    /// fixed state size for compact/split.
+    var closedSize: NSSize {
+        lyricsMode ? NSSize(width: 320, height: 64) : NSSize(width: 320, height: 32)
+    }
+
     private enum CardPage { case music, lyrics, sources }
 
     /// Pages the dots offer: music + lyrics always, sources only when
@@ -97,7 +106,9 @@ final class IslandView: NSView {
 
     /// Rects for the interactive elements of the expanded card.
     /// The bubble toggles music/lyrics; the chevron advances a page.
-    private var musicBubbleRect: NSRect { NSRect(x: 14, y: 150, width: 28, height: 28) }
+    /// The bubble sits further right than the card edge so it does not
+    /// hug the corner.
+    private var musicBubbleRect: NSRect { NSRect(x: 42, y: 150, width: 28, height: 28) }
     private var chevronRect: NSRect { NSRect(x: 590, y: 96, width: 28, height: 28) }
 
     // MARK: - Realtime position
@@ -613,23 +624,29 @@ final class IslandView: NSView {
     // MARK: - Closed (compact) state
 
     private func drawClosed() {
+        // Positions follow the window height: the closed pill is 32
+        // tall for plain playback and 64 in lyrics mode (see
+        // closedSize), and the collapse animation passes through
+        // intermediate heights — fixed y values would drift off-center.
+        let midY = bounds.height / 2
         // Lyrics mode (card was closed from the lyrics page): note icon
         // + current lyric line — never clock, battery ring, or
         // waveform. Without a synced line, the song title stands in.
         if lyricsMode, let session {
-            drawSymbol("music.note", size: 20, center: CGPoint(x: 28, y: 32), fallback: "♪")
+            drawSymbol("music.note", size: 20, center: CGPoint(x: 28, y: midY), fallback: "♪")
             let line = lyricCurrent ?? session.title
             let font = NSFont.systemFont(ofSize: 13, weight: .medium)
             drawText(truncated(line, toWidth: 236, font: font),
-                     font: font, color: .white, at: NSPoint(x: 56, y: 24))
+                     font: font, color: .white, at: NSPoint(x: 56, y: midY - 8))
             return
         }
-        drawBatteryRing(center: CGPoint(x: 28, y: 32), radius: 10)
+        drawBatteryRing(center: CGPoint(x: 28, y: midY), radius: 10)
         drawCentered(
             Self.clockFormatter.string(from: Date()),
             font: NSFont.systemFont(ofSize: 15, weight: .semibold),
-            color: .white, y: 24)
-        drawWaveform(in: NSRect(x: 250, y: 22, width: 42, height: 20))
+            color: .white, y: midY - 9)
+        let waveHeight: CGFloat = bounds.height <= 40 ? 14 : 20
+        drawWaveform(in: NSRect(x: 250, y: midY - waveHeight / 2, width: 42, height: waveHeight))
     }
 
     // MARK: - Expanded card
@@ -706,7 +723,7 @@ final class IslandView: NSView {
             drawProgress(session, elapsedX: 28, barX: 88, barWidth: 452, rightX: 612,
                          y: 126, font: NSFont.systemFont(ofSize: 12), barHeight: 4)
         }
-        drawSymbol("ellipsis.bubble.fill", size: 20, center: CGPoint(x: 28, y: 164), fallback: "···")
+        drawSymbol("ellipsis.bubble.fill", size: 20, center: CGPoint(x: 56, y: 164), fallback: "···")
         drawSymbol("backward.fill", size: 20, center: CGPoint(x: 268, y: 164), fallback: "‹")
         drawSymbol(session.isPlaying ? "pause.fill" : "play.fill", size: 20,
                    center: CGPoint(x: 320, y: 164), fallback: session.isPlaying ? "❚❚" : "▶")
