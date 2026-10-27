@@ -11,10 +11,10 @@ import AppKit
 ///   waveform), lyrics mode 360x32 (note icon + lyric line).
 /// - expanded, wide and short (never tall): music is the dense Nusa
 ///   music card (640x180: header, artwork, title/artist, progress,
-///   controls, chevron, dots); opening lyrics extends the card
-///   slightly (700x220) and compresses the music part, putting the
-///   lyrics panel on the right, like Nusa; sources is the picker on
-///   the 640x220 footprint. The bubble toggles
+///   controls, chevron, dots); opening lyrics only widens the card
+///   (700x180, same height) and compresses the music part, putting
+///   the lyrics panel on the right, like Nusa; sources is the picker
+///   on the 640x220 footprint. The bubble toggles
 ///   music/lyrics, the chevron advances a page, and the dots jump
 ///   pages.
 /// - closed pill in lyrics mode: once the card was closed from the
@@ -76,24 +76,25 @@ final class IslandView: NSView {
 
     /// Window size for the expanded card, per page. The music card is
     /// the dense 640x180 card (shorter but packed: header, 56px cover,
-    /// progress, controls, dots); sources stays 640x220; lyrics
-    /// extends to 700x220 — like Nusa the music part compresses, and
-    /// the extra 60px goes entirely to the lyrics panel.
+    /// progress, controls, dots); lyrics only widens it to 700x180 —
+    /// the height does not change, so switching pages never moves
+    /// the music part vertically; sources stays 640x220.
     var expandedSize: NSSize {
         switch currentPage {
         case .music: return NSSize(width: 640, height: 180)
-        case .lyrics: return NSSize(width: 700, height: 220)
+        case .lyrics: return NSSize(width: 700, height: 180)
         case .sources: return NSSize(width: 640, height: 220)
         }
     }
 
     /// Size of the closed (compact/split) pill: the plain music pill
-    /// is the same size as the idle pill (140x32); the lyrics-mode
+    /// is 160x32 — a bit wider than the idle pill (140x32) so the
+    /// ring + clock + waveform are not crammed; the lyrics-mode
     /// pill stays wider (360x32) so the lyric line still fits.
     /// AppDelegate uses this instead of the fixed state size for
     /// compact/split.
     var closedSize: NSSize {
-        lyricsMode ? NSSize(width: 360, height: 32) : NSSize(width: 140, height: 32)
+        lyricsMode ? NSSize(width: 360, height: 32) : NSSize(width: 160, height: 32)
     }
 
     private enum CardPage { case music, lyrics, sources }
@@ -111,13 +112,10 @@ final class IslandView: NSView {
     /// Rects for the interactive elements of the expanded card.
     /// The bubble toggles music/lyrics; the chevron advances a page.
     /// The bubble sits further right than the card edge so it does not
-    /// hug the corner. Both follow their row: the dense music card's
-    /// controls sit at y140 (bubble y126), the lyrics page keeps the
-    /// original row at y164 (bubble y150); the chevron sits at the
-    /// dense card's middle (y76) — only the music page has one.
-    private var musicBubbleRect: NSRect {
-        NSRect(x: 42, y: currentPage == .music ? 126 : 150, width: 28, height: 28)
-    }
+    /// hug the corner. Both pages share the dense row (controls at
+    /// y140, bubble y126); the chevron sits at the card's middle
+    /// (y76) — only the music page has one.
+    private var musicBubbleRect: NSRect { NSRect(x: 42, y: 126, width: 28, height: 28) }
     private var chevronRect: NSRect { NSRect(x: 590, y: 76, width: 28, height: 28) }
 
     // MARK: - Realtime position
@@ -193,9 +191,9 @@ final class IslandView: NSView {
     }
 
     /// Dots sit above the bottom edge and follow the window height:
-    /// 20pt on the dense music card (180 tall, tighter bottom margin),
-    /// 36pt on the 220-tall lyrics/sources pages.
-    private var dotsY: CGFloat { bounds.height - (currentPage == .music ? 20 : 36) }
+    /// 20pt on the 180-tall music/lyrics cards (tighter bottom
+    /// margin), 36pt on the 220-tall sources page.
+    private var dotsY: CGFloat { bounds.height - (currentPage == .sources ? 36 : 20) }
 
     private func dotIndex(at point: CGPoint) -> Int? {
         guard point.y >= dotsY - 6 && point.y <= dotsY + 12 else { return nil }
@@ -305,7 +303,7 @@ final class IslandView: NSView {
             // music card's right edge where the chevron lives.
             // Controls are the music card's own row, recentered on the
             // compressed music part (see drawMusicCard).
-            if let hit = controlHit(at: point, centers: [118, 170, 222], yMin: 154, yMax: 174) {
+            if let hit = controlHit(at: point, centers: [118, 170, 222], yMin: 130, yMax: 150) {
                 performControl(hit)
                 return
             }
@@ -683,10 +681,11 @@ final class IslandView: NSView {
             drawMusicCard(session)
             drawPageDots()
         case .lyrics:
-            // Same 640-wide card — opening lyrics does not widen it.
+            // 700x180: same height as the music card, only wider.
             // The music part compresses (title and progress narrower,
             // see drawMusicCard) and the lyrics panel takes the right
-            // portion inside the same card, like Nusa.
+            // portion inside the same card, like Nusa. No header here:
+            // the lyrics page shows no clock or waveform.
             drawMusicCard(session, lyricsOpen: true)
             drawLyricsPanel()
             drawPageDots()
@@ -698,11 +697,10 @@ final class IslandView: NSView {
     }
 
     /// Header for the card pages, like Nusa's music card: green dot
-    /// + date/time, waveform top-right. `width` is the region the
-    /// header belongs to: 640 on the music/sources pages, 340 on the
-    /// lyrics page (where the music part compresses for the panel). No
-    /// battery ring here — the reference card has none; the ring
-    /// lives in the closed state.
+    /// + date/time, waveform top-right. Used on the music and sources
+    /// pages (640 wide); the lyrics page has no header at all — no
+    /// clock, no waveform. No battery ring here — the reference card
+    /// has none; the ring lives in the closed state.
     private func drawCardHeader(width: CGFloat = 640) {
         let dateStr = Self.headerDateFormatter.string(from: Date())
         let dateFont = NSFont.systemFont(ofSize: 13, weight: .medium)
@@ -717,48 +715,46 @@ final class IslandView: NSView {
 
     /// Music card, modelled on Nusa's music card: header, artwork,
     /// big title/artist, full-width progress, controls, and a chevron
-    /// that advances a page. The standalone music page is the dense
-    /// 640x180 card — 56px artwork, tighter gaps — shorter but packed.
-    /// The lyrics page reuses it on its left side with the original
-    /// 220-tall positions, except when lyricsOpen: like Nusa, opening
-    /// lyrics compresses the music part into 340px (title/artist 212,
-    /// progress bar 172, header centered on 340, controls centered on
-    /// 170) and the lyrics panel takes the right portion of the
-    /// slightly wider 700-wide card. The chevron
-    /// (which would sit inside the panel) is omitted.
+    /// that advances a page. The dense 640x180 card — 56px artwork,
+    /// tighter gaps — shorter but packed, shared by the music page
+    /// and the lyrics page's music part (same vertical positions, so
+    /// switching pages never moves it). The lyrics page reuses it
+    /// with lyricsOpen: like Nusa, opening lyrics compresses the
+    /// music part into 340px (title/artist 212, progress bar 172,
+    /// controls centered on 170) and the lyrics panel takes the right
+    /// portion of the slightly wider 700-wide card — and the header
+    /// (clock + waveform) is omitted there. The chevron
+    /// (which would sit inside the panel) is omitted too.
     private func drawMusicCard(_ session: DisplaySession, lyricsOpen: Bool = false) {
-        drawCardHeader(width: lyricsOpen ? 340 : 640)
-        // Dense music page (640x180) vs the original 220-tall layout
-        // reused on the lyrics page's music part: cover 36, progress
-        // 104, controls 140 on the music page; 44, 126, 164 on lyrics.
-        let coverSize: CGFloat = lyricsOpen ? 64 : 56
-        let coverY: CGFloat = lyricsOpen ? 44 : 36
-        let titleY: CGFloat = lyricsOpen ? 44 : 36
-        let artistY: CGFloat = lyricsOpen ? 80 : 68
-        let progressY: CGFloat = lyricsOpen ? 126 : 104
-        let controlsY: CGFloat = lyricsOpen ? 164 : 140
-        drawArtwork(artworkThumb(for: session), in: NSRect(x: 28, y: coverY, width: coverSize, height: coverSize), cornerRadius: 12)
+        // No header on the lyrics page: no clock, no waveform.
+        if !lyricsOpen {
+            drawCardHeader(width: 640)
+        }
+        // Dense vertical layout, shared by both pages: cover 36,
+        // progress 104, controls 140. Only the horizontal compression
+        // differs (lyrics page: 340-wide music part).
+        drawArtwork(artworkThumb(for: session), in: NSRect(x: 28, y: 36, width: 56, height: 56), cornerRadius: 12)
         let textWidth: CGFloat = lyricsOpen ? 212 : 460
         let titleFont = NSFont.boldSystemFont(ofSize: 25)
         drawText(truncated(session.title, toWidth: textWidth, font: titleFont),
-                 font: titleFont, color: .white, at: NSPoint(x: 108, y: titleY))
+                 font: titleFont, color: .white, at: NSPoint(x: 108, y: 36))
         let artistFont = NSFont.systemFont(ofSize: 16)
         drawText(truncated(session.artist, toWidth: textWidth, font: artistFont),
                  font: artistFont, color: NSColor.white.withAlphaComponent(0.65),
-                 at: NSPoint(x: 108, y: artistY))
+                 at: NSPoint(x: 108, y: 68))
         if lyricsOpen {
             drawProgress(session, elapsedX: 28, barX: 88, barWidth: 172, rightX: 320,
-                         y: progressY, font: NSFont.systemFont(ofSize: 12), barHeight: 4)
+                         y: 104, font: NSFont.systemFont(ofSize: 12), barHeight: 4)
         } else {
             drawProgress(session, elapsedX: 28, barX: 88, barWidth: 452, rightX: 612,
-                         y: progressY, font: NSFont.systemFont(ofSize: 12), barHeight: 4)
+                         y: 104, font: NSFont.systemFont(ofSize: 12), barHeight: 4)
         }
-        drawSymbol("ellipsis.bubble.fill", size: 20, center: CGPoint(x: 56, y: controlsY), fallback: "···")
+        drawSymbol("ellipsis.bubble.fill", size: 20, center: CGPoint(x: 56, y: 140), fallback: "···")
         let controls: [CGFloat] = lyricsOpen ? [118, 170, 222] : [268, 320, 372]
-        drawSymbol("backward.fill", size: 20, center: CGPoint(x: controls[0], y: controlsY), fallback: "‹")
+        drawSymbol("backward.fill", size: 20, center: CGPoint(x: controls[0], y: 140), fallback: "‹")
         drawSymbol(session.isPlaying ? "pause.fill" : "play.fill", size: 20,
-                   center: CGPoint(x: controls[1], y: controlsY), fallback: session.isPlaying ? "❚❚" : "▶")
-        drawSymbol("forward.fill", size: 20, center: CGPoint(x: controls[2], y: controlsY), fallback: "›")
+                   center: CGPoint(x: controls[1], y: 140), fallback: session.isPlaying ? "❚❚" : "▶")
+        drawSymbol("forward.fill", size: 20, center: CGPoint(x: controls[2], y: 140), fallback: "›")
         if !lyricsOpen {
             drawSymbol("chevron.right", size: 20, center: CGPoint(x: 604, y: 90), fallback: "›")
         }
@@ -805,10 +801,12 @@ final class IslandView: NSView {
     /// cut off with "…", so no lyric is ever truncated mid-line.
     private func drawLyricsPanel() {
         // Divider between the compressed music part (left) and the panel.
+        // 28..158: it stops 2pt above the dots (y160) so it never
+        // crosses them.
         NSColor.white.withAlphaComponent(0.12).setFill()
-        NSRect(x: 340, y: 44, width: 1, height: 132).fill()
+        NSRect(x: 340, y: 28, width: 1, height: 130).fill()
         // Lyrics column: dim previous, bold current, dim next,
-        // stacked as a block centered in the panel (44..176).
+        // stacked as a block centered in the panel (28..158).
         let x: CGFloat = 352
         let width: CGFloat = 336
         struct Entry { let lines: [String]; let font: NSFont; let color: NSColor }
@@ -832,7 +830,7 @@ final class IslandView: NSView {
             drawText("Lirik tidak tersedia",
                      font: NSFont.systemFont(ofSize: 14),
                      color: NSColor.white.withAlphaComponent(0.4),
-                     at: NSPoint(x: x, y: 97))
+                     at: NSPoint(x: x, y: 81))
             return
         }
         // Stack the entries with a small fixed gap that shrinks to
@@ -843,8 +841,8 @@ final class IslandView: NSView {
         }
         let textHeight = entries.reduce(0) { $0 + CGFloat($1.lines.count) * lineHeight($1.font) }
         let gapCount = max(0, entries.count - 1)
-        let gap: CGFloat = gapCount > 0 ? min(10, max(0, (132 - textHeight) / CGFloat(gapCount))) : 0
-        var y = 44 + (132 - (textHeight + gap * CGFloat(gapCount))) / 2
+        let gap: CGFloat = gapCount > 0 ? min(10, max(0, (130 - textHeight) / CGFloat(gapCount))) : 0
+        var y = 28 + (130 - (textHeight + gap * CGFloat(gapCount))) / 2
         for entry in entries {
             for line in entry.lines {
                 drawText(line, font: entry.font, color: entry.color, at: NSPoint(x: x, y: y))
