@@ -18,9 +18,10 @@ enum CapsLock {
     }
 }
 
-/// Default output volume (0-1) + mute. Virtual master volume first,
-/// channel 1 scalar as fallback (some devices expose no master).
-/// Mute is best effort: unreadable means not muted.
+/// Default output volume (0-1) + mute. Master volume scalar
+/// first, channel 1 scalar as fallback (some devices expose no
+/// master control). Mute is best effort: unreadable means not
+/// muted.
 enum Volume {
     static func fetch() -> (level: Double, muted: Bool)? {
         var device = AudioDeviceID(0)
@@ -29,21 +30,21 @@ enum Volume {
             mSelector: kAudioHardwarePropertyDefaultOutputDevice,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain)
-        guard AudioObjectGetPropertyData(kAudioObjectSystemObject, &address, 0, nil, &size, &device) == noErr else {
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &device) == noErr else {
             return nil
         }
+        // The virtual-master selector is not exposed to Swift, so
+        // the master scalar (element 0) is the primary read and
+        // channel 1 is the fallback for devices with no master.
         var level: Float32 = 0
         size = UInt32(MemoryLayout<Float32>.size)
         address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwareServiceDeviceProperty_VirtualMasterVolume,
+            mSelector: kAudioDevicePropertyVolumeScalar,
             mScope: kAudioDevicePropertyScopeOutput,
             mElement: kAudioObjectPropertyElementMain)
         var status = AudioObjectGetPropertyData(device, &address, 0, nil, &size, &level)
         if status != noErr {
-            address = AudioObjectPropertyAddress(
-                mSelector: kAudioDevicePropertyVolumeScalar,
-                mScope: kAudioDevicePropertyScopeOutput,
-                mElement: 1)
+            address.mElement = 1
             status = AudioObjectGetPropertyData(device, &address, 0, nil, &size, &level)
             guard status == noErr else { return nil }
         }
@@ -75,7 +76,7 @@ enum Brightness {
         var service = IOIteratorNext(iterator)
         while service != 0 {
             var value: Float = 0
-            if IODisplayGetFloatParameter(service, 0, kIODisplayBrightnessKey, &value) == kIOReturnSuccess {
+            if IODisplayGetFloatParameter(service, 0, kIODisplayBrightnessKey as CFString, &value) == kIOReturnSuccess {
                 let brightness = Double(value)
                 IOObjectRelease(service)
                 return brightness
