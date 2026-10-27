@@ -604,14 +604,6 @@ final class IslandView: NSView {
                 showWaterSettingsAlert()
                 return
             }
-            if buttons.prev.contains(point) {
-                moveWaterDay(by: -1)
-                return
-            }
-            if buttons.next.contains(point) {
-                moveWaterDay(by: 1)
-                return
-            }
         case .sources:
             // Picker rows: header at y 64, rows from y 88, height 22, max 4.
             if point.y >= 88 {
@@ -1803,9 +1795,9 @@ final class IslandView: NSView {
     /// today's intake vs a daily goal (default 1.5 L), a progress
     /// bar, a notification toggle, Drink (logs one glass) and
     /// Settings (goal, glass size, reminder interval), plus an
-    /// hourly bar chart for the viewed day. Arrows move between
-    /// days (next is capped at today); Drink always logs to today
-    /// and jumps the view back to today. Intake + settings persist
+    /// hourly bar chart for today. Today only (no day navigation
+    /// — the date arrows were removed on user request). Intake +
+    /// settings persist
     /// in UserDefaults (key AuraWaterData) and reset per day. The
     /// reminder itself is a wall-clock timer (started from cardPage
     /// didSet, never from draw) that fires one system notification
@@ -1835,16 +1827,9 @@ final class IslandView: NSView {
         f.dateFormat = "EEE d MMM yyyy"
         return f
     }()
-    private static let waterDayLabelFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US")
-        f.dateFormat = "EEE d MMM"
-        return f
-    }()
 
     private var waterStore = WaterStore()
     private var waterStoreLoaded = false
-    private var waterViewDate = Date()
     private var waterEndDate: Date?
 
     private func loadWaterStoreIfNeeded() {
@@ -1866,10 +1851,7 @@ final class IslandView: NSView {
         Self.waterDayKeyFormatter.string(from: date)
     }
 
-    private var waterViewKey: String { waterDayKey(waterViewDate) }
-    private var waterIsViewingToday: Bool {
-        Calendar.current.isDate(waterViewDate, inSameDayAs: Date())
-    }
+    private var waterTodayKey: String { waterDayKey(Date()) }
     private func waterTotal(forKey key: String) -> Int {
         waterStore.days[key]?.hourly.values.reduce(0, +) ?? 0
     }
@@ -1897,9 +1879,7 @@ final class IslandView: NSView {
     private var waterAuthRequested = false
     private var waterAuthGranted = false
 
-    /// Logs one glass to TODAY (always today, even when viewing
-    /// a past day) and jumps the view back to today, so the new
-    /// total is visible immediately. Also resets the reminder.
+    /// Logs one glass to today. Also resets the reminder.
     private func drinkWater() {
         loadWaterStoreIfNeeded()
         let key = waterDayKey(Date())
@@ -1908,7 +1888,6 @@ final class IslandView: NSView {
         day.hourly[hour, default: 0] += waterStore.glassMl
         waterStore.days[key] = day
         saveWaterStore()
-        waterViewDate = Date()
         resetWaterTimer()
         needsDisplay = true
     }
@@ -1931,15 +1910,6 @@ final class IslandView: NSView {
             // skipping the cancel is a no-op there.
             UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["water-reminder"])
         }
-        needsDisplay = true
-    }
-
-    private func moveWaterDay(by days: Int) {
-        guard let next = Calendar.current.date(byAdding: .day, value: days, to: waterViewDate) else { return }
-        if days > 0 && Calendar.current.compare(next, to: Date(), toGranularity: .day) == .orderedDescending {
-            return // Next is capped at today.
-        }
-        waterViewDate = next
         needsDisplay = true
     }
 
@@ -2031,9 +2001,8 @@ final class IslandView: NSView {
     }
 
     /// Hit rects (same as drawn): toggle (top-right of the left
-    /// column), Drink + Settings pills (bottom row, left column),
-    /// day arrows (bottom corners, clear of the right-edge dots).
-    private func waterButtonRects() -> (toggle: NSRect, drink: NSRect, settings: NSRect, prev: NSRect, next: NSRect) {
+    /// column), Drink + Settings pills (bottom row, left column).
+    private func waterButtonRects() -> (toggle: NSRect, drink: NSRect, settings: NSRect) {
         let font = NSFont.systemFont(ofSize: 14, weight: .medium)
         func pillWidth(_ label: String) -> CGFloat {
             let w = (label as NSString).size(withAttributes: [.font: font]).width
@@ -2042,9 +2011,7 @@ final class IslandView: NSView {
         let toggle = NSRect(x: 284, y: 54, width: 56, height: 32)
         let drink = NSRect(x: 48, y: 132, width: pillWidth("Drink"), height: 28)
         let settings = NSRect(x: drink.maxX + 8, y: 132, width: pillWidth("Settings"), height: 28)
-        let prev = NSRect(x: 8, y: 132, width: 28, height: 28)
-        let next = NSRect(x: 604, y: 132, width: 28, height: 28)
-        return (toggle, drink, settings, prev, next)
+        return (toggle, drink, settings)
     }
 
     private func drawWaterHeader() {
@@ -2063,7 +2030,7 @@ final class IslandView: NSView {
         // Date (viewed day) + time (now, the clock), 13pt.
         let dateFont = NSFont.systemFont(ofSize: 13, weight: .medium)
         let timeFont = NSFont.systemFont(ofSize: 13, weight: .bold)
-        let dateStr = Self.waterDateFormatter.string(from: waterViewDate)
+        let dateStr = Self.waterDateFormatter.string(from: Date())
         let timeStr = Self.clockFormatter.string(from: Date())
         let dateX = ringCenter.x + 20
         drawText(dateStr, font: dateFont, color: .white, at: NSPoint(x: dateX, y: 14))
@@ -2077,7 +2044,7 @@ final class IslandView: NSView {
         // x390-592, baseline y150, top y50), y labels on the left,
         // x labels 00/06/12/18 below. Scale is at least 400 ml (like
         // the reference) so bars never clip.
-        let hourly = waterHourly(forKey: waterViewKey)
+        let hourly = waterHourly(forKey: waterTodayKey)
         let maxHour = hourly.values.max() ?? 0
         let scale = max(400, maxHour)
         let barsLeft: CGFloat = 390
@@ -2134,7 +2101,7 @@ final class IslandView: NSView {
     private func drawWater() {
         loadWaterStoreIfNeeded()
         drawWaterHeader()
-        let total = waterTotal(forKey: waterViewKey)
+        let total = waterTotal(forKey: waterTodayKey)
         let goal = waterStore.goalMl
         // Big number + goal (left column, x48).
         let totalFont = NSFont.boldSystemFont(ofSize: 44)
@@ -2144,7 +2111,7 @@ final class IslandView: NSView {
         drawText("/ \(formatLiters(goal)) L", font: NSFont.systemFont(ofSize: 18, weight: .medium),
                  color: NSColor.white.withAlphaComponent(0.5), at: NSPoint(x: 48 + totalW + 8, y: 61))
         // Day label + percent + goal reached (y100).
-        let dayLabel = waterIsViewingToday ? "Today" : Self.waterDayLabelFormatter.string(from: waterViewDate)
+        let dayLabel = "Today"
         let percent = goal > 0 ? Int((Double(total) / Double(goal) * 100).rounded()) : 0
         let labelFont = NSFont.systemFont(ofSize: 14, weight: .medium)
         let percentFont = NSFont.systemFont(ofSize: 14, weight: .semibold)
@@ -2201,16 +2168,7 @@ final class IslandView: NSView {
                  fill: NSColor.white.withAlphaComponent(0.10),
                  iconColor: NSColor.white.withAlphaComponent(0.75),
                  textColor: NSColor.white.withAlphaComponent(0.75))
-        // Chart (right column) + day arrows (bottom corners).
+        // Chart (right column).
         drawWaterChart()
-        let atToday = waterIsViewingToday
-        for (rect, symbol, fallback, dimmed) in [(buttons.prev, "chevron.left", "‹", false),
-                                                 (buttons.next, "chevron.right", "›", atToday)] {
-            (dimmed ? NSColor.white.withAlphaComponent(0.05) : NSColor.white.withAlphaComponent(0.10)).setFill()
-            NSBezierPath(ovalIn: rect).fill()
-            drawSymbol(symbol, size: 14, center: CGPoint(x: rect.midX, y: rect.midY),
-                       fallback: fallback,
-                       color: dimmed ? NSColor.white.withAlphaComponent(0.3) : .white)
-        }
     }
 }
