@@ -16,7 +16,7 @@ enum IslandState {
         switch self {
         case .zen: return NSSize(width: 140, height: 32)
         case .compact, .split: return NSSize(width: 320, height: 64)
-        case .expanded: return NSSize(width: 640, height: 260)
+        case .expanded: return NSSize(width: 640, height: 220)
         }
     }
 }

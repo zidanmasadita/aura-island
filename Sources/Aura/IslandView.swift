@@ -9,12 +9,16 @@ import AppKit
 /// - compact (320x64): the closed notch — battery ring, clock, waveform,
 ///   pulled tighter so the gaps between them are not wide.
 /// - expanded, wide and short (never tall): music is the normal Nusa
-///   music card (640x260: header, artwork, title/artist, progress,
+///   music card (640x220: header, artwork, title/artist, progress,
 ///   controls, chevron, dots); opening lyrics EXTENDS it horizontally
-///   (940x260: the same music card plus a lyrics panel on the right,
+///   (940x220: the same music card plus a lyrics panel on the right,
 ///   same height); sources is the picker on the music card's footprint
-///   (640x260). The bubble toggles music/lyrics, the chevron advances
+///   (640x220). The bubble toggles music/lyrics, the chevron advances
 ///   a page, and the dots jump pages.
+/// - closed pill in lyrics mode: once the card was closed from the
+///   lyrics page, the inactive pill shows a note icon + the current
+///   lyric line — never clock, battery ring, or waveform — until the
+///   card is next closed from the music page.
 ///
 /// Position is realtime, not sensor-bound: the sensor's elapsed value
 /// (Chrome's especially) is a snapshot that does not advance while a
@@ -27,12 +31,24 @@ import AppKit
 final class IslandView: NSView {
     var state: IslandState = .zen {
         didSet {
+            // Remember whether the card was on lyrics when it closed:
+            // the inactive pill then shows lyrics instead of clock/
+            // battery/waveform, until the card is next closed from the
+            // music page. Only a real exit from expanded snapshots this
+            // — redundant sets (hover re-asserting compact) must not
+            // clear it.
+            if oldValue == .expanded && state != .expanded {
+                lyricsMode = (cardPage == .lyrics)
+            }
             // Leaving the expanded card always returns to the music
             // page, so reopening never lands on a stale lyrics/sources page.
             if state != .expanded { cardPage = .music }
             needsDisplay = true
         }
     }
+    /// True when the card was last closed from the lyrics page: the
+    /// inactive pill then shows lyrics, not clock/battery/waveform.
+    private var lyricsMode = false
     var session: DisplaySession? {
         didSet {
             updatePositionAnchor()
@@ -57,13 +73,13 @@ final class IslandView: NSView {
     }
 
     /// Window size for the expanded card, per page: music and sources
-    /// share the 640x260 card; lyrics extends the music card
-    /// horizontally to 940x260 (same height, lyrics panel on the right).
+    /// share the 640x220 card; lyrics extends the music card
+    /// horizontally to 940x220 (same height, lyrics panel on the right).
     var expandedSize: NSSize {
         switch currentPage {
-        case .music: return NSSize(width: 640, height: 260)
-        case .lyrics: return NSSize(width: 940, height: 260)
-        case .sources: return NSSize(width: 640, height: 260)
+        case .music: return NSSize(width: 640, height: 220)
+        case .lyrics: return NSSize(width: 940, height: 220)
+        case .sources: return NSSize(width: 640, height: 220)
         }
     }
 
@@ -81,8 +97,8 @@ final class IslandView: NSView {
 
     /// Rects for the interactive elements of the expanded card.
     /// The bubble toggles music/lyrics; the chevron advances a page.
-    private var musicBubbleRect: NSRect { NSRect(x: 14, y: 192, width: 28, height: 28) }
-    private var chevronRect: NSRect { NSRect(x: 590, y: 116, width: 28, height: 28) }
+    private var musicBubbleRect: NSRect { NSRect(x: 14, y: 150, width: 28, height: 28) }
+    private var chevronRect: NSRect { NSRect(x: 590, y: 96, width: 28, height: 28) }
 
     // MARK: - Realtime position
 
@@ -157,7 +173,7 @@ final class IslandView: NSView {
     }
 
     /// Dots sit 36pt above the bottom edge, so they follow the window
-    /// height (all card pages are 260 tall now).
+    /// height (all card pages are 220 tall now).
     private var dotsY: CGFloat { bounds.height - 36 }
 
     private func dotIndex(at point: CGPoint) -> Int? {
@@ -253,7 +269,7 @@ final class IslandView: NSView {
                 advancePage()
                 return
             }
-            if let hit = controlHit(at: point, centers: [268, 320, 372], yMin: 196, yMax: 216) {
+            if let hit = controlHit(at: point, centers: [268, 320, 372], yMin: 154, yMax: 174) {
                 performControl(hit)
                 return
             }
@@ -270,14 +286,14 @@ final class IslandView: NSView {
             }
             // Controls are the music card's own row (the lyrics page
             // keeps the full music card on its left).
-            if let hit = controlHit(at: point, centers: [268, 320, 372], yMin: 196, yMax: 216) {
+            if let hit = controlHit(at: point, centers: [268, 320, 372], yMin: 154, yMax: 174) {
                 performControl(hit)
                 return
             }
         case .sources:
-            // Picker rows: header at y 80, rows from y 104, height 26, max 4.
-            if point.y >= 104 {
-                let index = Int((point.y - 104) / 26)
+            // Picker rows: header at y 64, rows from y 88, height 22, max 4.
+            if point.y >= 88 {
+                let index = Int((point.y - 88) / 22)
                 if index >= 0 && index < min(sessionsForPicker.count, 4) {
                     let picked = sessionsForPicker[index]
                     if picked.id == pinnedId {
@@ -599,6 +615,17 @@ final class IslandView: NSView {
     // MARK: - Closed (compact) state
 
     private func drawClosed() {
+        // Lyrics mode (card was closed from the lyrics page): note icon
+        // + current lyric line — never clock, battery ring, or
+        // waveform. Without a synced line, the song title stands in.
+        if lyricsMode, let session {
+            drawSymbol("music.note", size: 20, center: CGPoint(x: 28, y: 32), fallback: "♪")
+            let line = lyricCurrent ?? session.title
+            let font = NSFont.systemFont(ofSize: 13, weight: .medium)
+            drawText(truncated(line, toWidth: 236, font: font),
+                     font: font, color: .white, at: NSPoint(x: 56, y: 24))
+            return
+        }
         drawBatteryRing(center: CGPoint(x: 28, y: 32), radius: 10)
         drawCentered(
             Self.clockFormatter.string(from: Date()),
@@ -629,7 +656,7 @@ final class IslandView: NSView {
             drawPageDots()
         case .sources:
             drawCardHeader()
-            drawPicker(startY: 80)
+            drawPicker(startY: 64)
             drawPageDots()
         }
     }
@@ -647,33 +674,35 @@ final class IslandView: NSView {
         let groupWidth = dateWidth + 16
         let groupX = (640 - groupWidth) / 2
         NSColor.systemGreen.setFill()
-        NSBezierPath(ovalIn: NSRect(x: groupX, y: 21, width: 8, height: 8)).fill()
-        drawText(dateStr, font: dateFont, color: .white, at: NSPoint(x: groupX + 16, y: 18))
-        drawWaveform(in: NSRect(x: 572, y: 18, width: 48, height: 18))
+        NSBezierPath(ovalIn: NSRect(x: groupX, y: 17, width: 8, height: 8)).fill()
+        drawText(dateStr, font: dateFont, color: .white, at: NSPoint(x: groupX + 16, y: 14))
+        drawWaveform(in: NSRect(x: 572, y: 14, width: 48, height: 16))
     }
 
-    /// Music card (640x260), modelled on Nusa's music card: header,
+    /// Music card (640x220), modelled on Nusa's music card: header,
     /// artwork, big title/artist, full-width progress, controls, and
-    /// a chevron that advances a page. This is the normal active card;
-    /// the lyrics page reuses it unchanged on its left side.
+    /// a chevron that advances a page. Compressed vertically — smaller
+    /// artwork, tighter gaps — so the card does not reach far down.
+    /// This is the normal active card; the lyrics page reuses it
+    /// unchanged on its left side.
     private func drawMusicCard(_ session: DisplaySession) {
         drawCardHeader()
-        drawArtwork(artworkThumb(for: session), in: NSRect(x: 28, y: 52, width: 92, height: 92), cornerRadius: 14)
+        drawArtwork(artworkThumb(for: session), in: NSRect(x: 28, y: 44, width: 64, height: 64), cornerRadius: 12)
         let titleFont = NSFont.boldSystemFont(ofSize: 25)
         drawText(truncated(session.title, toWidth: 460, font: titleFont),
-                 font: titleFont, color: .white, at: NSPoint(x: 140, y: 56))
+                 font: titleFont, color: .white, at: NSPoint(x: 108, y: 44))
         let artistFont = NSFont.systemFont(ofSize: 16)
         drawText(truncated(session.artist, toWidth: 460, font: artistFont),
                  font: artistFont, color: NSColor.white.withAlphaComponent(0.65),
-                 at: NSPoint(x: 140, y: 92))
+                 at: NSPoint(x: 108, y: 80))
         drawProgress(session, elapsedX: 28, barX: 88, barWidth: 452, rightX: 612,
-                     y: 164, font: NSFont.systemFont(ofSize: 12), barHeight: 4)
-        drawSymbol("ellipsis.bubble.fill", size: 20, center: CGPoint(x: 28, y: 206), fallback: "···")
-        drawSymbol("backward.fill", size: 20, center: CGPoint(x: 268, y: 206), fallback: "‹")
+                     y: 126, font: NSFont.systemFont(ofSize: 12), barHeight: 4)
+        drawSymbol("ellipsis.bubble.fill", size: 20, center: CGPoint(x: 28, y: 164), fallback: "···")
+        drawSymbol("backward.fill", size: 20, center: CGPoint(x: 268, y: 164), fallback: "‹")
         drawSymbol(session.isPlaying ? "pause.fill" : "play.fill", size: 20,
-                   center: CGPoint(x: 320, y: 206), fallback: session.isPlaying ? "❚❚" : "▶")
-        drawSymbol("forward.fill", size: 20, center: CGPoint(x: 372, y: 206), fallback: "›")
-        drawSymbol("chevron.right", size: 20, center: CGPoint(x: 604, y: 130), fallback: "›")
+                   center: CGPoint(x: 320, y: 164), fallback: session.isPlaying ? "❚❚" : "▶")
+        drawSymbol("forward.fill", size: 20, center: CGPoint(x: 372, y: 164), fallback: "›")
+        drawSymbol("chevron.right", size: 20, center: CGPoint(x: 604, y: 110), fallback: "›")
     }
 
     private var cachedThumbKey: String?
@@ -710,11 +739,11 @@ final class IslandView: NSView {
 
     /// Lyrics panel for the lyrics page: a divider, then the lyrics
     /// column on the right of the music card (x 664..916). The panel
-    /// extends the card horizontally only — same 260 height as music.
+    /// extends the card horizontally only — same 220 height as music.
     private func drawLyricsPanel() {
         // Divider between the music card (left 640) and the panel.
         NSColor.white.withAlphaComponent(0.12).setFill()
-        NSRect(x: 648, y: 52, width: 1, height: 176).fill()
+        NSRect(x: 648, y: 44, width: 1, height: 132).fill()
         // Lyrics column: dim previous, bold current, dim next,
         // vertically centered in the panel.
         let x: CGFloat = 664
@@ -723,23 +752,23 @@ final class IslandView: NSView {
             let font = NSFont.systemFont(ofSize: 16)
             drawText(truncated(prev, toWidth: width, font: font),
                      font: font, color: NSColor.white.withAlphaComponent(0.35),
-                     at: NSPoint(x: x, y: 97))
+                     at: NSPoint(x: x, y: 67))
         }
         if let current = lyricCurrent {
             let font = NSFont.boldSystemFont(ofSize: 21)
             drawText(truncated(current, toWidth: width, font: font),
-                     font: font, color: .white, at: NSPoint(x: x, y: 127))
+                     font: font, color: .white, at: NSPoint(x: x, y: 97))
         } else {
             drawText("Lirik tidak tersedia",
                      font: NSFont.systemFont(ofSize: 14),
                      color: NSColor.white.withAlphaComponent(0.4),
-                     at: NSPoint(x: x, y: 127))
+                     at: NSPoint(x: x, y: 97))
         }
         if let next = lyricNext {
             let font = NSFont.systemFont(ofSize: 16)
             drawText(truncated(next, toWidth: width, font: font),
                      font: font, color: NSColor.white.withAlphaComponent(0.45),
-                     at: NSPoint(x: x, y: 164))
+                     at: NSPoint(x: x, y: 134))
         }
     }
 
@@ -827,7 +856,7 @@ final class IslandView: NSView {
             let label = "\(mark)\(item.label) — \(item.title)"
             drawText(truncated(label, toWidth: 480, font: rowFont),
                      font: rowFont, color: .white, at: NSPoint(x: 20, y: y))
-            y += 26
+            y += 22
         }
     }
 }
