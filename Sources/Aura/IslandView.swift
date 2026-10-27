@@ -1,18 +1,26 @@
 import AppKit
 
 /// Draws the island in Nusa's visual language: solid black card, white
-/// type, green battery ring, live-looking waveform, album art, and a
-/// split lyrics column in the expanded card.
+/// type, green battery ring, live-looking waveform, album art, and
+/// expanded music/lyrics pages modelled on Nusa's music card.
 ///
 /// Layouts (flipped coordinates, y grows downward):
 /// - zen (140x32): the idle face — two white eyes.
 /// - compact (380x64): the closed notch — battery ring, clock, waveform.
-/// - expanded (520x360): header (battery, date+time, waveform), media row
-///   (artwork, title/artist, lyrics column), progress + times, controls,
-///   then the session picker ("pilih active").
+/// - expanded (520x360): header (green dot, date+time, waveform), then
+///   one of three pages — music (artwork, title/artist, full-width
+///   progress, controls, chevron, page dots), lyrics (mini player +
+///   lyrics column), sources (the session picker, "pilih active").
+///   The chevron advances pages, the dots jump to a page, and the
+///   speech-bubble icon toggles music/lyrics.
 final class IslandView: NSView {
     var state: IslandState = .zen {
-        didSet { needsDisplay = true }
+        didSet {
+            // Leaving the expanded card always returns to the music
+            // page, so reopening never lands on a stale lyrics/sources page.
+            if state != .expanded { cardPage = .music }
+            needsDisplay = true
+        }
     }
     var session: DisplaySession? {
         didSet { needsDisplay = true }
@@ -24,6 +32,69 @@ final class IslandView: NSView {
     var pinnedId: String?
     var batteryPercent: Double?
     var batteryCharging: Bool = false
+
+    /// The expanded card's current page. View-internal display state;
+    /// the chevron, dots, and bubble icon switch it, nothing else reads it.
+    private var cardPage: CardPage = .music
+
+    private enum CardPage { case music, lyrics, sources }
+
+    /// Pages the dots offer: music + lyrics always, sources only when
+    /// there is more than one session to choose from.
+    private var availablePages: [CardPage] {
+        sessionsForPicker.count > 1 ? [.music, .lyrics, .sources] : [.music, .lyrics]
+    }
+
+    private var currentPage: CardPage {
+        availablePages.contains(cardPage) ? cardPage : .music
+    }
+
+    private func advancePage() {
+        let pages = availablePages
+        let index = pages.firstIndex(of: currentPage) ?? 0
+        cardPage = pages[(index + 1) % pages.count]
+        needsDisplay = true
+    }
+
+    /// Rects for the interactive elements of the expanded card.
+    private var chevronRect: NSRect { NSRect(x: 464, y: 88, width: 28, height: 28) }
+    private var musicBubbleRect: NSRect { NSRect(x: 18, y: 214, width: 28, height: 28) }
+    private var lyricsBubbleRect: NSRect { NSRect(x: 14, y: 176, width: 28, height: 28) }
+
+    /// Which control (0 = previous, 1 = play/pause, 2 = next) a point hits,
+    /// given the three control centers and the row's y range. Nil outside.
+    private func controlHit(at point: CGPoint, centers: [CGFloat], yMin: CGFloat, yMax: CGFloat) -> Int? {
+        guard point.y >= yMin && point.y <= yMax else { return nil }
+        for (i, cx) in centers.enumerated() {
+            if point.x >= cx - 20 && point.x <= cx + 20 { return i }
+        }
+        return nil
+    }
+
+    /// Visual rects of the page dots (active = wide dash, rest = dots).
+    private func dotRects() -> [NSRect] {
+        let pages = availablePages
+        let active = pages.firstIndex(of: currentPage) ?? 0
+        var total: CGFloat = 0
+        for i in pages.indices { total += (i == active ? 16 : 6) + 12 }
+        total -= 12
+        var x = (bounds.width - total) / 2
+        var rects: [NSRect] = []
+        for i in pages.indices {
+            let w: CGFloat = i == active ? 16 : 6
+            rects.append(NSRect(x: x, y: 324, width: w, height: 6))
+            x += w + 12
+        }
+        return rects
+    }
+
+    private func dotIndex(at point: CGPoint) -> Int? {
+        guard point.y >= 318 && point.y <= 336 else { return nil }
+        for (i, rect) in dotRects().enumerated() {
+            if point.x >= rect.minX - 3 && point.x <= rect.maxX + 3 { return i }
+        }
+        return nil
+    }
 
     var onHoverChanged: ((Bool) -> Void)?
     var onClicked: (() -> Void)?
@@ -85,29 +156,66 @@ final class IslandView: NSView {
             return
         }
         let point = convert(event.locationInWindow, from: nil)
-        // Controls row: y 160...196.
-        if point.y >= 160 && point.y <= 196 {
-            let cx = bounds.width / 2
-            if point.x >= cx - 70 && point.x < cx - 20 {
-                onPrevious?()
-            } else if point.x >= cx - 20 && point.x <= cx + 20 {
-                onPlayPause?()
-            } else if point.x > cx + 20 && point.x <= cx + 70 {
-                onNext?()
+        // Page dots (all pages): jump straight to that page.
+        if let index = dotIndex(at: point) {
+            let pages = availablePages
+            if index < pages.count {
+                cardPage = pages[index]
+                needsDisplay = true
             }
             return
         }
-        // Picker rows start at y 240, row height 26, max 4 rows.
-        if point.y >= 240 {
-            let index = Int((point.y - 240) / 26)
-            if index >= 0 && index < min(sessionsForPicker.count, 4) {
-                let picked = sessionsForPicker[index]
-                if picked.id == pinnedId {
-                    onUnpin?()
-                } else {
-                    onSessionPicked?(picked.id)
+        switch currentPage {
+        case .music:
+            // Chevron: next page (music -> lyrics -> sources -> music).
+            if chevronRect.contains(point) {
+                advancePage()
+                return
+            }
+            // Speech bubble: lyrics page.
+            if musicBubbleRect.contains(point) {
+                cardPage = .lyrics
+                needsDisplay = true
+                return
+            }
+            // Controls row.
+            if let hit = controlHit(at: point, centers: [204, 260, 316], yMin: 212, yMax: 244) {
+                switch hit {
+                case 0: onPrevious?()
+                case 1: onPlayPause?()
+                default: onNext?()
                 }
                 return
+            }
+        case .lyrics:
+            // Speech bubble toggles back to the music page.
+            if lyricsBubbleRect.contains(point) {
+                cardPage = .music
+                needsDisplay = true
+                return
+            }
+            // Controls row (left column).
+            if let hit = controlHit(at: point, centers: [83, 127, 171], yMin: 176, yMax: 204) {
+                switch hit {
+                case 0: onPrevious?()
+                case 1: onPlayPause?()
+                default: onNext?()
+                }
+                return
+            }
+        case .sources:
+            // Picker rows: header at y 80, rows from y 104, height 26, max 4.
+            if point.y >= 104 {
+                let index = Int((point.y - 104) / 26)
+                if index >= 0 && index < min(sessionsForPicker.count, 4) {
+                    let picked = sessionsForPicker[index]
+                    if picked.id == pinnedId {
+                        onUnpin?()
+                    } else {
+                        onSessionPicked?(picked.id)
+                    }
+                    return
+                }
             }
         }
         // Any other click on the expanded card collapses it. Without this
@@ -305,8 +413,8 @@ final class IslandView: NSView {
         }
     }
 
-    private func drawArtwork(_ image: NSImage?, in rect: NSRect) {
-        let clip = NSBezierPath(roundedRect: rect, xRadius: 12, yRadius: 12)
+    private func drawArtwork(_ image: NSImage?, in rect: NSRect, cornerRadius: CGFloat = 12) {
+        let clip = NSBezierPath(roundedRect: rect, xRadius: cornerRadius, yRadius: cornerRadius)
         NSGraphicsContext.saveGraphicsState()
         clip.setClip()
         if let image {
@@ -344,89 +452,173 @@ final class IslandView: NSView {
     // MARK: - Expanded card
 
     private func drawExpanded() {
-        // Header: battery ring, date + time, waveform.
-        drawBatteryRing(center: CGPoint(x: 34, y: 27), radius: 9)
-        drawCentered(
-            Self.headerDateFormatter.string(from: Date()),
-            font: NSFont.systemFont(ofSize: 13, weight: .medium),
-            color: .white, y: 18)
+        // Header, like Nusa's music card: green dot + date/time centered,
+        // waveform top-right. No battery ring here — the reference card
+        // has none; the ring lives in the closed (compact) state instead.
+        let dateStr = Self.headerDateFormatter.string(from: Date())
+        let dateFont = NSFont.systemFont(ofSize: 13, weight: .medium)
+        let dateWidth = (dateStr as NSString).size(withAttributes: [.font: dateFont]).width
+        let groupWidth = dateWidth + 16
+        let groupX = (bounds.width - groupWidth) / 2
+        NSColor.systemGreen.setFill()
+        NSBezierPath(ovalIn: NSRect(x: groupX, y: 21, width: 8, height: 8)).fill()
+        drawText(dateStr, font: dateFont, color: .white, at: NSPoint(x: groupX + 16, y: 18))
         drawWaveform(in: NSRect(x: 452, y: 18, width: 48, height: 18))
 
         guard let session else {
             drawCentered("Tidak ada media yang diputar",
                          font: NSFont.systemFont(ofSize: 13),
                          color: NSColor.white.withAlphaComponent(0.7), y: 60)
-            drawPicker(startY: 104)
             return
         }
-
-        // Media row: artwork + title/artist on the left, lyrics on the right.
-        drawArtwork(session.artwork, in: NSRect(x: 20, y: 56, width: 72, height: 72))
-        let titleFont = NSFont.boldSystemFont(ofSize: 17)
-        drawText(truncated(session.title, toWidth: 184, font: titleFont),
-                 font: titleFont, color: .white, at: NSPoint(x: 104, y: 58))
-        let artistFont = NSFont.systemFont(ofSize: 13)
-        drawText(truncated(session.artist, toWidth: 184, font: artistFont),
-                 font: artistFont, color: NSColor.white.withAlphaComponent(0.65),
-                 at: NSPoint(x: 104, y: 82))
-        drawLyricsColumn()
-
-        // Progress: elapsed, bar, remaining.
-        let timeFont = NSFont.systemFont(ofSize: 12)
-        drawText(formatTime(session.position), font: timeFont, color: .white,
-                 at: NSPoint(x: 20, y: 142))
-        if session.duration > 0 {
-            drawRightAligned("-\(formatTime(session.duration - session.position))",
-                             font: timeFont, color: .white, rightX: 500, y: 142)
-            let barX: CGFloat = 64
-            let barW: CGFloat = 388
-            let bg = NSBezierPath(roundedRect: NSRect(x: barX, y: 147, width: barW, height: 4),
-                                  xRadius: 2, yRadius: 2)
-            NSColor.white.withAlphaComponent(0.25).setFill()
-            bg.fill()
-            let filled = min(1.0, session.position / session.duration)
-            let fg = NSBezierPath(roundedRect: NSRect(x: barX, y: 147, width: barW * CGFloat(filled), height: 4),
-                                  xRadius: 2, yRadius: 2)
-            NSColor.white.setFill()
-            fg.fill()
+        switch currentPage {
+        case .music: drawMusicPage(session)
+        case .lyrics: drawLyricsPage(session)
+        case .sources: drawPicker(startY: 80)
         }
-
-        // Controls.
-        let playGlyph = session.isPlaying ? "❚❚" : "▶"
-        drawCentered("‹   \(playGlyph)   ›",
-                     font: NSFont.systemFont(ofSize: 20), color: .white, y: 168)
-
-        // Divider + session picker.
-        NSColor.white.withAlphaComponent(0.12).setFill()
-        NSRect(x: 20, y: 206, width: 480, height: 1).fill()
-        drawPicker(startY: 216)
+        drawPageDots()
     }
 
-    private func drawLyricsColumn() {
-        let x: CGFloat = 300
-        let width: CGFloat = 200
+    /// Music page, modelled on Nusa's music card: big artwork, large
+    /// title/artist, full-width progress, controls, chevron, page dots.
+    private func drawMusicPage(_ session: DisplaySession) {
+        drawArtwork(session.artwork, in: NSRect(x: 20, y: 56, width: 92, height: 92), cornerRadius: 14)
+        let titleFont = NSFont.boldSystemFont(ofSize: 25)
+        drawText(truncated(session.title, toWidth: 322, font: titleFont),
+                 font: titleFont, color: .white, at: NSPoint(x: 128, y: 64))
+        let artistFont = NSFont.systemFont(ofSize: 16)
+        drawText(truncated(session.artist, toWidth: 322, font: artistFont),
+                 font: artistFont, color: NSColor.white.withAlphaComponent(0.65),
+                 at: NSPoint(x: 128, y: 100))
+        drawProgress(session, elapsedX: 20, barX: 78, barWidth: 352, rightX: 500,
+                     y: 176, font: NSFont.systemFont(ofSize: 16), barHeight: 6)
+        // Controls row.
+        drawSymbol("ellipsis.bubble.fill", size: 22, center: CGPoint(x: 32, y: 228), fallback: "···")
+        drawSymbol("backward.fill", size: 24, center: CGPoint(x: 204, y: 228), fallback: "‹")
+        drawSymbol(session.isPlaying ? "pause.fill" : "play.fill", size: 24,
+                   center: CGPoint(x: 260, y: 228), fallback: session.isPlaying ? "❚❚" : "▶")
+        drawSymbol("forward.fill", size: 24, center: CGPoint(x: 316, y: 228), fallback: "›")
+        // Chevron: stroked circle + chevron, advances to the next page.
+        let chevron = chevronRect
+        NSColor.white.withAlphaComponent(0.3).setStroke()
+        NSBezierPath(ovalIn: chevron).stroke()
+        drawSymbol("chevron.right", size: 14,
+                   center: CGPoint(x: chevron.midX, y: chevron.midY), fallback: "›")
+    }
+
+    /// Lyrics page, modelled on Nusa's lyrics card: mini player on the
+    /// left, lyrics column on the right, divider between them.
+    private func drawLyricsPage(_ session: DisplaySession) {
+        drawArtwork(session.artwork, in: NSRect(x: 20, y: 56, width: 76, height: 76), cornerRadius: 12)
+        let titleFont = NSFont.boldSystemFont(ofSize: 19)
+        drawText(truncated(session.title, toWidth: 127, font: titleFont),
+                 font: titleFont, color: .white, at: NSPoint(x: 108, y: 60))
+        let artistFont = NSFont.systemFont(ofSize: 13)
+        drawText(truncated(session.artist, toWidth: 127, font: artistFont),
+                 font: artistFont, color: NSColor.white.withAlphaComponent(0.65),
+                 at: NSPoint(x: 108, y: 86))
+        drawProgress(session, elapsedX: 20, barX: 64, barWidth: 108, rightX: 235,
+                     y: 150, font: NSFont.systemFont(ofSize: 12), barHeight: 4)
+        drawSymbol("ellipsis.bubble.fill", size: 20, center: CGPoint(x: 28, y: 190), fallback: "···")
+        drawSymbol("backward.fill", size: 20, center: CGPoint(x: 83, y: 190), fallback: "‹")
+        drawSymbol(session.isPlaying ? "pause.fill" : "play.fill", size: 20,
+                   center: CGPoint(x: 127, y: 190), fallback: session.isPlaying ? "❚❚" : "▶")
+        drawSymbol("forward.fill", size: 20, center: CGPoint(x: 171, y: 190), fallback: "›")
+        // Divider.
+        NSColor.white.withAlphaComponent(0.12).setFill()
+        NSRect(x: 250, y: 56, width: 1, height: 184).fill()
+        // Lyrics column: dim previous, bold current, dim next.
+        let x: CGFloat = 266
+        let width: CGFloat = 234
         if let prev = lyricPrev {
-            let font = NSFont.systemFont(ofSize: 13)
+            let font = NSFont.systemFont(ofSize: 16)
             drawText(truncated(prev, toWidth: width, font: font),
                      font: font, color: NSColor.white.withAlphaComponent(0.35),
-                     at: NSPoint(x: x, y: 58))
+                     at: NSPoint(x: x, y: 70))
         }
         if let current = lyricCurrent {
-            let font = NSFont.boldSystemFont(ofSize: 15)
+            let font = NSFont.boldSystemFont(ofSize: 21)
             drawText(truncated(current, toWidth: width, font: font),
-                     font: font, color: .white, at: NSPoint(x: x, y: 80))
+                     font: font, color: .white, at: NSPoint(x: x, y: 100))
         } else {
             drawText("Lirik tidak tersedia",
-                     font: NSFont.systemFont(ofSize: 13),
+                     font: NSFont.systemFont(ofSize: 14),
                      color: NSColor.white.withAlphaComponent(0.4),
-                     at: NSPoint(x: x, y: 80))
+                     at: NSPoint(x: x, y: 100))
         }
         if let next = lyricNext {
-            let font = NSFont.systemFont(ofSize: 13)
+            let font = NSFont.systemFont(ofSize: 16)
             drawText(truncated(next, toWidth: width, font: font),
-                     font: font, color: NSColor.white.withAlphaComponent(0.35),
-                     at: NSPoint(x: x, y: 104))
+                     font: font, color: NSColor.white.withAlphaComponent(0.45),
+                     at: NSPoint(x: x, y: 135))
         }
+    }
+
+    private func drawProgress(_ session: DisplaySession, elapsedX: CGFloat, barX: CGFloat,
+                              barWidth: CGFloat, rightX: CGFloat, y: CGFloat,
+                              font: NSFont, barHeight: CGFloat) {
+        drawText(formatTime(session.position), font: font, color: .white,
+                 at: NSPoint(x: elapsedX, y: y))
+        guard session.duration > 0 else { return }
+        drawRightAligned("-\(formatTime(session.duration - session.position))",
+                         font: font, color: .white, rightX: rightX, y: y)
+        let bg = NSBezierPath(roundedRect: NSRect(x: barX, y: y + 6, width: barWidth, height: barHeight),
+                              xRadius: barHeight / 2, yRadius: barHeight / 2)
+        NSColor.white.withAlphaComponent(0.25).setFill()
+        bg.fill()
+        let filled = min(1.0, session.position / session.duration)
+        let fg = NSBezierPath(roundedRect: NSRect(x: barX, y: y + 6, width: barWidth * CGFloat(filled), height: barHeight),
+                              xRadius: barHeight / 2, yRadius: barHeight / 2)
+        NSColor.white.setFill()
+        fg.fill()
+    }
+
+    private func drawPageDots() {
+        let rects = dotRects()
+        for (i, rect) in rects.enumerated() {
+            if availablePages[i] == currentPage {
+                let dash = NSBezierPath(roundedRect: rect, xRadius: 3, yRadius: 3)
+                NSColor.white.setFill()
+                dash.fill()
+            } else {
+                let dot = NSBezierPath(ovalIn: rect)
+                NSColor.white.withAlphaComponent(0.3).setFill()
+                dot.fill()
+            }
+        }
+    }
+
+    private static var symbolCache: [String: NSImage] = [:]
+
+    /// Draws a white SF Symbol centered at a point, tinted from the
+    /// symbol's alpha (SF Symbols rasterize black by default). Falls
+    /// back to a text glyph if the symbol is unavailable.
+    private func drawSymbol(_ name: String, size: CGFloat, center: CGPoint, fallback: String) {
+        let key = "\(name)-\(Int(size))"
+        let rect = NSRect(x: center.x - size / 2, y: center.y - size / 2, width: size, height: size)
+        if let cached = Self.symbolCache[key] {
+            cached.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1.0)
+            return
+        }
+        guard let base = NSImage(systemSymbolName: name, accessibilityDescription: nil) else {
+            drawCenteredText(fallback, font: NSFont.systemFont(ofSize: size), color: .white, center: center)
+            return
+        }
+        let img = NSImage(size: NSSize(width: size, height: size))
+        img.lockFocus()
+        base.draw(in: NSRect(x: 0, y: 0, width: size, height: size), from: .zero,
+                  operation: .sourceOver, fraction: 1.0)
+        NSColor.white.set()
+        NSRect(x: 0, y: 0, width: size, height: size).fill(using: .destinationIn)
+        img.unlockFocus()
+        Self.symbolCache[key] = img
+        img.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1.0)
+    }
+
+    private func drawCenteredText(_ text: String, font: NSFont, color: NSColor, center: CGPoint) {
+        let size = (text as NSString).size(withAttributes: [.font: font])
+        drawText(text, font: font, color: color,
+                 at: NSPoint(x: center.x - size.width / 2, y: center.y - size.height / 2))
     }
 
     private func drawPicker(startY: CGFloat) {

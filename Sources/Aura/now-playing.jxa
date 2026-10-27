@@ -2,7 +2,11 @@ ObjC.import('Foundation');
 function run() {
   try {
     var bundle = $.NSBundle.bundleWithPath('/System/Library/PrivateFrameworks/MediaRemote.framework/');
-    bundle.load();
+    // NOTE (JXA quirk): zero-argument ObjC methods are invoked by bare
+    // property access. `bundle.load()` tries to CALL the BOOL result and
+    // throws 'bundle.load is not a function' — this exact bug broke the
+    // sensor until the standalone osascript run proved it.
+    bundle.load;
     var MRNowPlayingRequest = $.NSClassFromString('MRNowPlayingRequest');
     if (!MRNowPlayingRequest) return JSON.stringify(null);
     var item = MRNowPlayingRequest.localNowPlayingItem;
