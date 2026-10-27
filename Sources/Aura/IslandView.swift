@@ -654,16 +654,20 @@ final class IslandView: NSView {
                          font: font, color: .white, y: midY - 8)
             return
         }
-        // The plain music pill is idle-sized (140 wide): ring + clock
-        // + waveform, tightened to fit — smaller ring left, clock
-        // centered, narrower waveform at the right edge. All three stay
+        // The plain music pill is 160 wide: ring + clock + waveform,
+        // tightened to fit — smaller ring left, clock centered,
+        // narrower waveform at the right edge. All three stay
         // inside the 12pt tuck (sides at 12 and width-12).
-        drawBatteryRing(center: CGPoint(x: 24, y: midY), radius: 8)
+        // Padding: the ring sits 10pt inside the left edge and the
+        // waveform ends 10pt before the right edge, so the contents
+        // never hug the pill's border (at any width, including
+        // mid-collapse-animation frames).
+        drawBatteryRing(center: CGPoint(x: 30, y: midY), radius: 8)
         drawCentered(Self.clockFormatter.string(from: Date()),
                      font: NSFont.systemFont(ofSize: 15, weight: .semibold),
                      color: .white, y: midY - 9)
         let waveHeight: CGFloat = bounds.height <= 40 ? 14 : 20
-        drawWaveform(in: NSRect(x: bounds.width - 44, y: midY - waveHeight / 2, width: 28, height: waveHeight))
+        drawWaveform(in: NSRect(x: bounds.width - 50, y: midY - waveHeight / 2, width: 28, height: waveHeight))
     }
 
     // MARK: - Expanded card
