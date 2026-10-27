@@ -1037,11 +1037,14 @@ final class IslandView: NSView, NSDraggingSource {
         // or bouncing, so the bouncing card never clips.
         let springScale = traySpringScale(now: Date())
         if springScale != 1.0 {
-            // Scale around the center; base is the unbulged size.
+            // Scale around the TOP-CENTER (the bezel; the view is
+            // flipped, so minY is the top): the card stays glued to
+            // the menu bar like the normal pill and only bounces
+            // downward — never a floating pill. Base is unbulged.
             let base = unbulgedSize(for: state)
-            ctx.translateBy(x: rect.midX, y: rect.midY)
+            ctx.translateBy(x: rect.midX, y: rect.minY)
             ctx.scaleBy(x: springScale, y: springScale)
-            ctx.translateBy(x: -base.width / 2, y: -base.height / 2)
+            ctx.translateBy(x: -base.width / 2, y: 0)
         }
         ctx.saveGState()
         ctx.addPath(path)
