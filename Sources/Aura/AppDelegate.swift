@@ -16,7 +16,7 @@ enum IslandState {
         switch self {
         case .zen: return NSSize(width: 140, height: 32)
         case .compact, .split: return NSSize(width: 320, height: 64)
-        case .expanded: return NSSize(width: 520, height: 360)
+        case .expanded: return NSSize(width: 640, height: 260)
         }
     }
 }
@@ -73,8 +73,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.sessions.previousTrack()
         }
         islandView.onExpandedSizeChanged = { [weak self] size in
-            // Only while expanded: the music strip is small, lyrics and
-            // sources are the full card. Other states own their own size.
+            // Only while expanded: music/sources are the 640 card,
+            // lyrics extends it horizontally to 940. Other states own
+            // their own size.
             guard self?.islandView.state == .expanded else { return }
             self?.animator.animate(to: size)
         }
@@ -133,8 +134,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func setState(_ state: IslandState) {
         islandView.state = state
-        // Expanded size follows the card's page (music strip vs full
-        // card); other states use their fixed size.
+        // Expanded size follows the card's page (music/sources 640,
+        // lyrics 940 wide); other states use their fixed size.
         animator.animate(to: state == .expanded ? islandView.expandedSize : state.size)
     }
 
@@ -261,7 +262,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             islandView.lyricNext = nil
             return
         }
-        let t = session.position
+        let t = islandView.livePosition
         var index: Int?
         for (i, entry) in lyricsLines.enumerated() where entry.time <= t {
             index = i

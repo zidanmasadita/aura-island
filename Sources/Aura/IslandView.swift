@@ -8,12 +8,22 @@ import AppKit
 /// - zen (140x32): the idle face — two white eyes.
 /// - compact (320x64): the closed notch — battery ring, clock, waveform,
 ///   pulled tighter so the gaps between them are not wide.
-/// - expanded: size follows the page — music is the closed pill's
-///   footprint (380x64: artwork, title/artist, current lyric line, thin
-///   progress, controls), lyrics is a wide, short card (520x300: header,
-///   mini player, lyrics column, dots), sources is a shorter card
-///   (520x260: session picker). The bubble (or the lyric line) opens lyrics, the
-///   dots jump pages, and the lyrics page's bubble goes back to music.
+/// - expanded, wide and short (never tall): music is the normal Nusa
+///   music card (640x260: header, artwork, title/artist, progress,
+///   controls, chevron, dots); opening lyrics EXTENDS it horizontally
+///   (940x260: the same music card plus a lyrics panel on the right,
+///   same height); sources is the picker on the music card's footprint
+///   (640x260). The bubble toggles music/lyrics, the chevron advances
+///   a page, and the dots jump pages.
+///
+/// Position is realtime, not sensor-bound: the sensor's elapsed value
+/// (Chrome's especially) is a snapshot that does not advance while a
+/// song plays, which is why progress used to sit still until the pill
+/// was reopened. The view anchors each sensor reading and advances
+/// the displayed position by wall clock between readings (see
+/// livePosition), so the bar moves smoothly at the 10x/second redraw
+/// while playing, and only re-anchors on track/state change, a seek,
+/// or when the sensor runs ahead of the display.
 final class IslandView: NSView {
     var state: IslandState = .zen {
         didSet {
@@ -24,7 +34,10 @@ final class IslandView: NSView {
         }
     }
     var session: DisplaySession? {
-        didSet { needsDisplay = true }
+        didSet {
+            updatePositionAnchor()
+            needsDisplay = true
+        }
     }
     var lyricPrev: String?
     var lyricCurrent: String?
@@ -43,15 +56,14 @@ final class IslandView: NSView {
         }
     }
 
-    /// Window size for the expanded card, per page: the music strip is
-    /// the same small footprint as the closed pill (380x64) — opening
-    /// music no longer resizes the window at all, so there is no resize
-    /// animation to stutter. Lyrics is a wide, short card (520x300).
+    /// Window size for the expanded card, per page: music and sources
+    /// share the 640x260 card; lyrics extends the music card
+    /// horizontally to 940x260 (same height, lyrics panel on the right).
     var expandedSize: NSSize {
         switch currentPage {
-        case .music: return NSSize(width: 380, height: 64)
-        case .lyrics: return NSSize(width: 520, height: 300)
-        case .sources: return NSSize(width: 520, height: 260)
+        case .music: return NSSize(width: 640, height: 260)
+        case .lyrics: return NSSize(width: 940, height: 260)
+        case .sources: return NSSize(width: 640, height: 260)
         }
     }
 
@@ -68,11 +80,53 @@ final class IslandView: NSView {
     }
 
     /// Rects for the interactive elements of the expanded card.
-    /// The music strip's bubble opens lyrics; the lyric line itself is
-    /// also tappable for the same. The lyrics page's bubble goes back.
-    private var stripBubbleRect: NSRect { NSRect(x: 238, y: 16, width: 28, height: 28) }
-    private var stripLyricRect: NSRect { NSRect(x: 68, y: 43, width: 172, height: 14) }
-    private var lyricsBubbleRect: NSRect { NSRect(x: 14, y: 168, width: 28, height: 28) }
+    /// The bubble toggles music/lyrics; the chevron advances a page.
+    private var musicBubbleRect: NSRect { NSRect(x: 14, y: 192, width: 28, height: 28) }
+    private var chevronRect: NSRect { NSRect(x: 590, y: 116, width: 28, height: 28) }
+
+    // MARK: - Realtime position
+
+    /// Anchor for client-side position interpolation: the last sensor
+    /// reading (track, reported position, wall time, playing state).
+    /// The displayed position advances from this anchor by wall clock
+    /// until the next reading re-anchors it.
+    private var positionAnchor: (key: String, reported: Double, at: Date, playing: Bool)?
+    private var lastReportedPosition: Double?
+
+    /// Position to display right now. While playing it advances by wall
+    /// clock from the anchor, so the bar moves even when the sensor's
+    /// elapsed value is a frozen snapshot; while paused it sits at the
+    /// anchored position. Re-anchoring happens on track change, a
+    /// play/pause flip, a sensor jump (seek), or when the sensor runs
+    /// ahead of the display — never when the sensor merely sits behind
+    /// it, because a stale sensor must not drag the bar backwards.
+    var livePosition: Double {
+        guard let s = session else { return 0 }
+        guard let a = positionAnchor, a.key == "\(s.title)|\(s.artist)" else { return s.position }
+        if !s.isPlaying { return a.reported }
+        let p = a.reported + Date().timeIntervalSince(a.at)
+        if s.duration > 0 { return min(max(0, p), s.duration) }
+        return max(0, p)
+    }
+
+    private func updatePositionAnchor() {
+        guard let s = session else {
+            positionAnchor = nil
+            lastReportedPosition = nil
+            return
+        }
+        let key = "\(s.title)|\(s.artist)"
+        let reported = s.position
+        // Interpolated position BEFORE this reading, from the old anchor.
+        let live = livePosition
+        let jumped = lastReportedPosition.map { abs(reported - $0) > 2.0 } ?? true
+        let sensorAhead = (reported - live) > 2.0
+        if positionAnchor == nil || positionAnchor!.key != key || positionAnchor!.playing != s.isPlaying
+            || jumped || sensorAhead {
+            positionAnchor = (key: key, reported: reported, at: Date(), playing: s.isPlaying)
+        }
+        lastReportedPosition = reported
+    }
 
     /// Which control (0 = previous, 1 = play/pause, 2 = next) a point hits,
     /// given the control centers and the row's y range. Nil outside.
@@ -103,7 +157,7 @@ final class IslandView: NSView {
     }
 
     /// Dots sit 36pt above the bottom edge, so they follow the window
-    /// height (lyrics card 360, sources card 260).
+    /// height (all card pages are 260 tall now).
     private var dotsY: CGFloat { bounds.height - 36 }
 
     private func dotIndex(at point: CGPoint) -> Int? {
@@ -122,8 +176,8 @@ final class IslandView: NSView {
     var onNext: (() -> Void)?
     var onPrevious: (() -> Void)?
     /// Fired when the expanded card's page changes, so the window can
-    /// resize to the page: the music strip is small, lyrics/sources are
-    /// the full card. AppDelegate ignores it unless expanded.
+    /// resize to the page: music/sources are the 640 card, lyrics
+    /// extends it horizontally to 940. AppDelegate ignores it unless expanded.
     var onExpandedSizeChanged: ((NSSize) -> Void)?
 
     override var isFlipped: Bool { true }
@@ -178,8 +232,8 @@ final class IslandView: NSView {
             return
         }
         let point = convert(event.locationInWindow, from: nil)
-        // Page dots (lyrics/sources pages only — the music strip has none).
-        if currentPage != .music, let index = dotIndex(at: point) {
+        // Page dots (every card page has them now).
+        if let index = dotIndex(at: point) {
             let pages = availablePages
             if index < pages.count {
                 cardPage = pages[index]
@@ -189,36 +243,35 @@ final class IslandView: NSView {
         }
         switch currentPage {
         case .music:
-            // Speech bubble, or the lyric line itself: lyrics page
-            // (the card grows to the full lyrics view).
-            if stripBubbleRect.contains(point) || stripLyricRect.contains(point) {
+            // Speech bubble opens lyrics (the card extends horizontally).
+            if musicBubbleRect.contains(point) {
                 cardPage = .lyrics
                 needsDisplay = true
                 return
             }
-            // Controls row (right side of the strip).
-            if let hit = controlHit(at: point, centers: [286, 320, 354], yMin: 14, yMax: 46, halfWidth: 16) {
-                switch hit {
-                case 0: onPrevious?()
-                case 1: onPlayPause?()
-                default: onNext?()
-                }
+            if chevronRect.contains(point) {
+                advancePage()
+                return
+            }
+            if let hit = controlHit(at: point, centers: [268, 320, 372], yMin: 196, yMax: 216) {
+                performControl(hit)
                 return
             }
         case .lyrics:
-            // Speech bubble toggles back to the music page.
-            if lyricsBubbleRect.contains(point) {
+            // Speech bubble goes back to the music card.
+            if musicBubbleRect.contains(point) {
                 cardPage = .music
                 needsDisplay = true
                 return
             }
-            // Controls row (left column).
-            if let hit = controlHit(at: point, centers: [83, 127, 171], yMin: 168, yMax: 196) {
-                switch hit {
-                case 0: onPrevious?()
-                case 1: onPlayPause?()
-                default: onNext?()
-                }
+            if chevronRect.contains(point) {
+                advancePage()
+                return
+            }
+            // Controls are the music card's own row (the lyrics page
+            // keeps the full music card on its left).
+            if let hit = controlHit(at: point, centers: [268, 320, 372], yMin: 196, yMax: 216) {
+                performControl(hit)
                 return
             }
         case .sources:
@@ -240,6 +293,23 @@ final class IslandView: NSView {
         // fallthrough there was no way to close the card by clicking: only
         // the controls and picker rows responded, the rest did nothing.
         onClicked?()
+    }
+
+    private func performControl(_ hit: Int) {
+        switch hit {
+        case 0: onPrevious?()
+        case 1: onPlayPause?()
+        default: onNext?()
+        }
+    }
+
+    /// Chevron: advance one page in dot order (music -> lyrics ->
+    /// sources when available -> back to music).
+    private func advancePage() {
+        let pages = availablePages
+        guard let i = pages.firstIndex(of: currentPage) else { return }
+        cardPage = pages[(i + 1) % pages.count]
+        needsDisplay = true
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -549,70 +619,61 @@ final class IslandView: NSView {
         }
         switch currentPage {
         case .music:
-            // The music strip has no header and no dots — just the song.
-            drawMusicStrip(session)
-        case .lyrics, .sources:
+            drawMusicCard(session)
+            drawPageDots()
+        case .lyrics:
+            // Same music card on the left, lyrics panel extending it to
+            // the right — same height, so the card only grows sideways.
+            drawMusicCard(session)
+            drawLyricsPanel()
+            drawPageDots()
+        case .sources:
             drawCardHeader()
-            if currentPage == .lyrics {
-                drawLyricsPage(session)
-            } else {
-                drawPicker(startY: 80)
-            }
+            drawPicker(startY: 80)
             drawPageDots()
         }
     }
 
-    /// Header for the full card pages, like Nusa's music card: green dot
-    /// + date/time centered, waveform top-right. No battery ring here —
-    /// the reference card has none; the ring lives in the closed state.
+    /// Header for the card pages, like Nusa's music card: green dot
+    /// + date/time, waveform top-right. It belongs to the 640-wide
+    /// music region, so on the lyrics page the music card keeps its
+    /// own header while the panel extends to the right. No battery
+    /// ring here — the reference card has none; the ring lives in the
+    /// closed state.
     private func drawCardHeader() {
         let dateStr = Self.headerDateFormatter.string(from: Date())
         let dateFont = NSFont.systemFont(ofSize: 13, weight: .medium)
         let dateWidth = (dateStr as NSString).size(withAttributes: [.font: dateFont]).width
         let groupWidth = dateWidth + 16
-        let groupX = (bounds.width - groupWidth) / 2
+        let groupX = (640 - groupWidth) / 2
         NSColor.systemGreen.setFill()
         NSBezierPath(ovalIn: NSRect(x: groupX, y: 21, width: 8, height: 8)).fill()
         drawText(dateStr, font: dateFont, color: .white, at: NSPoint(x: groupX + 16, y: 18))
-        drawWaveform(in: NSRect(x: 452, y: 18, width: 48, height: 18))
+        drawWaveform(in: NSRect(x: 572, y: 18, width: 48, height: 18))
     }
 
-    /// Music strip (380x64): the same footprint as the closed pill —
-    /// artwork, title/artist, the current lyric line, a thin progress
-    /// bar, and controls. The bubble (or the lyric line) opens lyrics.
-    private func drawMusicStrip(_ session: DisplaySession) {
-        drawArtwork(artworkThumb(for: session), in: NSRect(x: 12, y: 8, width: 48, height: 48), cornerRadius: 10)
-        let titleFont = NSFont.boldSystemFont(ofSize: 14)
-        drawText(truncated(session.title, toWidth: 172, font: titleFont),
-                 font: titleFont, color: .white, at: NSPoint(x: 68, y: 8))
-        let artistFont = NSFont.systemFont(ofSize: 11)
-        drawText(truncated(session.artist, toWidth: 172, font: artistFont),
+    /// Music card (640x260), modelled on Nusa's music card: header,
+    /// artwork, big title/artist, full-width progress, controls, and
+    /// a chevron that advances a page. This is the normal active card;
+    /// the lyrics page reuses it unchanged on its left side.
+    private func drawMusicCard(_ session: DisplaySession) {
+        drawCardHeader()
+        drawArtwork(artworkThumb(for: session), in: NSRect(x: 28, y: 52, width: 92, height: 92), cornerRadius: 14)
+        let titleFont = NSFont.boldSystemFont(ofSize: 25)
+        drawText(truncated(session.title, toWidth: 460, font: titleFont),
+                 font: titleFont, color: .white, at: NSPoint(x: 140, y: 56))
+        let artistFont = NSFont.systemFont(ofSize: 16)
+        drawText(truncated(session.artist, toWidth: 460, font: artistFont),
                  font: artistFont, color: NSColor.white.withAlphaComponent(0.65),
-                 at: NSPoint(x: 68, y: 27))
-        if let line = lyricCurrent {
-            let lyricFont = NSFont.systemFont(ofSize: 11)
-            drawText(truncated(line, toWidth: 172, font: lyricFont),
-                     font: lyricFont, color: NSColor.white.withAlphaComponent(0.55),
-                     at: NSPoint(x: 68, y: 44))
-        }
-        // Thin progress bar along the bottom of the strip.
-        if session.duration > 0 {
-            let bg = NSBezierPath(roundedRect: NSRect(x: 12, y: 59, width: 356, height: 3),
-                                  xRadius: 1.5, yRadius: 1.5)
-            NSColor.white.withAlphaComponent(0.25).setFill()
-            bg.fill()
-            let filled = min(1.0, session.position / session.duration)
-            let fg = NSBezierPath(roundedRect: NSRect(x: 12, y: 59, width: 356 * CGFloat(filled), height: 3),
-                                  xRadius: 1.5, yRadius: 1.5)
-            NSColor.white.setFill()
-            fg.fill()
-        }
-        // Controls (right side).
-        drawSymbol("ellipsis.bubble.fill", size: 18, center: CGPoint(x: 252, y: 30), fallback: "···")
-        drawSymbol("backward.fill", size: 18, center: CGPoint(x: 286, y: 30), fallback: "‹")
-        drawSymbol(session.isPlaying ? "pause.fill" : "play.fill", size: 18,
-                   center: CGPoint(x: 320, y: 30), fallback: session.isPlaying ? "❚❚" : "▶")
-        drawSymbol("forward.fill", size: 18, center: CGPoint(x: 354, y: 30), fallback: "›")
+                 at: NSPoint(x: 140, y: 92))
+        drawProgress(session, elapsedX: 28, barX: 88, barWidth: 452, rightX: 612,
+                     y: 164, font: NSFont.systemFont(ofSize: 12), barHeight: 4)
+        drawSymbol("ellipsis.bubble.fill", size: 20, center: CGPoint(x: 28, y: 206), fallback: "···")
+        drawSymbol("backward.fill", size: 20, center: CGPoint(x: 268, y: 206), fallback: "‹")
+        drawSymbol(session.isPlaying ? "pause.fill" : "play.fill", size: 20,
+                   center: CGPoint(x: 320, y: 206), fallback: session.isPlaying ? "❚❚" : "▶")
+        drawSymbol("forward.fill", size: 20, center: CGPoint(x: 372, y: 206), fallback: "›")
+        drawSymbol("chevron.right", size: 20, center: CGPoint(x: 604, y: 130), fallback: "›")
     }
 
     private var cachedThumbKey: String?
@@ -647,68 +708,57 @@ final class IslandView: NSView {
         return img
     }
 
-    /// Lyrics page, modelled on Nusa's lyrics card: mini player on the
-    /// left, lyrics column on the right, divider between them. Kept
-    /// wide and short (520x300) like the reference card, not tall.
-    private func drawLyricsPage(_ session: DisplaySession) {
-        drawArtwork(artworkThumb(for: session), in: NSRect(x: 20, y: 52, width: 76, height: 76), cornerRadius: 12)
-        let titleFont = NSFont.boldSystemFont(ofSize: 19)
-        drawText(truncated(session.title, toWidth: 127, font: titleFont),
-                 font: titleFont, color: .white, at: NSPoint(x: 108, y: 56))
-        let artistFont = NSFont.systemFont(ofSize: 13)
-        drawText(truncated(session.artist, toWidth: 127, font: artistFont),
-                 font: artistFont, color: NSColor.white.withAlphaComponent(0.65),
-                 at: NSPoint(x: 108, y: 82))
-        drawProgress(session, elapsedX: 20, barX: 64, barWidth: 108, rightX: 235,
-                     y: 142, font: NSFont.systemFont(ofSize: 12), barHeight: 4)
-        drawSymbol("ellipsis.bubble.fill", size: 20, center: CGPoint(x: 28, y: 182), fallback: "···")
-        drawSymbol("backward.fill", size: 20, center: CGPoint(x: 83, y: 182), fallback: "‹")
-        drawSymbol(session.isPlaying ? "pause.fill" : "play.fill", size: 20,
-                   center: CGPoint(x: 127, y: 182), fallback: session.isPlaying ? "❚❚" : "▶")
-        drawSymbol("forward.fill", size: 20, center: CGPoint(x: 171, y: 182), fallback: "›")
-        // Divider.
+    /// Lyrics panel for the lyrics page: a divider, then the lyrics
+    /// column on the right of the music card (x 664..916). The panel
+    /// extends the card horizontally only — same 260 height as music.
+    private func drawLyricsPanel() {
+        // Divider between the music card (left 640) and the panel.
         NSColor.white.withAlphaComponent(0.12).setFill()
-        NSRect(x: 250, y: 52, width: 1, height: 180).fill()
-        // Lyrics column: dim previous, bold current, dim next.
-        let x: CGFloat = 266
-        let width: CGFloat = 234
+        NSRect(x: 648, y: 52, width: 1, height: 176).fill()
+        // Lyrics column: dim previous, bold current, dim next,
+        // vertically centered in the panel.
+        let x: CGFloat = 664
+        let width: CGFloat = 252
         if let prev = lyricPrev {
             let font = NSFont.systemFont(ofSize: 16)
             drawText(truncated(prev, toWidth: width, font: font),
                      font: font, color: NSColor.white.withAlphaComponent(0.35),
-                     at: NSPoint(x: x, y: 66))
+                     at: NSPoint(x: x, y: 97))
         }
         if let current = lyricCurrent {
             let font = NSFont.boldSystemFont(ofSize: 21)
             drawText(truncated(current, toWidth: width, font: font),
-                     font: font, color: .white, at: NSPoint(x: x, y: 96))
+                     font: font, color: .white, at: NSPoint(x: x, y: 127))
         } else {
             drawText("Lirik tidak tersedia",
                      font: NSFont.systemFont(ofSize: 14),
                      color: NSColor.white.withAlphaComponent(0.4),
-                     at: NSPoint(x: x, y: 96))
+                     at: NSPoint(x: x, y: 127))
         }
         if let next = lyricNext {
             let font = NSFont.systemFont(ofSize: 16)
             drawText(truncated(next, toWidth: width, font: font),
                      font: font, color: NSColor.white.withAlphaComponent(0.45),
-                     at: NSPoint(x: x, y: 131))
+                     at: NSPoint(x: x, y: 164))
         }
     }
 
     private func drawProgress(_ session: DisplaySession, elapsedX: CGFloat, barX: CGFloat,
                               barWidth: CGFloat, rightX: CGFloat, y: CGFloat,
                               font: NSFont, barHeight: CGFloat) {
-        drawText(formatTime(session.position), font: font, color: .white,
+        // Realtime position, not the raw sensor snapshot (see
+        // livePosition): the bar and times move between sensor polls.
+        let pos = livePosition
+        drawText(formatTime(pos), font: font, color: .white,
                  at: NSPoint(x: elapsedX, y: y))
         guard session.duration > 0 else { return }
-        drawRightAligned("-\(formatTime(session.duration - session.position))",
+        drawRightAligned("-\(formatTime(session.duration - pos))",
                          font: font, color: .white, rightX: rightX, y: y)
         let bg = NSBezierPath(roundedRect: NSRect(x: barX, y: y + 6, width: barWidth, height: barHeight),
                               xRadius: barHeight / 2, yRadius: barHeight / 2)
         NSColor.white.withAlphaComponent(0.25).setFill()
         bg.fill()
-        let filled = min(1.0, session.position / session.duration)
+        let filled = min(1.0, pos / session.duration)
         let fg = NSBezierPath(roundedRect: NSRect(x: barX, y: y + 6, width: barWidth * CGFloat(filled), height: barHeight),
                               xRadius: barHeight / 2, yRadius: barHeight / 2)
         NSColor.white.setFill()
