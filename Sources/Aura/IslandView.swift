@@ -629,14 +629,15 @@ final class IslandView: NSView {
         // heights — fixed y values would drift off-center.
         let midY = bounds.height / 2
         // Lyrics mode (card was closed from the lyrics page): note icon
-        // + current lyric line — never clock, battery ring, or
-        // waveform. Without a synced line, the song title stands in.
+        // + current lyric line, the line centered on the pill — never
+        // clock, battery ring, or waveform. Without a synced line, the
+        // song title stands in.
         if lyricsMode, let session {
             drawSymbol("music.note", size: 20, center: CGPoint(x: 28, y: midY), fallback: "♪")
             let line = lyricCurrent ?? session.title
             let font = NSFont.systemFont(ofSize: 13, weight: .medium)
-            drawText(truncated(line, toWidth: 236, font: font),
-                     font: font, color: .white, at: NSPoint(x: 56, y: midY - 8))
+            drawCentered(truncated(line, toWidth: 236, font: font),
+                         font: font, color: .white, y: midY - 8)
             return
         }
         drawBatteryRing(center: CGPoint(x: 28, y: midY), radius: 10)
@@ -665,8 +666,9 @@ final class IslandView: NSView {
         case .lyrics:
             // Same music card on the left, lyrics panel extending it to
             // the right — same height, so the card only grows sideways.
-            // The panel takes space from the progress bar: on this page
-            // the bar is shorter and the panel wider (see drawMusicCard).
+            // Opening lyrics shrinks the music part (title and
+            // progress narrower, see drawMusicCard) so the panel gets
+            // most of the card.
             drawMusicCard(session, lyricsOpen: true)
             drawLyricsPanel()
             drawPageDots()
@@ -678,36 +680,36 @@ final class IslandView: NSView {
     }
 
     /// Header for the card pages, like Nusa's music card: green dot
-    /// + date/time, waveform top-right. It belongs to the 640-wide
-    /// music region, so on the lyrics page the music card keeps its
-    /// own header while the panel extends to the right. No battery
-    /// ring here — the reference card has none; the ring lives in the
-    /// closed state.
-    private func drawCardHeader() {
+    /// + date/time, waveform top-right. `width` is the region the
+    /// header belongs to: 640 on the music/sources pages, 460 on the
+    /// lyrics page (where the music part shrinks for the panel). No
+    /// battery ring here — the reference card has none; the ring
+    /// lives in the closed state.
+    private func drawCardHeader(width: CGFloat = 640) {
         let dateStr = Self.headerDateFormatter.string(from: Date())
         let dateFont = NSFont.systemFont(ofSize: 13, weight: .medium)
         let dateWidth = (dateStr as NSString).size(withAttributes: [.font: dateFont]).width
         let groupWidth = dateWidth + 16
-        let groupX = (640 - groupWidth) / 2
+        let groupX = (width - groupWidth) / 2
         NSColor.systemGreen.setFill()
         NSBezierPath(ovalIn: NSRect(x: groupX, y: 17, width: 8, height: 8)).fill()
         drawText(dateStr, font: dateFont, color: .white, at: NSPoint(x: groupX + 16, y: 14))
-        drawWaveform(in: NSRect(x: 572, y: 14, width: 48, height: 16))
+        drawWaveform(in: NSRect(x: width - 68, y: 14, width: 48, height: 16))
     }
 
     /// Music card (640x220), modelled on Nusa's music card: header,
     /// artwork, big title/artist, full-width progress, controls, and
     /// a chevron that advances a page. Compressed vertically — smaller
     /// artwork, tighter gaps — so the card does not reach far down.
-    /// This is the normal active card; the lyrics page reuses it
-    /// unchanged on its left side, except when lyricsOpen: the panel
-    /// takes space from the progress bar, so the bar is shorter, the
-    /// title/artist narrower, and the chevron (which would sit inside
-    /// the widened panel) is omitted.
+    /// This is the normal active card; the lyrics page reuses it on
+    /// its left side, except when lyricsOpen: opening lyrics shrinks
+    /// the music part (title/artist 340, progress bar 280, header
+    /// centered on 460) so the lyrics panel gets most of the card,
+    /// and the chevron (which would sit inside the panel) is omitted.
     private func drawMusicCard(_ session: DisplaySession, lyricsOpen: Bool = false) {
-        drawCardHeader()
+        drawCardHeader(width: lyricsOpen ? 460 : 640)
         drawArtwork(artworkThumb(for: session), in: NSRect(x: 28, y: 44, width: 64, height: 64), cornerRadius: 12)
-        let textWidth: CGFloat = lyricsOpen ? 440 : 460
+        let textWidth: CGFloat = lyricsOpen ? 340 : 460
         let titleFont = NSFont.boldSystemFont(ofSize: 25)
         drawText(truncated(session.title, toWidth: textWidth, font: titleFont),
                  font: titleFont, color: .white, at: NSPoint(x: 108, y: 44))
@@ -716,7 +718,7 @@ final class IslandView: NSView {
                  font: artistFont, color: NSColor.white.withAlphaComponent(0.65),
                  at: NSPoint(x: 108, y: 80))
         if lyricsOpen {
-            drawProgress(session, elapsedX: 28, barX: 88, barWidth: 372, rightX: 532,
+            drawProgress(session, elapsedX: 28, barX: 88, barWidth: 280, rightX: 440,
                          y: 126, font: NSFont.systemFont(ofSize: 12), barHeight: 4)
         } else {
             drawProgress(session, elapsedX: 28, barX: 88, barWidth: 452, rightX: 612,
@@ -765,20 +767,19 @@ final class IslandView: NSView {
     }
 
     /// Lyrics panel for the lyrics page: a divider, then the lyrics
-    /// column on the right of the music card (x 564..916, 352 wide —
-    /// wider than before, taking space from the progress bar: the bar
-    /// on this page is shorter, see drawMusicCard). The divider sits
-    /// exactly beside the song title: the title ends at most at 548
-    /// (108 + 440), and the divider is at 552. The panel extends the
-    /// card horizontally only — same 220 height as music.
+    /// column on the right of the shrunken music part (x 472..916,
+    /// 444 wide). The divider sits beside the song title: the title
+    /// ends at most at 448 (108 + 340), and the divider is at 460.
+    /// The panel extends the card horizontally only — same 220 height
+    /// as music.
     private func drawLyricsPanel() {
-        // Divider between the music card (left) and the panel.
+        // Divider between the shrunken music part (left) and the panel.
         NSColor.white.withAlphaComponent(0.12).setFill()
-        NSRect(x: 552, y: 44, width: 1, height: 132).fill()
+        NSRect(x: 460, y: 44, width: 1, height: 132).fill()
         // Lyrics column: dim previous, bold current, dim next,
         // vertically centered in the panel.
-        let x: CGFloat = 564
-        let width: CGFloat = 352
+        let x: CGFloat = 472
+        let width: CGFloat = 444
         if let prev = lyricPrev {
             let font = NSFont.systemFont(ofSize: 16)
             drawText(truncated(prev, toWidth: width, font: font),
