@@ -6,12 +6,13 @@ import AppKit
 ///
 /// Layouts (flipped coordinates, y grows downward):
 /// - zen (140x32): the idle face — two white eyes.
-/// - compact (380x64): the closed notch — battery ring, clock, waveform.
+/// - compact (320x64): the closed notch — battery ring, clock, waveform,
+///   pulled tighter so the gaps between them are not wide.
 /// - expanded: size follows the page — music is the closed pill's
 ///   footprint (380x64: artwork, title/artist, current lyric line, thin
-///   progress, controls), lyrics is the full card (520x360: header, mini
-///   player, lyrics column, dots), sources is a shorter card (520x260:
-///   session picker). The bubble (or the lyric line) opens lyrics, the
+///   progress, controls), lyrics is a wide, short card (520x300: header,
+///   mini player, lyrics column, dots), sources is a shorter card
+///   (520x260: session picker). The bubble (or the lyric line) opens lyrics, the
 ///   dots jump pages, and the lyrics page's bubble goes back to music.
 final class IslandView: NSView {
     var state: IslandState = .zen {
@@ -45,11 +46,11 @@ final class IslandView: NSView {
     /// Window size for the expanded card, per page: the music strip is
     /// the same small footprint as the closed pill (380x64) — opening
     /// music no longer resizes the window at all, so there is no resize
-    /// animation to stutter. Lyrics and sources are the full card.
+    /// animation to stutter. Lyrics is a wide, short card (520x300).
     var expandedSize: NSSize {
         switch currentPage {
         case .music: return NSSize(width: 380, height: 64)
-        case .lyrics: return NSSize(width: 520, height: 360)
+        case .lyrics: return NSSize(width: 520, height: 300)
         case .sources: return NSSize(width: 520, height: 260)
         }
     }
@@ -71,7 +72,7 @@ final class IslandView: NSView {
     /// also tappable for the same. The lyrics page's bubble goes back.
     private var stripBubbleRect: NSRect { NSRect(x: 238, y: 16, width: 28, height: 28) }
     private var stripLyricRect: NSRect { NSRect(x: 68, y: 43, width: 172, height: 14) }
-    private var lyricsBubbleRect: NSRect { NSRect(x: 14, y: 176, width: 28, height: 28) }
+    private var lyricsBubbleRect: NSRect { NSRect(x: 14, y: 168, width: 28, height: 28) }
 
     /// Which control (0 = previous, 1 = play/pause, 2 = next) a point hits,
     /// given the control centers and the row's y range. Nil outside.
@@ -212,7 +213,7 @@ final class IslandView: NSView {
                 return
             }
             // Controls row (left column).
-            if let hit = controlHit(at: point, centers: [83, 127, 171], yMin: 176, yMax: 204) {
+            if let hit = controlHit(at: point, centers: [83, 127, 171], yMin: 168, yMax: 196) {
                 switch hit {
                 case 0: onPrevious?()
                 case 1: onPlayPause?()
@@ -499,7 +500,20 @@ final class IslandView: NSView {
             let srcH = rect.height / scale
             let src = NSRect(x: (imgSize.width - srcW) / 2, y: (imgSize.height - srcH) / 2,
                              width: srcW, height: srcH)
-            image.draw(in: rect, from: src, operation: .sourceOver, fraction: 1.0)
+            // This view is flipped (y grows down), and NSImage drawing in
+            // a flipped context flips the image vertically — covers
+            // appeared upside down. Flipping the context around the rect
+            // first cancels it, so the cover lands upright. The flip maps
+            // the rect onto itself, so the rounded clip still fits.
+            if let ctx = NSGraphicsContext.current?.cgContext {
+                ctx.saveGState()
+                ctx.translateBy(x: 0, y: rect.minY + rect.maxY)
+                ctx.scaleBy(x: 1, y: -1)
+                image.draw(in: rect, from: src, operation: .sourceOver, fraction: 1.0)
+                ctx.restoreGState()
+            } else {
+                image.draw(in: rect, from: src, operation: .sourceOver, fraction: 1.0)
+            }
         } else {
             NSColor.white.withAlphaComponent(0.12).setFill()
             clip.fill()
@@ -515,12 +529,12 @@ final class IslandView: NSView {
     // MARK: - Closed (compact) state
 
     private func drawClosed() {
-        drawBatteryRing(center: CGPoint(x: 30, y: 32), radius: 10)
+        drawBatteryRing(center: CGPoint(x: 28, y: 32), radius: 10)
         drawCentered(
             Self.clockFormatter.string(from: Date()),
             font: NSFont.systemFont(ofSize: 15, weight: .semibold),
             color: .white, y: 24)
-        drawWaveform(in: NSRect(x: 318, y: 22, width: 42, height: 20))
+        drawWaveform(in: NSRect(x: 250, y: 22, width: 42, height: 20))
     }
 
     // MARK: - Expanded card
@@ -634,26 +648,27 @@ final class IslandView: NSView {
     }
 
     /// Lyrics page, modelled on Nusa's lyrics card: mini player on the
-    /// left, lyrics column on the right, divider between them.
+    /// left, lyrics column on the right, divider between them. Kept
+    /// wide and short (520x300) like the reference card, not tall.
     private func drawLyricsPage(_ session: DisplaySession) {
-        drawArtwork(artworkThumb(for: session), in: NSRect(x: 20, y: 56, width: 76, height: 76), cornerRadius: 12)
+        drawArtwork(artworkThumb(for: session), in: NSRect(x: 20, y: 52, width: 76, height: 76), cornerRadius: 12)
         let titleFont = NSFont.boldSystemFont(ofSize: 19)
         drawText(truncated(session.title, toWidth: 127, font: titleFont),
-                 font: titleFont, color: .white, at: NSPoint(x: 108, y: 60))
+                 font: titleFont, color: .white, at: NSPoint(x: 108, y: 56))
         let artistFont = NSFont.systemFont(ofSize: 13)
         drawText(truncated(session.artist, toWidth: 127, font: artistFont),
                  font: artistFont, color: NSColor.white.withAlphaComponent(0.65),
-                 at: NSPoint(x: 108, y: 86))
+                 at: NSPoint(x: 108, y: 82))
         drawProgress(session, elapsedX: 20, barX: 64, barWidth: 108, rightX: 235,
-                     y: 150, font: NSFont.systemFont(ofSize: 12), barHeight: 4)
-        drawSymbol("ellipsis.bubble.fill", size: 20, center: CGPoint(x: 28, y: 190), fallback: "···")
-        drawSymbol("backward.fill", size: 20, center: CGPoint(x: 83, y: 190), fallback: "‹")
+                     y: 142, font: NSFont.systemFont(ofSize: 12), barHeight: 4)
+        drawSymbol("ellipsis.bubble.fill", size: 20, center: CGPoint(x: 28, y: 182), fallback: "···")
+        drawSymbol("backward.fill", size: 20, center: CGPoint(x: 83, y: 182), fallback: "‹")
         drawSymbol(session.isPlaying ? "pause.fill" : "play.fill", size: 20,
-                   center: CGPoint(x: 127, y: 190), fallback: session.isPlaying ? "❚❚" : "▶")
-        drawSymbol("forward.fill", size: 20, center: CGPoint(x: 171, y: 190), fallback: "›")
+                   center: CGPoint(x: 127, y: 182), fallback: session.isPlaying ? "❚❚" : "▶")
+        drawSymbol("forward.fill", size: 20, center: CGPoint(x: 171, y: 182), fallback: "›")
         // Divider.
         NSColor.white.withAlphaComponent(0.12).setFill()
-        NSRect(x: 250, y: 56, width: 1, height: 184).fill()
+        NSRect(x: 250, y: 52, width: 1, height: 180).fill()
         // Lyrics column: dim previous, bold current, dim next.
         let x: CGFloat = 266
         let width: CGFloat = 234
@@ -661,23 +676,23 @@ final class IslandView: NSView {
             let font = NSFont.systemFont(ofSize: 16)
             drawText(truncated(prev, toWidth: width, font: font),
                      font: font, color: NSColor.white.withAlphaComponent(0.35),
-                     at: NSPoint(x: x, y: 70))
+                     at: NSPoint(x: x, y: 66))
         }
         if let current = lyricCurrent {
             let font = NSFont.boldSystemFont(ofSize: 21)
             drawText(truncated(current, toWidth: width, font: font),
-                     font: font, color: .white, at: NSPoint(x: x, y: 100))
+                     font: font, color: .white, at: NSPoint(x: x, y: 96))
         } else {
             drawText("Lirik tidak tersedia",
                      font: NSFont.systemFont(ofSize: 14),
                      color: NSColor.white.withAlphaComponent(0.4),
-                     at: NSPoint(x: x, y: 100))
+                     at: NSPoint(x: x, y: 96))
         }
         if let next = lyricNext {
             let font = NSFont.systemFont(ofSize: 16)
             drawText(truncated(next, toWidth: width, font: font),
                      font: font, color: NSColor.white.withAlphaComponent(0.45),
-                     at: NSPoint(x: x, y: 135))
+                     at: NSPoint(x: x, y: 131))
         }
     }
 
