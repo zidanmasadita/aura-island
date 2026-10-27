@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import AppKit
 
 /// A discovered Aura peer on the local network (another device
 /// running Aura). Address is the sender's IP as seen by us (from
