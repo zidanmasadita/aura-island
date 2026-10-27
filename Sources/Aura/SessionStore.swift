@@ -140,6 +140,12 @@ final class SessionStore {
     /// session differs from the active client, the key still goes to
     /// the active one; that is a documented v1 limitation.
     ///
+    /// The event MUST be systemDefined: media keys are NX_SYSDEFINED
+    /// subtype 8, and an applicationDefined event with the same
+    /// subtype is ignored by the system's media-key handler — the
+    /// pre-fix bug, which is why the buttons did nothing even if
+    /// trust had been granted.
+    ///
     /// Posting to the HID tap needs Accessibility trust: without it
     /// the events are silently dropped, which is why the card buttons
     /// did nothing before this prompt existed (the app never asked).
@@ -162,7 +168,7 @@ final class SessionStore {
         func post(_ down: Bool) {
             let data1 = (Int(key) << 16) | (down ? 0xa00 : 0xb00)
             if let event = NSEvent.otherEvent(
-                with: .applicationDefined,
+                with: .systemDefined,
                 location: .zero,
                 modifierFlags: [],
                 timestamp: 0,

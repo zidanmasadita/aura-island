@@ -60,12 +60,14 @@ final class IslandView: NSView {
     var lyricPrev: String?
     var lyricCurrent: String? {
         didSet {
-            // Spotify-style rise: when the sung line changes while the
-            // lyrics page is visible, the stack rises smoothly into
-            // place instead of jumping. Only on a real change
-            // (refreshLyricLine sets all three every tick, usually to
-            // the same values) and only when the page is visible —
-            // otherwise the offset just stays at rest.
+            // Spotify-style transition: when the sung line changes
+            // while the lyrics page is visible, the stack rolls up
+            // into place, the incoming line zooms in and fades into
+            // focus, and the outgoing line fades to dim — instead of
+            // jumping. Only on a real change (refreshLyricLine sets
+            // all three every tick, usually to the same values) and
+            // only when the page is visible — otherwise the offset
+            // just stays at rest.
             if oldValue != lyricCurrent, state == .expanded, currentPage == .lyrics {
                 startLyricSlide()
             }
@@ -73,12 +75,14 @@ final class IslandView: NSView {
     }
     var lyricNext: String?
 
-    // MARK: - Lyrics rise animation (Spotify-style)
+    // MARK: - Lyrics transition animation (Spotify-style)
 
-    /// Extra Y offset for the lyrics block while it rises into place.
+    /// Extra Y offset for the lyrics block while it rolls into place.
     /// 0 at rest; set to about one line height when the sung line
     /// changes, then eased back to 0 at 60fps. Only the text block
-    /// moves — the divider stays fixed.
+    /// moves — the divider stays fixed. The same offset also drives
+    /// the zoom and focus (see drawLyricsPanel), so all three stay
+    /// in sync and restarts never pop.
     private var lyricSlideOffset: CGFloat = 0
     private var lyricSlideFrom: CGFloat = 0
     private var lyricSlideStart: Date = Date()
@@ -874,22 +878,22 @@ final class IslandView: NSView {
         // stacked as a block centered in the panel (28..158).
         let x: CGFloat = 352
         let width: CGFloat = 336
-        struct Entry { let lines: [String]; let font: NSFont; let color: NSColor }
+        struct Entry { let lines: [String]; let font: NSFont; let isCurrent: Bool; let isPrev: Bool }
         var entries: [Entry] = []
         if let prev = lyricPrev {
             let font = NSFont.systemFont(ofSize: 16)
             entries.append(Entry(lines: wrappedLines(prev, font: font, width: width, maxLines: 2),
-                                 font: font, color: NSColor.white.withAlphaComponent(0.35)))
+                                 font: font, isCurrent: false, isPrev: true))
         }
         if let current = lyricCurrent {
             let font = NSFont.boldSystemFont(ofSize: 21)
             entries.append(Entry(lines: wrappedLines(current, font: font, width: width, maxLines: 2),
-                                 font: font, color: .white))
+                                 font: font, isCurrent: true, isPrev: false))
         }
         if let next = lyricNext {
             let font = NSFont.systemFont(ofSize: 16)
             entries.append(Entry(lines: wrappedLines(next, font: font, width: width, maxLines: 2),
-                                 font: font, color: NSColor.white.withAlphaComponent(0.45)))
+                                 font: font, isCurrent: false, isPrev: false))
         }
         guard !entries.isEmpty else {
             drawText("Lirik tidak tersedia",
@@ -907,14 +911,51 @@ final class IslandView: NSView {
         let textHeight = entries.reduce(0) { $0 + CGFloat($1.lines.count) * lineHeight($1.font) }
         let gapCount = max(0, entries.count - 1)
         let gap: CGFloat = gapCount > 0 ? min(10, max(0, (130 - textHeight) / CGFloat(gapCount))) : 0
-        // The block rises into place while a slide runs (see
-        // lyricSlideOffset): it starts one line low and eases up to
-        // this centered position, Spotify-style.
+        // Spotify-style transition while a slide runs (see
+        // lyricSlideOffset): the block rolls up into place (offset
+        // 26 -> 0), the incoming line zooms in (scale 0.90 -> 1.0)
+        // and fades into focus (alpha 0.5 -> 1.0), and the outgoing
+        // line fades to dim (alpha 1.0 -> 0.35). All three are
+        // driven by the same offset, so restarting mid-flight (fast
+        // lyrics) never pops: scale and alpha are functions of the
+        // current offset, not of a reset progress value. At rest
+        // (offset 0) every value is exactly its static value, so
+        // the resting panel looks identical to before.
+        let slideT = min(1.0, max(0.0, lyricSlideOffset / lyricSlideDistance))
         var y = 28 + (130 - (textHeight + gap * CGFloat(gapCount))) / 2 + lyricSlideOffset
         for entry in entries {
-            for line in entry.lines {
-                drawText(line, font: entry.font, color: entry.color, at: NSPoint(x: x, y: y))
-                y += lineHeight(entry.font)
+            let scale: CGFloat = entry.isCurrent ? (1.0 - 0.10 * slideT) : 1.0
+            let alpha: CGFloat
+            if entry.isCurrent {
+                alpha = 1.0 - 0.5 * slideT
+            } else if entry.isPrev {
+                alpha = 0.35 + 0.65 * slideT
+            } else {
+                alpha = 0.45
+            }
+            let color = NSColor.white.withAlphaComponent(alpha)
+            let entryHeight = CGFloat(entry.lines.count) * lineHeight(entry.font)
+            let entryCenterY = y + entryHeight / 2
+            if scale != 1.0, let ctx = NSGraphicsContext.current?.cgContext {
+                // Zoom about the entry's own center: the wrapped
+                // lines were laid out with the base font, so scaling
+                // here only affects rendering, never reflows text,
+                // and the y bookkeeping below stays unscaled so the
+                // next entry never drifts.
+                ctx.saveGState()
+                ctx.translateBy(x: x + width / 2, y: entryCenterY)
+                ctx.scaleBy(x: scale, y: scale)
+                ctx.translateBy(x: -(x + width / 2), y: -entryCenterY)
+                for line in entry.lines {
+                    drawText(line, font: entry.font, color: color, at: NSPoint(x: x, y: y))
+                    y += lineHeight(entry.font)
+                }
+                ctx.restoreGState()
+            } else {
+                for line in entry.lines {
+                    drawText(line, font: entry.font, color: color, at: NSPoint(x: x, y: y))
+                    y += lineHeight(entry.font)
+                }
             }
             y += gap
         }
