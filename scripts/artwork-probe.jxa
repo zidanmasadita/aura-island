@@ -2,17 +2,19 @@ ObjC.import('Foundation');
 ObjC.import('AppKit');
 // Diagnostic only — NOT shipped in the app. Run while music plays:
 //   osascript -l JavaScript scripts/artwork-probe.jxa
-// v5 failed on a JXA bridging quirk, not on the system: `allKeys.js`
-// leaves NSArray elements as ObjC wrappers (null in JSON), and using
-// an NSString wrapper as a JS object key stringifies to its class
-// name ("[id __NSCFString]"), collapsing 13 keys into 2 meaningless
-// entries. v6 converts every key to a real JS string explicitly
-// (per-element `.js`) before using it, so keys stay distinct and
-// printable. No values are called, so nothing here can throw from
-// invocation. This is the final system check: if no key besides the
-// uncallable artwork block carries artwork, the JXA system path is
-// proven closed and only the Chrome extension's Media Session
-// artwork URL remains.
+// v6 listed the 13 stored keys — notably WITHOUT an Artwork key, but
+// WITH artwork metadata: ArtworkIdentifier, ArtworkMIMEType,
+// ArtworkDataHeight, ArtworkDataWidth. v6 also exposed a probe flaw:
+// typeof on a RAW ObjC wrapper is "function" for EVERY type (even
+// Title/Artist strings), so typeof alone cannot identify a value —
+// the earlier "block" inference from typeof was unreliable. What v3/v4
+// actually proved is narrower: the computed Artwork value is not
+// callable, not NSData, not MPMediaItemArtwork, and its description
+// throws. v7 therefore reports CONVERTED values (.js) instead of raw
+// typeof: strings print (an artwork URL would show here in full),
+// numbers print, NSData reports base64 length. The Artwork key itself
+// (absent from allKeys but resolvable via valueForKey) is included
+// as a 14th entry. No values are called.
 function run() {
   try {
     var bundle = $.NSBundle.bundleWithPath('/System/Library/PrivateFrameworks/MediaRemote.framework/');
@@ -24,8 +26,7 @@ function run() {
     if (!item) return JSON.stringify(null);
     var info = item.nowPlayingInfo;
     if (!info) return JSON.stringify(null);
-    // Explicit per-element conversion: NSArray elements stay ObjC
-    // wrappers after a bare `.js` on the array, so convert each one.
+    // Keys as real JS strings (explicit per-element conversion).
     var keys = [];
     try {
       var raw = info.allKeys;
@@ -37,26 +38,31 @@ function run() {
         keys.push(jsKey);
       }
     } catch (e) { keys = ['allKeys-error: ' + String(e)]; }
+    // The Artwork key is not stored but resolves via valueForKey —
+    // include it explicitly so its converted value is reported too.
+    keys.push('kMRMediaRemoteNowPlayingInfoArtwork');
     var entries = {};
     keys.forEach(function (key) {
       var entry = {};
       var value = null;
       try { value = info.valueForKey(key); } catch (e) { entry.error = 'valueForKey: ' + String(e); entries[key] = entry; return; }
-      try { entry.typeofValue = typeof value; } catch (e) { entry.typeofValue = 'error'; }
-      // Strings: print (truncated) — an artwork URL would show here.
+      // Converted value: NSString -> JS string, NSNumber -> JS number.
+      // NSData and exotic objects fail conversion (reported as such).
+      var js = null;
+      var jsError = false;
+      try { js = value.js; } catch (e) { jsError = true; }
+      try { entry.convertedType = jsError ? 'js-error' : (typeof js); } catch (e) { entry.convertedType = 'error'; }
       try {
-        if (typeof value === 'string') entry.string = value.slice(0, 300);
+        if (!jsError && typeof js === 'string') entry.string = js.slice(0, 1000);
+        if (!jsError && typeof js === 'number') entry.number = js;
+        if (!jsError && typeof js === 'boolean') entry.boolean = js;
       } catch (e) {}
-      // NSData: base64 length only (bytes stay out of the output).
+      // NSData check (independent of conversion): base64 length only.
       try {
         if (value && typeof value.base64EncodedStringWithOptions === 'function') {
           var b = value.base64EncodedStringWithOptions(0).js;
           entry.nsdataLength = b ? b.length : 0;
         }
-      } catch (e) {}
-      // Numbers/booleans: print directly (tiny, safe).
-      try {
-        if (typeof value === 'number' || typeof value === 'boolean') entry.scalar = value;
       } catch (e) {}
       entries[key] = entry;
     });
