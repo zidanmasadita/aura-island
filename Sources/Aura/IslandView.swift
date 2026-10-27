@@ -357,7 +357,7 @@ final class IslandView: NSView, NSDraggingSource {
     /// 640x180 (ring + timer + mode pills, like the reference); todo
     /// is 640x220 (task rows + add row, like sources); water is
     /// 640x180 (intake + progress + hourly chart, like Nusa's
-    /// Water Reminder). tray is 640x220 (file rows + share, like todo).
+    /// Water Reminder). tray is 640x220 (carousel + share, Shelf-style).
     var expandedSize: NSSize {
         switch currentPage {
         case .music: return NSSize(width: 520, height: 180)
@@ -709,29 +709,57 @@ final class IslandView: NSView, NSDraggingSource {
                 // Status view or unhandled share-mode click: fall
                 // through to collapse (the send keeps running).
             } else {
-                // List mode: delete, share, or pending drag-out.
-                for row in trayVisibleRows() {
-                    if row.deleteRect.contains(point) {
-                        deleteTrayFile(id: row.file.id)
+                // Carousel list mode.
+                if !trayFiles.isEmpty {
+                    if trayClearPillRect().contains(point) {
+                        clearTray()
                         return
                     }
-                    if row.exists, row.shareRect.contains(point) {
-                        trayShareFile = row.file
-                        trayShareMethod = nil
-                        traySharePeer = nil
-                        trayShareStatus = nil
-                        trayShareProgress = nil
-                        needsDisplay = true
-                        return
-                    }
-                    if row.mainRect.contains(point) {
-                        if row.exists {
-                            trayPendingDrag = (file: row.file, point: point)
+                    if trayFiles.count > 1 {
+                        let arrows = trayCarouselArrowRects()
+                        if arrows.left.contains(point) {
+                            moveCarousel(by: -1)
+                            return
                         }
-                        return
+                        if arrows.right.contains(point) {
+                            moveCarousel(by: 1)
+                            return
+                        }
+                    }
+                    if trayFiles.count <= 16 {
+                        for (i, rect) in trayCarouselDotRects().enumerated() {
+                            if rect.contains(point) {
+                                trayCarouselIndex = i
+                                needsDisplay = true
+                                return
+                            }
+                        }
+                    }
+                    if let current = trayCurrentFile() {
+                        let exists = trayFileExists(current)
+                        let pills = trayCarouselPillRects(exists: exists)
+                        if exists, pills.share.contains(point) {
+                            trayShareFile = current
+                            trayShareMethod = nil
+                            traySharePeer = nil
+                            trayShareStatus = nil
+                            trayShareProgress = nil
+                            needsDisplay = true
+                            return
+                        }
+                        if pills.delete.contains(point) {
+                            deleteTrayFile(id: current.id)
+                            return
+                        }
+                        if trayCarouselFileBlockRect().contains(point) {
+                            if exists {
+                                trayPendingDrag = (file: current, point: point)
+                            }
+                            return
+                        }
                     }
                 }
-                // Unhandled list-mode click: fall through to collapse.
+                // Empty tray or unhandled click: fall through to collapse.
             }
         }
         // Any other click on the expanded card collapses it. Without this
@@ -743,10 +771,10 @@ final class IslandView: NSView, NSDraggingSource {
 
     // MARK: - Tray drag and drop
 
-    /// Drag-out: a press on a tray row's main area arms a pending
+    /// Drag-out: a press on the carousel file block arms a pending
     /// drag; moving past 3px starts the session (so a plain press
-    /// still clicks, and only tray rows drag — other sections are
-    /// untouched). The file stays in the tray (copy, not move).
+    /// still clicks, and only the tray file block drags — other
+    /// sections are untouched). The file stays in the tray (copy).
     override func mouseDragged(with event: NSEvent) {
         guard let pending = trayPendingDrag else { return }
         let point = convert(event.locationInWindow, from: nil)
@@ -767,38 +795,49 @@ final class IslandView: NSView, NSDraggingSource {
 
     /// Drag-in: file URLs only. Entering expands the card to the
     /// tray (so dropping onto the closed pill works, like
-    /// DynamicNotch); the drop lands in the tray, share mode clears
-    /// so the new files are visible.
+    /// DynamicNotch) and clears share mode (the drop zone takes
+    /// over); the drop lands in the tray.
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         guard sender.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: [NSPasteboard.ReadingOptionKey.urlReadingFileURLsOnly: true]) else {
             return []
         }
+        if trayShareFile != nil { clearTrayShare() }
+        trayDragPoint = convert(sender.draggingLocation, from: nil)
         trayDropHighlight = true
         onDragEnteredTray?()
         return .copy
     }
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
-        sender.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: [NSPasteboard.ReadingOptionKey.urlReadingFileURLsOnly: true]) ? .copy : []
+        guard sender.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: [NSPasteboard.ReadingOptionKey.urlReadingFileURLsOnly: true]) else {
+            return []
+        }
+        // Track the cursor so the "+ Copy" badge follows it.
+        trayDragPoint = convert(sender.draggingLocation, from: nil)
+        return .copy
     }
 
     override func draggingExited(_ sender: NSDraggingInfo?) {
+        trayDragPoint = nil
         trayDropHighlight = false
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         let pasteboard = sender.draggingPasteboard
         guard let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [NSPasteboard.ReadingOptionKey.urlReadingFileURLsOnly: true]) as? [URL] else {
+            trayDragPoint = nil
             trayDropHighlight = false
             return false
         }
         let added = addTrayFiles(urls)
+        trayDragPoint = nil
         trayDropHighlight = false
         if trayShareFile != nil { clearTrayShare() }
         return added > 0
     }
 
     override func concludeDragOperation(_ sender: NSDraggingInfo?) {
+        trayDragPoint = nil
         trayDropHighlight = false
     }
 
@@ -2106,10 +2145,17 @@ final class IslandView: NSView, NSDraggingSource {
     var onTrayShareLANPeer: ((TrayFile, LANPeer) -> Void)?
     var onTrayShareCancel: (() -> Void)?
 
-    /// Pending drag-out: set on mouseDown on a tray row's main area
-    /// (not share/delete), so a press-drag starts a drag session and
-    /// a plain press still clicks. Cleared on drag start or mouseUp.
+    /// Pending drag-out: set on mouseDown on the carousel file
+    /// block (not pills/arrows/dots), so a press-drag starts a drag
+    /// session and a plain press still clicks. Cleared on drag start
+    /// or mouseUp.
     private var trayPendingDrag: (file: TrayFile, point: NSPoint)?
+    /// Carousel page (which file the shelf shows). The accessor
+    /// clamps, so delete/clear never leave it out of range.
+    private var trayCarouselIndex = 0
+    /// Last drag-over point in view coords (for the "+ Copy" badge).
+    /// Nil when no drag hovers.
+    private var trayDragPoint: NSPoint? { didSet { needsDisplay = true } }
 
     /// Show the tray section (used when a drag enters the island).
     func showTray() {
@@ -2166,32 +2212,11 @@ final class IslandView: NSView, NSDraggingSource {
         FileManager.default.fileExists(atPath: file.path)
     }
 
-    private func trayTotalSize() -> Int64 {
-        loadTrayFilesIfNeeded()
-        return trayFiles.reduce(0) { $0 + $1.size }
-    }
-
     private func formatBytes(_ bytes: Int64) -> String {
         if bytes < 1024 { return "\(bytes) B" }
         if bytes < 1024 * 1024 { return String(format: "%.1f KB", Double(bytes) / 1024.0) }
         if bytes < 1024 * 1024 * 1024 { return String(format: "%.1f MB", Double(bytes) / 1048576.0) }
         return String(format: "%.1f GB", Double(bytes) / 1073741824.0)
-    }
-
-    /// Visible tray rows (max 4, like todo): pill, main area (drag
-    /// source), share button, delete button. Share is drawn only for
-    /// existing files; missing rows keep only delete.
-    private func trayVisibleRows() -> [(file: TrayFile, pillRect: NSRect, mainRect: NSRect, shareRect: NSRect, deleteRect: NSRect, exists: Bool)] {
-        loadTrayFilesIfNeeded()
-        return trayFiles.prefix(4).enumerated().map { i, file in
-            let y: CGFloat = 52 + CGFloat(i) * 40
-            return (file: file,
-                    pillRect: NSRect(x: 280, y: y, width: 320, height: 32),
-                    mainRect: NSRect(x: 280, y: y, width: 248, height: 32),
-                    shareRect: NSRect(x: 536, y: y, width: 24, height: 32),
-                    deleteRect: NSRect(x: 576, y: y, width: 24, height: 32),
-                    exists: trayFileExists(file))
-        }
     }
 
     /// Back pill (top-right) in share mode.
@@ -2222,6 +2247,13 @@ final class IslandView: NSView, NSDraggingSource {
     }
 
     private func drawTray() {
+        // Drop zone replaces the content while a drag hovers (the
+        // Shelf reference: dashed area + "Release to add", title and
+        // dots stay). Share mode is already cleared on drag-enter.
+        if trayDropHighlight {
+            drawTrayDropZone()
+            return
+        }
         if trayShareFile != nil {
             // Share mode draws its own top (title + back pill, no
             // card header — the header waveform would collide with
@@ -2230,56 +2262,210 @@ final class IslandView: NSView, NSDraggingSource {
         } else {
             drawCardHeader(width: 640)
             drawText("Tray", font: NSFont.boldSystemFont(ofSize: 20), color: .white, at: NSPoint(x: 28, y: 10))
-            drawTrayList()
-        }
-        // Drop highlight while a drag hovers: translucent blue wash
-        // + stroke, drawn last so it reads over the rows.
-        if trayDropHighlight {
-            NSColor.systemBlue.withAlphaComponent(0.08).setFill()
-            NSBezierPath(roundedRect: NSRect(x: 16, y: 16, width: 608, height: 188), xRadius: 20, yRadius: 20).fill()
-            NSColor.systemBlue.setStroke()
-            NSBezierPath(roundedRect: NSRect(x: 16, y: 16, width: 608, height: 188), xRadius: 20, yRadius: 20).stroke()
+            drawTrayCarousel()
         }
     }
 
-    private func drawTrayList() {
+    /// The carousel's current file, clamped (so delete/clear never
+    /// leave the index out of range). Nil when the tray is empty.
+    private func trayCurrentFile() -> TrayFile? {
         loadTrayFilesIfNeeded()
-        // Left column: counter + total + hint / empty state.
-        if trayFiles.isEmpty {
-            drawText("Seret file ke sini", font: NSFont.systemFont(ofSize: 14), color: NSColor.white.withAlphaComponent(0.6), at: NSPoint(x: 28, y: 60))
-        } else {
-            drawText("\(trayFiles.count)", font: NSFont.boldSystemFont(ofSize: 28), color: .white, at: NSPoint(x: 28, y: 52))
-            drawText("file", font: NSFont.systemFont(ofSize: 12), color: NSColor.white.withAlphaComponent(0.6), at: NSPoint(x: 28, y: 88))
-            drawText(formatBytes(trayTotalSize()), font: NSFont.systemFont(ofSize: 12), color: NSColor.white.withAlphaComponent(0.6), at: NSPoint(x: 28, y: 108))
-            drawText("Seret keluar untuk memindahkan", font: NSFont.systemFont(ofSize: 11), color: NSColor.white.withAlphaComponent(0.4), at: NSPoint(x: 28, y: 138))
+        guard !trayFiles.isEmpty else { return nil }
+        return trayFiles[min(trayCarouselIndex, trayFiles.count - 1)]
+    }
+
+    private func moveCarousel(by delta: Int) {
+        guard !trayFiles.isEmpty else { return }
+        trayCarouselIndex = (trayCarouselIndex + delta + trayFiles.count) % trayFiles.count
+        needsDisplay = true
+    }
+
+    /// Clear-all (the Shelf "Clear" / DynamicNotch "All"): removes
+    /// references only, never the files themselves.
+    private func clearTray() {
+        loadTrayFilesIfNeeded()
+        trayFiles.removeAll()
+        trayCarouselIndex = 0
+        saveTrayFiles()
+        needsDisplay = true
+    }
+
+    /// "Clear" pill right after the "Tray" title (like Shelf's
+    /// title + Clear). Only drawn/hit when the tray is non-empty.
+    private func trayClearPillRect() -> NSRect {
+        let titleFont = NSFont.boldSystemFont(ofSize: 20)
+        let titleW = ("Tray" as NSString).size(withAttributes: [.font: titleFont]).width
+        let clearFont = NSFont.systemFont(ofSize: 14)
+        let clearW = ("Clear" as NSString).size(withAttributes: [.font: clearFont]).width
+        return NSRect(x: 28 + titleW + 12, y: 10, width: 12 + clearW + 12, height: 28)
+    }
+
+    /// Draws the Clear pill (no-op when empty). Shared by the
+    /// carousel and the drop zone so hit == drawn in both.
+    private func drawTrayClearPill() {
+        guard !trayFiles.isEmpty else { return }
+        let clear = trayClearPillRect()
+        NSColor.white.withAlphaComponent(0.10).setFill()
+        NSBezierPath(roundedRect: clear, xRadius: 14, yRadius: 14).fill()
+        let clearFont = NSFont.systemFont(ofSize: 14)
+        let clearW = ("Clear" as NSString).size(withAttributes: [.font: clearFont]).width
+        drawText("Clear", font: clearFont, color: .white,
+                 at: NSPoint(x: clear.midX - clearW / 2, y: clear.minY + 5))
+    }
+
+    /// Arrow hit areas (44px, centered on the 36px circles).
+    private func trayCarouselArrowRects() -> (left: NSRect, right: NSRect) {
+        (left: NSRect(x: 26, y: 63, width: 44, height: 44),
+         right: NSRect(x: 570, y: 63, width: 44, height: 44))
+    }
+
+    /// File dot hit slots (18px pitch, 16 tall). Only for <= 16
+    /// files; larger trays show "i / N" text instead (not tappable).
+    private func trayCarouselDotRects() -> [NSRect] {
+        let count = trayFiles.count
+        guard count <= 16 else { return [] }
+        let startX = (640 - CGFloat(count * 18)) / 2
+        return (0..<count).map { i in NSRect(x: startX + CGFloat(i * 18), y: 196, width: 18, height: 16) }
+    }
+
+    /// Bagikan/Hapus pills (centered pair below the file). When the
+    /// current file is missing, share is .zero (not drawn, not hit)
+    /// and delete centers alone.
+    private func trayCarouselPillRects(exists: Bool) -> (share: NSRect, delete: NSRect) {
+        let font = NSFont.systemFont(ofSize: 14)
+        let shareW = 12 + ("Bagikan" as NSString).size(withAttributes: [.font: font]).width + 12
+        let deleteW = 12 + ("Hapus" as NSString).size(withAttributes: [.font: font]).width + 12
+        if exists {
+            let total = shareW + 8 + deleteW
+            let startX = (640 - total) / 2
+            return (share: NSRect(x: startX, y: 168, width: shareW, height: 28),
+                    delete: NSRect(x: startX + shareW + 8, y: 168, width: deleteW, height: 28))
         }
-        // Right column: file rows (like todo's rows).
-        let rows = trayVisibleRows()
-        if trayFiles.count > rows.count {
-            drawText("＋\(trayFiles.count - rows.count) lainnya", font: NSFont.systemFont(ofSize: 11),
-                     color: NSColor.white.withAlphaComponent(0.4), at: NSPoint(x: 28, y: 158))
+        return (share: .zero,
+                delete: NSRect(x: (640 - deleteW) / 2, y: 168, width: deleteW, height: 28))
+    }
+
+    /// The file block (icon + name + size) that arms drag-out.
+    /// Wide (80..560) so a long centered name still drags; it does
+    /// not overlap arrows (x26..70, x570..614), pills (y168+), or
+    /// dots (y196+).
+    private func trayCarouselFileBlockRect() -> NSRect {
+        NSRect(x: 80, y: 53, width: 480, height: 111)
+    }
+
+    /// File dots (bottom center, like Shelf): active = dash, rest =
+    /// dots. Larger trays show "i / N" text instead.
+    private func drawTrayDots() {
+        let count = trayFiles.count
+        guard count > 0 else { return }
+        if count > 16 {
+            let label = "\(min(trayCarouselIndex, count - 1) + 1) / \(count)"
+            let font = NSFont.systemFont(ofSize: 12)
+            let w = (label as NSString).size(withAttributes: [.font: font]).width
+            drawText(label, font: font, color: NSColor.white.withAlphaComponent(0.6),
+                     at: NSPoint(x: 320 - w / 2, y: 201))
+            return
         }
-        for row in rows {
-            NSColor.white.withAlphaComponent(0.08).setFill()
-            NSBezierPath(roundedRect: row.pillRect, xRadius: 10, yRadius: 10).fill()
-            let centerY = row.pillRect.midY
-            let alpha: CGFloat = row.exists ? 1.0 : 0.4
-            let symbol = row.file.isDirectory ? "folder.fill" : "doc.fill"
-            drawSymbol(symbol, size: 20, center: CGPoint(x: 302, y: centerY), fallback: row.file.isDirectory ? "F" : "D",
-                       color: NSColor.white.withAlphaComponent(alpha))
-            let nameFont = NSFont.systemFont(ofSize: 14)
-            let name = row.exists ? row.file.name : row.file.name + " (hilang)"
-            drawText(truncated(name, toWidth: 208, font: nameFont),
-                     font: nameFont, color: NSColor.white.withAlphaComponent(alpha),
-                     at: NSPoint(x: 320, y: row.pillRect.minY + 7))
-            if row.exists {
-                drawSymbol("square.and.arrow.up", size: 16, center: CGPoint(x: 548, y: centerY), fallback: "^")
+        for (i, slot) in trayCarouselDotRects().enumerated() {
+            if i == min(trayCarouselIndex, count - 1) {
+                NSColor.white.setFill()
+                NSBezierPath(roundedRect: NSRect(x: slot.midX - 6, y: 201, width: 12, height: 6), xRadius: 3, yRadius: 3).fill()
+            } else {
+                NSColor.white.withAlphaComponent(0.4).setFill()
+                NSBezierPath(ovalIn: NSRect(x: slot.midX - 3, y: 201, width: 6, height: 6)).fill()
             }
-            let xLabel = "×"
-            let xFont = NSFont.systemFont(ofSize: 14)
-            let xW = (xLabel as NSString).size(withAttributes: [.font: xFont]).width
-            drawText(xLabel, font: xFont, color: NSColor.white.withAlphaComponent(0.4),
-                     at: NSPoint(x: row.deleteRect.midX - xW / 2, y: centerY - 8))
+        }
+    }
+
+    /// Carousel list view (Shelf-style): one large file, arrows,
+    /// dots, Clear, Bagikan/Hapus. The file block drags out.
+    private func drawTrayCarousel() {
+        loadTrayFilesIfNeeded()
+        drawTrayClearPill()
+        guard let file = trayCurrentFile() else {
+            let emptyFont = NSFont.systemFont(ofSize: 14)
+            let emptyText = "Seret file ke sini"
+            let emptyW = (emptyText as NSString).size(withAttributes: [.font: emptyFont]).width
+            drawText(emptyText, font: emptyFont, color: NSColor.white.withAlphaComponent(0.6),
+                     at: NSPoint(x: 320 - emptyW / 2, y: 110))
+            return
+        }
+        let exists = trayFileExists(file)
+        let alpha: CGFloat = exists ? 1.0 : 0.4
+        // Arrows (only when there is somewhere to go).
+        if trayFiles.count > 1 {
+            let arrows = trayCarouselArrowRects()
+            for center in [CGPoint(x: arrows.left.midX, y: arrows.left.midY),
+                           CGPoint(x: arrows.right.midX, y: arrows.right.midY)] {
+                NSColor.white.withAlphaComponent(0.15).setFill()
+                NSBezierPath(ovalIn: NSRect(x: center.x - 18, y: center.y - 18, width: 36, height: 36)).fill()
+            }
+            drawSymbol("chevron.left", size: 16, center: CGPoint(x: arrows.left.midX, y: arrows.left.midY), fallback: "<")
+            drawSymbol("chevron.right", size: 16, center: CGPoint(x: arrows.right.midX, y: arrows.right.midY), fallback: ">")
+        }
+        // File: large icon, centered name + size (Shelf-style).
+        let symbol = file.isDirectory ? "folder.fill" : "doc.fill"
+        drawSymbol(symbol, size: 64, center: CGPoint(x: 320, y: 85), fallback: file.isDirectory ? "F" : "D",
+                   color: NSColor.white.withAlphaComponent(alpha))
+        let nameFont = NSFont.systemFont(ofSize: 16, weight: .semibold)
+        let name = exists ? file.name : file.name + " (hilang)"
+        let nameText = truncated(name, toWidth: 480, font: nameFont)
+        let nameW = (nameText as NSString).size(withAttributes: [.font: nameFont]).width
+        drawText(nameText, font: nameFont, color: NSColor.white.withAlphaComponent(alpha),
+                 at: NSPoint(x: 320 - nameW / 2, y: 132))
+        let sizeFont = NSFont.systemFont(ofSize: 12)
+        let sizeText = file.isDirectory ? "Folder" : formatBytes(file.size)
+        let sizeW = (sizeText as NSString).size(withAttributes: [.font: sizeFont]).width
+        drawText(sizeText, font: sizeFont, color: NSColor.white.withAlphaComponent(0.6),
+                 at: NSPoint(x: 320 - sizeW / 2, y: 152))
+        // Bagikan/Hapus pills (share hidden for missing files).
+        let pills = trayCarouselPillRects(exists: exists)
+        let pillFont = NSFont.systemFont(ofSize: 14)
+        if exists {
+            NSColor.white.withAlphaComponent(0.10).setFill()
+            NSBezierPath(roundedRect: pills.share, xRadius: 14, yRadius: 14).fill()
+            let shareW = ("Bagikan" as NSString).size(withAttributes: [.font: pillFont]).width
+            drawText("Bagikan", font: pillFont, color: .white,
+                     at: NSPoint(x: pills.share.midX - shareW / 2, y: pills.share.minY + 5))
+        }
+        NSColor.white.withAlphaComponent(0.10).setFill()
+        NSBezierPath(roundedRect: pills.delete, xRadius: 14, yRadius: 14).fill()
+        let deleteW = ("Hapus" as NSString).size(withAttributes: [.font: pillFont]).width
+        drawText("Hapus", font: pillFont, color: .white,
+                 at: NSPoint(x: pills.delete.midX - deleteW / 2, y: pills.delete.minY + 5))
+        drawTrayDots()
+    }
+
+    /// Drop zone while a drag hovers (Shelf's drag state): dashed
+    /// area + "Release to add" + "+ Copy" badge at the cursor.
+    /// Title, Clear, and dots stay; the file content is replaced.
+    private func drawTrayDropZone() {
+        drawCardHeader(width: 640)
+        drawText("Tray", font: NSFont.boldSystemFont(ofSize: 20), color: .white, at: NSPoint(x: 28, y: 10))
+        drawTrayClearPill()
+        let zone = NSRect(x: 28, y: 44, width: 584, height: 140)
+        let dashed = NSBezierPath(roundedRect: zone, xRadius: 20, yRadius: 20)
+        dashed.setLineDash([8, 6], count: 2, phase: 0)
+        dashed.lineWidth = 1.5
+        NSColor.white.withAlphaComponent(0.5).setStroke()
+        dashed.stroke()
+        let label = "Release to add"
+        let labelFont = NSFont.systemFont(ofSize: 14)
+        let labelW = (label as NSString).size(withAttributes: [.font: labelFont]).width
+        drawText(label, font: labelFont, color: NSColor.white.withAlphaComponent(0.7),
+                 at: NSPoint(x: zone.midX - labelW / 2, y: zone.midY - 7))
+        drawTrayDots()
+        // "+ Copy" badge below-right of the cursor (clamped to the card).
+        if let point = trayDragPoint {
+            let badgeFont = NSFont.systemFont(ofSize: 12, weight: .semibold)
+            let badgeW = ("+ Copy" as NSString).size(withAttributes: [.font: badgeFont]).width + 16
+            let badgeX = min(point.x + 14, bounds.width - badgeW - 8)
+            let badgeY = min(point.y + 6, bounds.height - 22 - 8)
+            let badge = NSRect(x: badgeX, y: badgeY, width: badgeW, height: 22)
+            NSColor.white.setFill()
+            NSBezierPath(roundedRect: badge, xRadius: 11, yRadius: 11).fill()
+            drawText("+ Copy", font: badgeFont, color: .black,
+                     at: NSPoint(x: badge.minX + 8, y: badge.minY + 5))
         }
     }
 
