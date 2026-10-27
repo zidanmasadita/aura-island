@@ -31,7 +31,7 @@ import AppKit
 /// livePosition), so the bar moves smoothly at the 10x/second redraw
 /// while playing, and only re-anchors on track/state change, a seek,
 /// or when the sensor runs ahead of the display.
-final class IslandView: NSView, NSTextFieldDelegate {
+final class IslandView: NSView {
     var state: IslandState = .zen {
         didSet {
             // Remember whether the card was on lyrics when it closed:
@@ -294,7 +294,6 @@ final class IslandView: NSView, NSTextFieldDelegate {
     /// the dots, three-finger swipe, and bubble icon switch it, nothing else reads it.
     private var cardPage: CardPage = .music {
         didSet {
-            if cardPage != .todo { hideTodoField() }
             if state == .expanded { onExpandedSizeChanged?(expandedSize) }
             needsDisplay = true
         }
@@ -418,34 +417,35 @@ final class IslandView: NSView, NSTextFieldDelegate {
         return nil
     }
 
-    /// Visual rects of the page dots (active = wide dash, rest = dots).
+    /// Visual rects of the page dots, now a VERTICAL column on the
+    /// left edge (navigation is vertical scroll, so the indicator
+    /// is vertical too): active = tall dash (6x16), rest = dots
+    /// (6x6), each centered in an 18pt slot so the column never
+    /// shifts when the active section changes. Drawn at x12-18;
+    /// the hit column is wider (x4-26) than the drawn marks.
     private func dotRects() -> [NSRect] {
         let pages = availableSections
         let active = pages.firstIndex(of: sectionForDots) ?? 0
-        var total: CGFloat = 0
-        for i in pages.indices { total += (i == active ? 16 : 6) + 12 }
-        total -= 12
-        var x = (bounds.width - total) / 2
-        var rects: [NSRect] = []
-        for i in pages.indices {
-            let w: CGFloat = i == active ? 16 : 6
-            rects.append(NSRect(x: x, y: dotsY, width: w, height: 6))
-            x += w + 12
+        let top = dotColumnTop
+        return pages.indices.map { i in
+            let y = top + CGFloat(i) * 18
+            return i == active
+                ? NSRect(x: 12, y: y + 1, width: 6, height: 16)
+                : NSRect(x: 12, y: y + 6, width: 6, height: 6)
         }
-        return rects
     }
 
-    /// Dots sit above the bottom edge and follow the window height:
-    /// 20pt on the 180-tall music/lyrics cards (tighter bottom
-    /// margin), 36pt on the 220-tall sources page.
-    private var dotsY: CGFloat { bounds.height - (currentPage == .sources ? 36 : 20) }
+    /// Top of the vertical dot column, centered on the card height.
+    private var dotColumnTop: CGFloat {
+        (bounds.height - CGFloat(availableSections.count) * 18) / 2
+    }
 
     private func dotIndex(at point: CGPoint) -> Int? {
-        guard point.y >= dotsY - 6 && point.y <= dotsY + 12 else { return nil }
-        for (i, rect) in dotRects().enumerated() {
-            if point.x >= rect.minX - 3 && point.x <= rect.maxX + 3 { return i }
-        }
-        return nil
+        guard point.x >= 4 && point.x <= 26 else { return nil }
+        let top = dotColumnTop
+        guard point.y >= top && point.y <= top + CGFloat(availableSections.count) * 18 else { return nil }
+        let index = Int((point.y - top) / 18)
+        return (index >= 0 && index < availableSections.count) ? index : nil
     }
 
     var onHoverChanged: ((Bool) -> Void)?
@@ -456,7 +456,7 @@ final class IslandView: NSView, NSTextFieldDelegate {
     var onNext: (() -> Void)?
     var onPrevious: (() -> Void)?
     /// Fired when the expanded card's page changes, so the window can
-    /// resize to the page (music 520, pomodoro/sources 640, lyrics 700 wide).
+    /// resize to the page (music 520, pomodoro/todo/sources 640, lyrics 700 wide).
     /// AppDelegate ignores it unless expanded.
     var onExpandedSizeChanged: ((NSSize) -> Void)?
 
@@ -576,8 +576,8 @@ final class IslandView: NSView, NSTextFieldDelegate {
                     return
                 }
             }
-            if todoAddRowRect.contains(point) {
-                showTodoField()
+            if todoAddPillRect().contains(point) {
+                showAddTaskAlert()
                 return
             }
         case .sources:
@@ -617,7 +617,6 @@ final class IslandView: NSView, NSTextFieldDelegate {
     /// on the Mac, flip the two moveSection signs (one line each).
     override func swipe(with event: NSEvent) {
         guard state == .expanded else { return }
-        guard !isAddingTodo else { return } // don't switch while typing a task
         if event.deltaX < 0 {
             moveSection(by: 1)
         } else if event.deltaX > 0 {
@@ -639,7 +638,6 @@ final class IslandView: NSView, NSTextFieldDelegate {
     private var scrollAccumulatedY: CGFloat = 0
     override func scrollWheel(with event: NSEvent) {
         guard state == .expanded else { return }
-        guard !isAddingTodo else { return } // don't switch while typing a task
         guard event.momentumPhase.isEmpty else { return }
         if event.phase == .ended || event.phase == .cancelled {
             scrollAccumulatedY = 0
@@ -1631,21 +1629,29 @@ final class IslandView: NSView, NSTextFieldDelegate {
         }
     }
 
-    /// Visible rows (same rects as drawn, so hit == drawn): rows from
-    /// y48, height 24, pitch 28, max 4. The toggle area is x40-592;
-    /// the delete button is a separate 24px square at x600-624.
-    private func todoVisibleRows() -> [(task: TodoTask, rowRect: NSRect, deleteRect: NSRect)] {
+    /// Visible rows (same rects as drawn, so hit == drawn): the
+    /// right column (x280-612), rows from y52, height 32, pitch 40,
+    /// max 4. pillRect is the drawn pill (full width); rowRect is
+    /// the toggle area (x280-580); deleteRect is the 24px delete
+    /// square at x588-612.
+    private func todoVisibleRows() -> [(task: TodoTask, pillRect: NSRect, rowRect: NSRect, deleteRect: NSRect)] {
         todoSortedTasks().prefix(4).enumerated().map { i, task in
-            let y: CGFloat = 48 + CGFloat(i) * 28
+            let y: CGFloat = 52 + CGFloat(i) * 40
             return (task: task,
-                    rowRect: NSRect(x: 40, y: y, width: 552, height: 24),
-                    deleteRect: NSRect(x: 600, y: y, width: 24, height: 24))
+                    pillRect: NSRect(x: 280, y: y, width: 332, height: 32),
+                    rowRect: NSRect(x: 280, y: y, width: 300, height: 32),
+                    deleteRect: NSRect(x: 588, y: y, width: 24, height: 32))
         }
     }
 
-    /// The "+ Tambah tugas" row (x40-600, y164-188). The text field
-    /// opens over exactly this rect.
-    private var todoAddRowRect: NSRect { NSRect(x: 40, y: 164, width: 560, height: 24) }
+    /// The "+ Tambah tugas" pill (left column, y120-148). Measured
+    /// from its text so hit == drawn, like the pomodoro pills.
+    private func todoAddPillRect() -> NSRect {
+        let font = NSFont.systemFont(ofSize: 14)
+        let plusW = ("+" as NSString).size(withAttributes: [.font: font]).width
+        let textW = ("Tambah tugas" as NSString).size(withAttributes: [.font: font]).width
+        return NSRect(x: 28, y: 120, width: 12 + plusW + 6 + textW + 12, height: 28)
+    }
 
     private func toggleTodoTask(id: UUID) {
         loadTodoTasksIfNeeded()
@@ -1665,104 +1671,90 @@ final class IslandView: NSView, NSTextFieldDelegate {
     private func drawTodo() {
         drawCardHeader(width: 640)
         drawText("Todo", font: NSFont.boldSystemFont(ofSize: 20), color: .white, at: NSPoint(x: 28, y: 10))
+        // Left column: progress + add.
+        loadTodoTasksIfNeeded()
+        let total = todoTasks.count
+        let doneCount = todoTasks.filter { $0.done }.count
+        if total > 0 {
+            drawText("\(doneCount)/\(total)", font: NSFont.boldSystemFont(ofSize: 28), color: .white, at: NSPoint(x: 28, y: 52))
+            drawText("selesai", font: NSFont.systemFont(ofSize: 12), color: NSColor.white.withAlphaComponent(0.6), at: NSPoint(x: 28, y: 88))
+        } else {
+            drawText("Belum ada tugas", font: NSFont.systemFont(ofSize: 14), color: NSColor.white.withAlphaComponent(0.6), at: NSPoint(x: 28, y: 60))
+        }
+        let addRect = todoAddPillRect()
+        NSColor.white.withAlphaComponent(0.10).setFill()
+        NSBezierPath(roundedRect: addRect, xRadius: 14, yRadius: 14).fill()
+        let addFont = NSFont.systemFont(ofSize: 14)
+        let plusW = ("+" as NSString).size(withAttributes: [.font: addFont]).width
+        drawText("+", font: addFont, color: .white, at: NSPoint(x: addRect.minX + 12, y: addRect.minY + 5))
+        drawText("Tambah tugas", font: addFont, color: .white, at: NSPoint(x: addRect.minX + 12 + plusW + 6, y: addRect.minY + 5))
+        // Overflow count under the add pill.
         let rows = todoVisibleRows()
+        if total > rows.count {
+            drawText("＋\(total - rows.count) lainnya", font: NSFont.systemFont(ofSize: 11),
+                     color: NSColor.white.withAlphaComponent(0.4), at: NSPoint(x: 28, y: 158))
+        }
+        // Right column: task rows (subtle dark pills, green check
+        // for done, strikethrough + dimmed done text).
         for row in rows {
-            let centerY = row.rowRect.midY
+            NSColor.white.withAlphaComponent(0.08).setFill()
+            NSBezierPath(roundedRect: row.pillRect, xRadius: 10, yRadius: 10).fill()
+            let centerY = row.pillRect.midY
+            let circleRect = NSRect(x: 292, y: centerY - 10, width: 20, height: 20)
             if row.task.done {
-                NSColor.white.setFill()
-                NSBezierPath(ovalIn: NSRect(x: 40, y: centerY - 10, width: 20, height: 20)).fill()
+                NSColor.systemGreen.setFill()
+                NSBezierPath(ovalIn: circleRect).fill()
+                drawSymbol("checkmark", size: 12, center: CGPoint(x: circleRect.midX, y: centerY), fallback: "✓")
             } else {
                 NSColor.white.withAlphaComponent(0.6).setStroke()
-                let circle = NSBezierPath(ovalIn: NSRect(x: 40, y: centerY - 10, width: 20, height: 20))
+                let circle = NSBezierPath(ovalIn: circleRect)
                 circle.lineWidth = 1.5
                 circle.stroke()
             }
-            drawText(truncated(row.task.text, toWidth: 500, font: NSFont.systemFont(ofSize: 14)),
-                     font: NSFont.systemFont(ofSize: 14),
-                     color: row.task.done ? NSColor.white.withAlphaComponent(0.5) : .white,
-                     at: NSPoint(x: 68, y: row.rowRect.minY + 3))
+            let taskFont = NSFont.systemFont(ofSize: 14)
+            let text = truncated(row.task.text, toWidth: 250, font: taskFont)
+            if row.task.done {
+                drawStrikethroughText(text, font: taskFont,
+                                      color: NSColor.white.withAlphaComponent(0.5),
+                                      at: NSPoint(x: 320, y: row.pillRect.minY + 7))
+            } else {
+                drawText(text, font: taskFont, color: .white,
+                         at: NSPoint(x: 320, y: row.pillRect.minY + 7))
+            }
             let xLabel = "×"
             let xFont = NSFont.systemFont(ofSize: 14)
             let xW = (xLabel as NSString).size(withAttributes: [.font: xFont]).width
             drawText(xLabel, font: xFont, color: NSColor.white.withAlphaComponent(0.4),
                      at: NSPoint(x: row.deleteRect.midX - xW / 2, y: centerY - 8))
         }
-        // The add row is hidden while the text field sits over it.
-        if !isAddingTodo {
-            drawText("+ Tambah tugas", font: NSFont.systemFont(ofSize: 14),
-                     color: NSColor.white.withAlphaComponent(0.6), at: NSPoint(x: 40, y: 167))
-            loadTodoTasksIfNeeded()
-            let extra = todoTasks.count - rows.count
-            if extra > 0 {
-                let label = "＋\(extra) lainnya"
-                let font = NSFont.systemFont(ofSize: 11)
-                let w = (label as NSString).size(withAttributes: [.font: font]).width
-                drawText(label, font: font, color: NSColor.white.withAlphaComponent(0.4),
-                         at: NSPoint(x: 600 - w, y: 169))
-            }
-        }
     }
 
-    /// The new-task text field: a dark rounded field over the add
-    /// row. Enter commits (via the field's action); Escape cancels
-    /// (via doCommandBy); leaving the page or collapsing the card
-    /// discards the draft (cardPage didSet hides it).
-    private var todoTextField: NSTextField?
-    private var isAddingTodo = false
-
-    private func showTodoField() {
-        if todoTextField == nil {
-            let field = NSTextField(frame: todoAddRowRect)
-            field.delegate = self
-            field.target = self
-            field.action = #selector(todoFieldCommitted)
-            field.placeholderString = "Tugas baru... (Enter untuk menambah)"
-            field.font = NSFont.systemFont(ofSize: 14)
-            field.textColor = .white
-            field.focusRingType = .none
-            field.isBordered = false
-            field.drawsBackground = false
-            field.wantsLayer = true
-            field.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.12).cgColor
-            field.layer?.cornerRadius = 8
-            addSubview(field)
-            todoTextField = field
-        }
-        guard let field = todoTextField else { return }
-        field.frame = todoAddRowRect
-        field.stringValue = ""
-        field.isHidden = false
-        isAddingTodo = true
-        window?.makeFirstResponder(field)
-        needsDisplay = true
+    private func drawStrikethroughText(_ text: String, font: NSFont, color: NSColor, at point: NSPoint) {
+        let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color,
+            .strikethroughStyle: NSUnderlineStyle.single.rawValue, .strikethroughColor: color]
+        NSAttributedString(string: text, attributes: attrs).draw(at: point)
     }
 
-    private func hideTodoField() {
-        guard isAddingTodo else { return }
-        isAddingTodo = false
-        todoTextField?.resignFirstResponder()
-        todoTextField?.isHidden = true
-        needsDisplay = true
-    }
-
-    @objc private func todoFieldCommitted() {
-        guard let field = todoTextField else { return }
+    /// Add a task via a modal alert (not an in-card text field: the
+    /// in-card field fought the borderless notch window's focus
+    /// system and froze the pill when pressed. The alert runs in
+    /// its own key window, so typing always works).
+    private func showAddTaskAlert() {
+        let alert = NSAlert()
+        alert.messageText = "Tugas baru"
+        alert.informativeText = "Tulis tugas yang ingin ditambahkan."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        field.placeholderString = "Tugas baru..."
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Tambah")
+        alert.addButton(withTitle: "Batal")
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
         let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !text.isEmpty {
-            loadTodoTasksIfNeeded()
-            todoTasks.append(TodoTask(id: UUID(), text: text, done: false, createdAt: Date()))
-            saveTodoTasks()
-        }
-        hideTodoField()
-    }
-
-    /// Escape cancels the new-task draft; every other command falls
-    /// through to the default (Enter fires the field's action).
-    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
-        if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
-            hideTodoField()
-            return true
-        }
-        return false
+        guard !text.isEmpty else { return }
+        loadTodoTasksIfNeeded()
+        todoTasks.append(TodoTask(id: UUID(), text: text, done: false, createdAt: Date()))
+        saveTodoTasks()
+        needsDisplay = true
     }
 }
