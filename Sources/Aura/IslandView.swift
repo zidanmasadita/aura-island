@@ -742,13 +742,14 @@ final class IslandView: NSView {
         ctx.setFillColor(NSColor.black.withAlphaComponent(0.98).cgColor)
         ctx.fillPath()
         // Pill tint: when album artwork is present, the background is a
-        // gradient from the cover's dominant color (darkened so white
-        // text stays readable) down to black. Without artwork, plain black.
-        if state != .zen, let topColor = gradientTopColor() {
+        // gradient from black at the top down to the cover's dominant
+        // color (darkened so white text stays readable) at the bottom.
+        // Without artwork, plain black.
+        if state != .zen, let bottomColor = gradientBottomColor() {
             ctx.saveGState()
             ctx.addPath(path)
             ctx.clip()
-            let colors = [topColor.cgColor, NSColor.black.cgColor] as CFArray
+            let colors = [NSColor.black.cgColor, bottomColor.cgColor] as CFArray
             if let gradient = CGGradient(
                 colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: [0, 1]) {
                 ctx.drawLinearGradient(
@@ -907,10 +908,11 @@ final class IslandView: NSView {
     private var cachedDominantKey: String?
     private var cachedDominantColor: NSColor?
 
-    /// Darkened dominant cover color for the background gradient, or nil
-    /// when there is no artwork (plain black pill). Cached per track so
-    /// the 10x/second waveform redraw never re-samples the image.
-    private func gradientTopColor() -> NSColor? {
+    /// Darkened dominant cover color at the bottom of the background
+    /// gradient, or nil when there is no artwork (plain black pill).
+    /// Cached per track so the 10x/second waveform redraw never
+    /// re-samples the image.
+    private func gradientBottomColor() -> NSColor? {
         guard let session, let artwork = session.artwork else {
             cachedDominantKey = nil
             cachedDominantColor = nil
