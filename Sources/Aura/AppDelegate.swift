@@ -156,6 +156,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     setState(.compact)
                 }
             }
+        } else if islandView.isShowingModal {
+            // A modal dialog (add-task, water settings) is open, so
+            // the mouse moving down to it is not leaving the card.
+            // Collapsing here used to freeze the window at the expanded
+            // size (the animator timer does not fire in modal mode)
+            // while drawing closed content - the giant-curve pill in
+            // the bug report. The card stays open; IslandView re-syncs
+            // hover when the modal closes.
+            return
         } else {
             // Leaving the island always closes it — including an expanded
             // card, so closing never needs a second click. Playing music

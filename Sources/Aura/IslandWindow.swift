@@ -65,6 +65,11 @@ final class IslandAnimator {
         timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] t in
             self?.step(timer: t)
         }
+        // .common, like the alert timer: a scheduledTimer only fires
+        // in the default mode, so during an NSAlert modal the resize
+        // animation froze mid-flight (window stuck between sizes).
+        // Common modes keep it running through modals and tracking.
+        if let timer { RunLoop.main.add(timer, forMode: .common) }
     }
 
     private func step(timer: Timer) {

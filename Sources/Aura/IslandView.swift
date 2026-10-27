@@ -54,6 +54,16 @@ final class IslandView: NSView {
     /// True when the card was last closed from the lyrics page: the
     /// inactive pill then shows lyrics, not clock/battery/waveform.
     private var lyricsMode = false
+    /// True while a modal NSAlert (add-task, water settings) is open.
+    /// AppDelegate skips the leave-the-island collapse while this is
+    /// set: moving the mouse down to the dialog is not leaving the
+    /// card, and collapsing mid-modal used to freeze the window at
+    /// the expanded size (the animator timer does not fire in modal
+    /// mode) while the state already said closed - a 640x220 window
+    /// drawing closed content with a height/2 corner radius, the
+    /// giant-curve pill in the bug report. Cleared (and hover
+    /// re-synced) when the modal closes.
+    var isShowingModal = false
     var session: DisplaySession? {
         didSet {
             updatePositionAnchor()
@@ -1892,13 +1902,28 @@ final class IslandView: NSView {
         alert.addButton(withTitle: "Tambah")
         alert.addButton(withTitle: "Batal")
         alert.window.initialFirstResponder = field
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        isShowingModal = true
+        let response = alert.runModal()
+        isShowingModal = false
+        resyncHoverAfterModal()
+        guard response == .alertFirstButtonReturn else { return }
         let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         loadTodoTasksIfNeeded()
         todoTasks.append(TodoTask(id: UUID(), text: text, done: false, createdAt: Date()))
         saveTodoTasks()
         needsDisplay = true
+    }
+
+    /// After a modal closes, re-derive hover from the real mouse
+    /// position: the mouse-exit that fired while the dialog was open
+    /// was swallowed (see isShowingModal), so the tracking area will
+    /// not re-fire it. Outside the window collapses the card (the
+    /// normal leave rule, just deferred past the modal); inside just
+    /// restores isHovering, and is a no-op on an open card.
+    private func resyncHoverAfterModal() {
+        guard let window else { return }
+        onHoverChanged?(window.frame.contains(NSEvent.mouseLocation))
     }
 
     // MARK: - Water reminder
@@ -2047,7 +2072,11 @@ final class IslandView: NSView {
         let intervalField = row("Interval (menit)", value: "\(waterStore.intervalMinutes)", y: 8)
         alert.accessoryView = accessory
         alert.window.initialFirstResponder = goalField
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        isShowingModal = true
+        let response = alert.runModal()
+        isShowingModal = false
+        resyncHoverAfterModal()
+        guard response == .alertFirstButtonReturn else { return }
         let oldInterval = waterStore.intervalMinutes
         if let v = Int(goalField.stringValue.trimmingCharacters(in: .whitespaces)), v > 0 {
             waterStore.goalMl = v
