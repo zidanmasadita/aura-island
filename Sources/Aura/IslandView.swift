@@ -14,9 +14,10 @@ import AppKit
 ///   controls, dots); opening lyrics only widens the card
 ///   (700x180, same height) and compresses the music part, putting
 ///   the lyrics panel on the right, like Nusa; sources is the picker
-///   on the 640x220 footprint; pomodoro is the timer on 640x180.
-///   The bubble toggles music/lyrics, the circled side arrows move
-///   to the previous/next section, and the dots jump sections.
+///   on the 640x220 footprint; pomodoro is the timer on 640x180;
+///   todo is the task list on 640x220. The bubble toggles
+///   music/lyrics, three-finger swipe moves to the previous/next
+///   section, and the dots jump sections.
 /// - closed pill in lyrics mode: once the card was closed from the
 ///   lyrics page, the inactive pill shows a note icon + the current
 ///   lyric line — never clock, battery ring, or waveform — until the
@@ -30,7 +31,7 @@ import AppKit
 /// livePosition), so the bar moves smoothly at the 10x/second redraw
 /// while playing, and only re-anchors on track/state change, a seek,
 /// or when the sensor runs ahead of the display.
-final class IslandView: NSView {
+final class IslandView: NSView, NSTextFieldDelegate {
     var state: IslandState = .zen {
         didSet {
             // Remember whether the card was on lyrics when it closed:
@@ -43,7 +44,7 @@ final class IslandView: NSView {
                 lyricsMode = (cardPage == .lyrics)
             }
             // Leaving the expanded card always returns to the music
-            // page, so reopening never lands on a stale lyrics/pomodoro/sources page.
+            // page, so reopening never lands on a stale lyrics/pomodoro/todo/sources page.
             if state != .expanded { cardPage = .music }
             needsDisplay = true
         }
@@ -290,9 +291,10 @@ final class IslandView: NSView {
     var batteryCharging: Bool = false
 
     /// The expanded card's current page. View-internal display state;
-    /// the section arrows, dots, and bubble icon switch it, nothing else reads it.
+    /// the dots, three-finger swipe, and bubble icon switch it, nothing else reads it.
     private var cardPage: CardPage = .music {
         didSet {
+            if cardPage != .todo { hideTodoField() }
             if state == .expanded { onExpandedSizeChanged?(expandedSize) }
             needsDisplay = true
         }
@@ -303,12 +305,14 @@ final class IslandView: NSView {
     /// progress, controls, dots); lyrics only widens it to 700x180 —
     /// the height does not change, so switching pages never moves
     /// the music part vertically; sources stays 640x220; pomodoro is
-    /// 640x180 (ring + timer + mode pills, like the reference).
+    /// 640x180 (ring + timer + mode pills, like the reference); todo
+    /// is 640x220 (task rows + add row, like sources).
     var expandedSize: NSSize {
         switch currentPage {
         case .music: return NSSize(width: 520, height: 180)
         case .lyrics: return NSSize(width: 700, height: 180)
         case .pomodoro: return NSSize(width: 640, height: 180)
+        case .todo: return NSSize(width: 640, height: 220)
         case .sources: return NSSize(width: 640, height: 220)
         }
     }
@@ -326,15 +330,16 @@ final class IslandView: NSView {
         return lyricsMode ? NSSize(width: 360, height: 32) : NSSize(width: 160, height: 32)
     }
 
-    private enum CardPage { case music, lyrics, pomodoro, sources }
+    private enum CardPage { case music, lyrics, pomodoro, todo, sources }
 
-    /// Sections the dots and side arrows offer: music + pomodoro
-    /// always, sources only when there is more than one session to
-    /// choose from. Lyrics is NOT a section — it is a panel of the
-    /// music section (via the bubble), so arrows and dots never land
-    /// on it; that was the old chevron's mistake (it jumped to lyrics).
+    /// Sections the dots and three-finger swipe offer: music +
+    /// pomodoro + todo always, sources only when there is more than
+    /// one session to choose from. Lyrics is NOT a section — it is a
+    /// panel of the music section (via the bubble), so swipe and dots
+    /// never land on it; that was the old chevron's mistake (it
+    /// jumped to lyrics).
     private var availableSections: [CardPage] {
-        sessionsForPicker.count > 1 ? [.music, .pomodoro, .sources] : [.music, .pomodoro]
+        sessionsForPicker.count > 1 ? [.music, .pomodoro, .todo, .sources] : [.music, .pomodoro, .todo]
     }
 
     /// The page actually drawn (lyrics included). Sources falls back
@@ -343,24 +348,20 @@ final class IslandView: NSView {
         (cardPage == .sources && sessionsForPicker.count <= 1) ? .music : cardPage
     }
 
-    /// The section the dots/arrows act on: lyrics counts as music
+    /// The section the dots/swipe act on: lyrics counts as music
     /// (its panel belongs to the music section).
     private var sectionForDots: CardPage {
         currentPage == .lyrics ? .music : currentPage
     }
 
     /// Rects for the interactive elements of the expanded card.
-    /// The bubble toggles music/lyrics. Section arrows are circled
-    /// chevrons at the card's left/right edges, mid-height; they move
-    /// to the previous/next section and never open lyrics. Arrows are
-    /// 24px circles in a 6px edge gutter; content is shifted so at
-    /// least 6px of padding separates arrow and content. The bubble
-    /// sits further right than the card edge so it does not hug the
-    /// corner. Both music pages share the dense row (controls at
-    /// y140, bubble y126).
+    /// The bubble toggles music/lyrics. Sections switch by dots or
+    /// three-finger swipe (the side arrows were removed: they
+    /// overlapped content even with a gutter, and the MacBook way is
+    /// swipe). The bubble sits further right than the card edge so
+    /// it does not hug the corner. Both music pages share the dense
+    /// row (controls at y140, bubble y126).
     private var musicBubbleRect: NSRect { NSRect(x: 42, y: 126, width: 28, height: 28) }
-    private var leftArrowRect: NSRect { NSRect(x: 6, y: bounds.height / 2 - 12, width: 24, height: 24) }
-    private var rightArrowRect: NSRect { NSRect(x: bounds.width - 30, y: bounds.height / 2 - 12, width: 24, height: 24) }
 
     // MARK: - Realtime position
 
@@ -520,21 +521,10 @@ final class IslandView: NSView {
             }
             return
         }
-        // Section arrows (circled chevrons at the edges): previous /
-        // next section. The lyrics page has no right arrow (the panel
-        // occupies the right edge).
-        if leftArrowRect.contains(point) {
-            moveSection(by: -1)
-            return
-        }
-        if currentPage != .lyrics && rightArrowRect.contains(point) {
-            moveSection(by: 1)
-            return
-        }
         switch currentPage {
         case .music:
             // Speech bubble opens lyrics (the card extends horizontally).
-            // No arrow opens lyrics anymore — arrows switch sections.
+            // Sections switch by dots or three-finger swipe (no arrows).
             if musicBubbleRect.contains(point) {
                 cardPage = .lyrics
                 needsDisplay = true
@@ -575,6 +565,21 @@ final class IslandView: NSView {
                 setPomodoroMode(.focus)
                 return
             }
+        case .todo:
+            for row in todoVisibleRows() {
+                if row.deleteRect.contains(point) {
+                    deleteTodoTask(id: row.task.id)
+                    return
+                }
+                if row.rowRect.contains(point) {
+                    toggleTodoTask(id: row.task.id)
+                    return
+                }
+            }
+            if todoAddRowRect.contains(point) {
+                showTodoField()
+                return
+            }
         case .sources:
             // Picker rows: header at y 64, rows from y 88, height 22, max 4.
             if point.y >= 88 {
@@ -592,40 +597,30 @@ final class IslandView: NSView {
         }
         // Any other click on the expanded card collapses it. Without this
         // fallthrough there was no way to close the card by clicking: only
-        // the controls, picker rows, and pomodoro buttons responded, the
+        // the controls, picker rows, pomodoro buttons, and todo rows responded, the
         // rest did nothing.
         onClicked?()
     }
 
-    /// Trackpad/mouse horizontal swipe switches sections (same as the
-    /// side arrows): swipe left -> next section, swipe right ->
-    /// previous. Accumulates deltaX across the swipe's events; a firm
-    /// swipe (>= 80) switches once, then resets (one swipe = one
-    /// section). Momentum (the coast after a swipe) is ignored so a
-    /// fast swipe never switches twice. Only when expanded (the
-    /// closed pill has no sections). NOTE: momentumPhase is an
-    /// OptionSet — empty means no momentum. Writing `.none` here
-    /// would be Optional.none (the compiler warns, and it is never
-    /// equal), which would block every swipe, not just momentum.
-    /// NOTE: the deltaX sign convention (left swipe = negative)
-    /// could not be verified in this VM (no trackpad); if the
-    /// direction feels backwards on the Mac, flip the two
-    /// moveSection signs (one line each).
-    private var swipeAccumulatedX: CGFloat = 0
-    override func scrollWheel(with event: NSEvent) {
+    /// Three-finger swipe switches sections (the MacBook way):
+    /// swipe left -> next section, swipe right -> previous.
+    /// Uses the swipe event (not scrollWheel): AppKit delivers
+    /// three-finger swipes as swipe events with deltaX -1 (left)
+    /// or +1 (right). Only when expanded (the closed pill has no
+    /// sections). NOTE: if the Mac's Trackpad setting "Swipe
+    /// between full-screen apps" is set to 3 fingers (the default),
+    /// the system intercepts three-finger swipes for space
+    /// switching and Aura never sees them — set it to 4 fingers
+    /// so three-finger swipes reach Aura. NOTE: the deltaX sign
+    /// convention (left swipe = negative) could not be verified
+    /// in this VM (no trackpad); if the direction feels backwards
+    /// on the Mac, flip the two moveSection signs (one line each).
+    override func swipe(with event: NSEvent) {
         guard state == .expanded else { return }
-        guard event.momentumPhase.isEmpty else { return }
-        if event.phase == .ended || event.phase == .cancelled {
-            swipeAccumulatedX = 0
-            return
-        }
-        swipeAccumulatedX += event.scrollingDeltaX
-        if swipeAccumulatedX <= -80 {
+        if event.deltaX < 0 {
             moveSection(by: 1)
-            swipeAccumulatedX = 0
-        } else if swipeAccumulatedX >= 80 {
+        } else if event.deltaX > 0 {
             moveSection(by: -1)
-            swipeAccumulatedX = 0
         }
     }
 
@@ -637,10 +632,12 @@ final class IslandView: NSView {
         }
     }
 
-    /// Section arrows: move to the previous/next section in dot order
-    /// (music -> pomodoro -> sources when available -> back to music),
+    /// Move to the previous/next section in dot order (music ->
+    /// pomodoro -> todo -> sources when available -> back to music),
     /// wrapping. Lyrics is not a section (it is a panel of music, via
     /// the bubble), so moving from lyrics uses the music section.
+    /// Called by dots and three-finger swipe (the side arrows were
+    /// removed).
     private func moveSection(by delta: Int) {
         let sections = availableSections
         guard !sections.isEmpty else { return }
@@ -1007,21 +1004,23 @@ final class IslandView: NSView {
     // MARK: - Expanded card
 
     private func drawExpanded() {
-        // Pomodoro works without music (its own timer), so it bypasses
-        // the no-media guard every other page sits behind.
+        // Pomodoro and todo work without music (their own timer and
+        // list), so they bypass the no-media guard every other page
+        // sits behind.
         if currentPage == .pomodoro {
             drawPomodoro()
+        } else if currentPage == .todo {
+            drawTodo()
         } else {
             guard let session else {
                 drawCentered("Tidak ada media yang diputar",
                              font: NSFont.systemFont(ofSize: 13),
                              color: NSColor.white.withAlphaComponent(0.7),
                              y: bounds.height / 2 - 8)
-                // Still draw dots + arrows: without music the only
-                // usable section is pomodoro, and the user reaches it
-                // from here (arrow right or the pomodoro dot).
+                // Still draw dots: without music the usable sections
+                // are pomodoro and todo, and the user reaches them
+                // from here (their dots).
                 drawPageDots()
-                drawSectionArrows()
                 return
             }
             switch currentPage {
@@ -1038,12 +1037,11 @@ final class IslandView: NSView {
             case .sources:
                 drawCardHeader()
                 drawPicker(startY: 64)
-            case .pomodoro:
+            case .pomodoro, .todo:
                 break // handled above
             }
         }
         drawPageDots()
-        drawSectionArrows()
     }
 
     /// Header for the card pages, like Nusa's music card: green dot
@@ -1564,19 +1562,176 @@ final class IslandView: NSView {
         modePill(buttons.focus, icon: "target", iconFallback: "◎", label: "Focus Time", active: pomodoroMode == .focus)
     }
 
-    /// Section arrows: circled chevrons at the card's left/right edges,
-    /// mid-height, for previous/next section. Drawn after the page
-    /// content (on top, like floating buttons). The lyrics page has no
-    /// right arrow (the panel occupies the right edge).
-    private func drawSectionArrows() {
-        func arrow(_ rect: NSRect, _ symbol: String, _ fallback: String) {
-            NSColor.white.withAlphaComponent(0.18).setFill()
-            NSBezierPath(ovalIn: rect).fill()
-            drawSymbol(symbol, size: 14, center: CGPoint(x: rect.midX, y: rect.midY), fallback: fallback)
+    // MARK: - Todo
+
+    /// One task: persisted in UserDefaults (JSON) so it survives
+    /// relaunch. No cloud, no account — a local list, like Nusa's
+    /// todo. Shown incomplete-first (oldest first), up to 4 rows;
+    /// completing a task reveals the next one in line.
+    private struct TodoTask: Codable {
+        var id: UUID
+        var text: String
+        var done: Bool
+        var createdAt: Date
+    }
+
+    private var todoTasks: [TodoTask] = []
+    private var todoTasksLoaded = false
+    private let todoTasksDefaultsKey = "AuraTodoTasks"
+
+    private func loadTodoTasksIfNeeded() {
+        guard !todoTasksLoaded else { return }
+        todoTasksLoaded = true
+        guard let data = UserDefaults.standard.data(forKey: todoTasksDefaultsKey),
+              let decoded = try? JSONDecoder().decode([TodoTask].self, from: data) else { return }
+        todoTasks = decoded
+    }
+
+    private func saveTodoTasks() {
+        guard let data = try? JSONEncoder().encode(todoTasks) else { return }
+        UserDefaults.standard.set(data, forKey: todoTasksDefaultsKey)
+    }
+
+    private func todoSortedTasks() -> [TodoTask] {
+        loadTodoTasksIfNeeded()
+        return todoTasks.sorted { a, b in
+            if a.done != b.done { return !a.done }
+            return a.createdAt < b.createdAt
         }
-        arrow(leftArrowRect, "chevron.left", "‹")
-        if currentPage != .lyrics {
-            arrow(rightArrowRect, "chevron.right", "›")
+    }
+
+    /// Visible rows (same rects as drawn, so hit == drawn): rows from
+    /// y48, height 24, pitch 28, max 4. The toggle area is x40-592;
+    /// the delete button is a separate 24px square at x600-624.
+    private func todoVisibleRows() -> [(task: TodoTask, rowRect: NSRect, deleteRect: NSRect)] {
+        todoSortedTasks().prefix(4).enumerated().map { i, task in
+            let y: CGFloat = 48 + CGFloat(i) * 28
+            return (task: task,
+                    rowRect: NSRect(x: 40, y: y, width: 552, height: 24),
+                    deleteRect: NSRect(x: 600, y: y, width: 24, height: 24))
         }
+    }
+
+    /// The "+ Tambah tugas" row (x40-600, y164-188). The text field
+    /// opens over exactly this rect.
+    private var todoAddRowRect: NSRect { NSRect(x: 40, y: 164, width: 560, height: 24) }
+
+    private func toggleTodoTask(id: UUID) {
+        loadTodoTasksIfNeeded()
+        guard let i = todoTasks.firstIndex(where: { $0.id == id }) else { return }
+        todoTasks[i].done.toggle()
+        saveTodoTasks()
+        needsDisplay = true
+    }
+
+    private func deleteTodoTask(id: UUID) {
+        loadTodoTasksIfNeeded()
+        todoTasks.removeAll { $0.id == id }
+        saveTodoTasks()
+        needsDisplay = true
+    }
+
+    private func drawTodo() {
+        drawCardHeader(width: 640)
+        drawText("Todo", font: NSFont.boldSystemFont(ofSize: 20), color: .white, at: NSPoint(x: 28, y: 10))
+        let rows = todoVisibleRows()
+        for row in rows {
+            let centerY = row.rowRect.midY
+            if row.task.done {
+                NSColor.white.setFill()
+                NSBezierPath(ovalIn: NSRect(x: 40, y: centerY - 10, width: 20, height: 20)).fill()
+            } else {
+                NSColor.white.withAlphaComponent(0.6).setStroke()
+                let circle = NSBezierPath(ovalIn: NSRect(x: 40, y: centerY - 10, width: 20, height: 20))
+                circle.lineWidth = 1.5
+                circle.stroke()
+            }
+            drawText(truncated(row.task.text, toWidth: 500, font: NSFont.systemFont(ofSize: 14)),
+                     font: NSFont.systemFont(ofSize: 14),
+                     color: row.task.done ? NSColor.white.withAlphaComponent(0.5) : .white,
+                     at: NSPoint(x: 68, y: row.rowRect.minY + 3))
+            let xLabel = "×"
+            let xFont = NSFont.systemFont(ofSize: 14)
+            let xW = (xLabel as NSString).size(withAttributes: [.font: xFont]).width
+            drawText(xLabel, font: xFont, color: NSColor.white.withAlphaComponent(0.4),
+                     at: NSPoint(x: row.deleteRect.midX - xW / 2, y: centerY - 8))
+        }
+        // The add row is hidden while the text field sits over it.
+        if !isAddingTodo {
+            drawText("+ Tambah tugas", font: NSFont.systemFont(ofSize: 14),
+                     color: NSColor.white.withAlphaComponent(0.6), at: NSPoint(x: 40, y: 167))
+            loadTodoTasksIfNeeded()
+            let extra = todoTasks.count - rows.count
+            if extra > 0 {
+                let label = "＋\(extra) lainnya"
+                let font = NSFont.systemFont(ofSize: 11)
+                let w = (label as NSString).size(withAttributes: [.font: font]).width
+                drawText(label, font: font, color: NSColor.white.withAlphaComponent(0.4),
+                         at: NSPoint(x: 600 - w, y: 169))
+            }
+        }
+    }
+
+    /// The new-task text field: a dark rounded field over the add
+    /// row. Enter commits (via the field's action); Escape cancels
+    /// (via doCommandBy); leaving the page or collapsing the card
+    /// discards the draft (cardPage didSet hides it).
+    private var todoTextField: NSTextField?
+    private var isAddingTodo = false
+
+    private func showTodoField() {
+        if todoTextField == nil {
+            let field = NSTextField(frame: todoAddRowRect)
+            field.delegate = self
+            field.target = self
+            field.action = #selector(todoFieldCommitted)
+            field.placeholderString = "Tugas baru... (Enter untuk menambah)"
+            field.font = NSFont.systemFont(ofSize: 14)
+            field.textColor = .white
+            field.focusRingType = .none
+            field.isBordered = false
+            field.drawsBackground = false
+            field.wantsLayer = true
+            field.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.12).cgColor
+            field.layer?.cornerRadius = 8
+            addSubview(field)
+            todoTextField = field
+        }
+        guard let field = todoTextField else { return }
+        field.frame = todoAddRowRect
+        field.stringValue = ""
+        field.isHidden = false
+        isAddingTodo = true
+        window?.makeFirstResponder(field)
+        needsDisplay = true
+    }
+
+    private func hideTodoField() {
+        guard isAddingTodo else { return }
+        isAddingTodo = false
+        todoTextField?.resignFirstResponder()
+        todoTextField?.isHidden = true
+        needsDisplay = true
+    }
+
+    @objc private func todoFieldCommitted() {
+        guard let field = todoTextField else { return }
+        let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !text.isEmpty {
+            loadTodoTasksIfNeeded()
+            todoTasks.append(TodoTask(id: UUID(), text: text, done: false, createdAt: Date()))
+            saveTodoTasks()
+        }
+        hideTodoField()
+    }
+
+    /// Escape cancels the new-task draft; every other command falls
+    /// through to the default (Enter fires the field's action).
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+            hideTodoField()
+            return true
+        }
+        return false
     }
 }

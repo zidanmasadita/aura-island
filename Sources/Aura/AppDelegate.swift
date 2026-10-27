@@ -147,7 +147,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         islandView.state = state
         // Expanded size follows the card's page (music 520x180,
         // lyrics 700x180 — same height, only the width grows —
-        // pomodoro 640x180, sources 640x220); zen uses its fixed size;
+        // pomodoro 640x180, todo/sources 640x220); zen uses its fixed size;
         // compact/split use the closed size (32 tall; plain music and
         // pomodoro 160 wide, lyrics mode 360). Setting state first matters: leaving
         // expanded updates lyricsMode in didSet before closedSize is
