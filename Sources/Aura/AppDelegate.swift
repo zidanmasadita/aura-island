@@ -68,6 +68,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// How long a brightness change is held before showing, to let
     /// a following power flip cancel it as auto-adjust.
     private let brightnessHold: TimeInterval = 0.75
+    /// Connected Bluetooth devices (address -> name) at the last
+    /// check; nil until the first check, so devices already
+    /// connected at launch do not fire a false connect alert.
+    private var prevBluetooth: [String: String]?
+    /// Last Bluetooth check (throttled to 1s: connection itself
+    /// takes seconds, and IOBluetooth need not be polled at 0.25s).
+    private var lastBluetoothCheck: Date?
+    private let bluetoothCheckInterval: TimeInterval = 1.0
     private var alertTimer: Timer?
 
     /// macOS 15.4+ denies direct MediaRemote reads to third-party
@@ -313,11 +321,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    /// Bluetooth connect/disconnect alert, throttled to 1s. Returns
+    /// nil when throttled, on first check (initializes silently),
+    /// or when nothing changed. One alert per check; simultaneous
+    /// changes beyond the first are recorded silently (single
+    /// slot). The caller presents it only when no card is expanded;
+    /// the baseline advances regardless, so a change during an open
+    /// card is dropped, not queued (same rule as battery/caps).
+    /// Texts are English, like every other pill alert.
+    private func bluetoothAlert() -> IslandView.PillAlert? {
+        let now = Date()
+        if let last = lastBluetoothCheck, now.timeIntervalSince(last) < bluetoothCheckInterval {
+            return nil
+        }
+        lastBluetoothCheck = now
+        let current = Bluetooth.connectedDevices()
+        var currentMap: [String: String] = [:]
+        for device in current { currentMap[device.address] = device.name }
+        guard let prev = prevBluetooth else {
+            prevBluetooth = currentMap
+            return nil
+        }
+        prevBluetooth = currentMap
+        if let fresh = current.first(where: { prev[$0.address] == nil }) {
+            let detail: IslandView.PillAlert.Detail
+            if let battery = BluetoothBattery.fetch(deviceName: fresh.name) {
+                let tint: NSColor = battery <= 20 ? .systemRed : .white
+                detail = .text("Connected \u{00B7} \(battery)%", tint)
+            } else {
+                detail = .text("Connected", .white)
+            }
+            return IslandView.PillAlert(
+                icon: .symbol(name: "bluetooth", fallback: "B", size: 20),
+                message: fresh.name,
+                detail: detail,
+                until: Date() + pillAlertDuration,
+                priority: 3)
+        }
+        if let goneAddress = prev.keys.first(where: { currentMap[$0] == nil }),
+           let goneName = prev[goneAddress] {
+            return IslandView.PillAlert(
+                icon: .symbol(name: "bluetooth", fallback: "B", size: 20),
+                message: goneName,
+                detail: .text("Disconnected", .white),
+                until: Date() + pillAlertDuration,
+                priority: 3)
+        }
+        return nil
+    }
+
     private func updatePillAlerts() {
         let battery = Battery.fetch()
         let caps = CapsLock.fetch()
         let volume = Volume.fetch()
         let brightness = Brightness.fetch()
+        // Computed here (not inside the firing block below) so the
+        // Bluetooth baseline advances even while a card is expanded;
+        // the alert itself is presented only when no card is open.
+        let btAlert = bluetoothAlert()
         // A charger plug/unplug also re-adjusts brightness (system
         // auto-adjust), which must not overwrite the charging
         // alert: remember the flip so brightness changes in the
@@ -370,6 +431,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } else {
                 brightnessHoldSince = nil
             }
+            if let alert = btAlert { fired = presentAlert(alert) || fired }
             if fired {
                 animator.animate(to: windowSize(for: islandView.state))
             }
