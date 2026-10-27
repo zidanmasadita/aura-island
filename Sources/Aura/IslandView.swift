@@ -6,8 +6,9 @@ import AppKit
 ///
 /// Layouts (flipped coordinates, y grows downward):
 /// - zen (140x32): the idle face — two white eyes.
-/// - compact: the closed notch, a full capsule — plain music 140x32
-///   (same as idle), lyrics mode 360x32 (note icon + lyric line).
+/// - compact: the closed notch, boxy with a concave bezel sweep of
+///   height/4 — plain music 140x32 (same as idle), lyrics mode 360x32
+///   (note icon + lyric line).
 /// - expanded, wide and short (never tall): music is the normal Nusa
 ///   music card (640x220: header, artwork, title/artist, progress,
 ///   controls, chevron, dots); opening lyrics extends the card
@@ -348,19 +349,17 @@ final class IslandView: NSView {
         // at the bottom. Tangent-based arcs (not angle-based) so the
         // shape is correct in this flipped view regardless of angle
         // conventions.
-        // The closed pill (compact/split/zen) is a full capsule: all
-        // corners rounded with radius height/2, so the top corners
-        // follow the generous curve from the reference sketch. The
-        // expanded card keeps the concave tuck as part of the notch
-        // look.
+        // The card stays boxy; the bezel-touching ends curve concave
+        // like the original design, but the sweep is a quarter of the
+        // card's height — not just a small tuck at the tip — so the
+        // curve reads as a long sweep (card 220 -> 55, pill 32 -> 8).
         let path = notchPath(
             rect: rect,
-            tuck: state == .expanded ? 12 : 0,
+            tuck: rect.height / 4,
             // Full cards keep the 28pt bottom rounding from the Nusa
             // reference; short pills (compact, music strip) are fully
             // rounded like the closed pill.
-            bottomRadius: state == .expanded && rect.height > 100 ? 28 : rect.height / 2,
-            topRadius: state == .expanded ? 0 : rect.height / 2
+            bottomRadius: state == .expanded && rect.height > 100 ? 28 : rect.height / 2
         )
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
         ctx.saveGState()
@@ -411,45 +410,16 @@ final class IslandView: NSView {
     ///   at the full width and tangent to the tucked side edge, so the
     ///   notch reads as flowing out of the bezel rather than stuck onto
     ///   it.
-    /// - topRadius: when positive, the top corners are convex rounded
-    ///   with this radius instead of the tuck (closed pill capsule).
-    ///   Takes precedence over the tuck.
-    private func notchPath(rect: NSRect, tuck: CGFloat, bottomRadius: CGFloat,
-                           topRadius: CGFloat = 0) -> CGPath {
+    private func notchPath(rect: NSRect, tuck: CGFloat, bottomRadius: CGFloat) -> CGPath {
         let path = CGMutablePath()
         let x = rect.minX, y = rect.minY, w = rect.width, h = rect.height
         let t = min(tuck, w / 2, h / 2)
         let rb = min(bottomRadius, w / 2, h / 2)
-        let tr = min(topRadius, w / 2, h / 2)
-        if tr > 0 {
-            // Convex rounded top corners: capsule top. Zero-length
-            // straight sides are fine (a 32-tall pill with radius 16
-            // is a pure capsule).
-            path.move(to: CGPoint(x: x + tr, y: y))
-            path.addLine(to: CGPoint(x: x + w - tr, y: y))
-            path.addArc(tangent1End: CGPoint(x: x + w, y: y),
-                        tangent2End: CGPoint(x: x + w, y: y + tr), radius: tr)
-            path.addLine(to: CGPoint(x: x + w, y: y + h - rb))
-            path.addArc(tangent1End: CGPoint(x: x + w, y: y + h),
-                        tangent2End: CGPoint(x: x + w - rb, y: y + h), radius: rb)
-            path.addLine(to: CGPoint(x: x + rb, y: y + h))
-            path.addArc(tangent1End: CGPoint(x: x, y: y + h),
-                        tangent2End: CGPoint(x: x, y: y + h - rb), radius: rb)
-            path.addLine(to: CGPoint(x: x, y: y + tr))
-            path.addArc(tangent1End: CGPoint(x: x, y: y),
-                        tangent2End: CGPoint(x: x + tr, y: y), radius: tr)
-            path.closeSubpath()
-            return path
-        }
         path.move(to: CGPoint(x: x, y: y))
         path.addLine(to: CGPoint(x: x + w, y: y))
-        // Top-right: concave sweep into the bezel. Skipped when the
-        // tuck is zero (closed pill): the side then runs straight
-        // down from the top corner, leaving no see-through gap.
-        if t > 0 {
-            path.addArc(tangent1End: CGPoint(x: x + w - t, y: y),
-                        tangent2End: CGPoint(x: x + w - t, y: y + t), radius: t)
-        }
+        // Top-right: concave sweep into the bezel.
+        path.addArc(tangent1End: CGPoint(x: x + w - t, y: y),
+                    tangent2End: CGPoint(x: x + w - t, y: y + t), radius: t)
         path.addLine(to: CGPoint(x: x + w - t, y: y + h - rb))
         // Bottom-right: convex rounding.
         path.addArc(tangent1End: CGPoint(x: x + w - t, y: y + h),
@@ -459,12 +429,9 @@ final class IslandView: NSView {
         path.addArc(tangent1End: CGPoint(x: x + t, y: y + h),
                     tangent2End: CGPoint(x: x + t, y: y + h - rb), radius: rb)
         path.addLine(to: CGPoint(x: x + t, y: y + t))
-        // Top-left: concave sweep into the bezel (skipped when the
-        // tuck is zero, same as the top-right).
-        if t > 0 {
-            path.addArc(tangent1End: CGPoint(x: x + t, y: y),
-                        tangent2End: CGPoint(x: x, y: y), radius: t)
-        }
+        // Top-left: concave sweep into the bezel.
+        path.addArc(tangent1End: CGPoint(x: x + t, y: y),
+                    tangent2End: CGPoint(x: x, y: y), radius: t)
         path.closeSubpath()
         return path
     }
