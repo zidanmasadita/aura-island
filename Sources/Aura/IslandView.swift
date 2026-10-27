@@ -120,6 +120,20 @@ final class IslandView: NSView {
     /// lines. A tick with the same line leaves an in-flight roll
     /// alone — it finishes on its own and must not be aborted.
     func updateLyricLines(prev: String?, current: String?, next: String?) {
+        // Defense: a lyric line must never contain a newline —
+        // drawText renders it as extra visual rows, which broke the
+        // closed pill (several rows in 32px) and overlapped the
+        // panel's wrapped lines. parsePlain now splits lines, but
+        // normalize here too so no source can ever reintroduce one.
+        let prev = prev?.replacingOccurrences(of: "\r\n", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+        let current = current?.replacingOccurrences(of: "\r\n", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+        let next = next?.replacingOccurrences(of: "\r\n", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
         let oldPrev = lyricPrev, oldCurrent = lyricCurrent, oldNext = lyricNext
         lyricPrev = prev
         lyricCurrent = current

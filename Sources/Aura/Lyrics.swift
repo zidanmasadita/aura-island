@@ -65,7 +65,7 @@ final class LyricsClient {
             let selectionPool = verified.isEmpty ? pool : verified
             let best = selectionPool.min(by: { score($0) < score($1) }) ?? array[0]
             let lines = Self.parseSynced(best["syncedLyrics"] as? String)
-                ?? Self.parsePlain(best["plainLyrics"] as? String)
+                ?? Self.parsePlain(best["plainLyrics"] as? String, duration: duration)
                 ?? []
             DispatchQueue.main.async { completion(lines) }
         }.resume()
@@ -155,9 +155,31 @@ final class LyricsClient {
         return ["instrumental", "music", "musik", "interlude", "intro", "outro"].contains(word)
     }
 
-    /// Plain lyrics without timestamps: single block at time 0.
-    private static func parsePlain(_ plain: String?) -> [(time: Double, text: String)]? {
+    /// Plain lyrics without timestamps: one entry per non-empty line,
+    /// spaced evenly across the track duration. Returning the whole
+    /// block as one entry (the old behavior) broke rendering: the
+    /// text contains newlines, and drawText renders them as extra
+    /// visual rows — the closed pill showed several rows in 32px,
+    /// and the panel's wrapped lines overlapped each other (the panel
+    /// budgets height for wrapped lines only, but each embedded
+    /// newline renders an extra row on top of the next wrapped line).
+    /// Songs with synced lyrics never hit this (their lines are
+    /// already per-line); only plain-only songs like The Visitor did
+    /// (LRCLIB has no synced version of it at all). Even spacing is
+    /// an approximation — LRCLIB has no timestamps for these songs —
+    /// so the lines will not match the vocal exactly, but they
+    /// display one at a time, correctly.
+    private static func parsePlain(_ plain: String?, duration: Double) -> [(time: Double, text: String)]? {
         guard let plain, !plain.isEmpty else { return nil }
-        return [(time: 0, text: plain)]
+        let lines = plain.components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && !isNonVocalMarker($0) }
+        guard !lines.isEmpty else { return nil }
+        // Line i at i * duration / count, so the last line starts
+        // before the track ends and shows until it. When the duration
+        // is unknown, fall back to 5s apart (an estimate — better
+        // than one block, and the lines still advance).
+        let step = duration > 0 ? duration / Double(lines.count) : 5.0
+        return lines.enumerated().map { (time: Double($0.offset) * step, text: $0.element) }
     }
 }
