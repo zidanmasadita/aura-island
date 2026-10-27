@@ -772,6 +772,17 @@ final class IslandView: NSView, NSDraggingSource {
         guard trayFileExists(pending.file) else { return }
         isDraggingOut = true
         let item = NSDraggingItem(pasteboardWriter: pending.file.url as NSURL)
+        // Explicit drag image (the file's icon): without it AppKit
+        // generates one from the pasteboard writer, which is the
+        // remaining drag-start path not under our control.
+        let filePath = pending.file.path
+        item.imageComponentsProvider = {
+            let icon = NSWorkspace.shared.icon(forFile: filePath)
+            let component = NSDraggingImageComponent(key: .icon)
+            component.contents = icon
+            component.frame = NSRect(x: 0, y: 0, width: 64, height: 64)
+            return [component]
+        }
         beginDraggingSession(with: [item], event: event, source: self)
     }
 
@@ -1019,25 +1030,18 @@ final class IslandView: NSView, NSDraggingSource {
         // later one). Clearing to transparent keeps the intended
         // 0.98 translucency (over the desktop, not over old text).
         ctx.clear(rect)
-        // Drop feedback transforms (whole island). No restore is
-        // needed: the context is fresh per draw, and everything
-        // below is meant to be transformed; inner save/restores
-        // nest correctly on top of these.
-        let bulgeScale = trayBulgeScale(now: Date())
-        if bulgeScale != 1.0 {
-            // Bulge: scale around the center. The window is enlarged
-            // by windowSize (same factor, same 0.35s ease), so the
-            // scaled card fills it; base is the unbulged size.
+        // Bubble bounce (whole island). No restore is needed: the
+        // context is fresh per draw, and everything below is meant
+        // to be transformed; inner save/restores nest correctly on
+        // top of this. The window is headroom-sized while hovering
+        // or bouncing, so the bouncing card never clips.
+        let springScale = traySpringScale(now: Date())
+        if springScale != 1.0 {
+            // Scale around the center; base is the unbulged size.
             let base = unbulgedSize(for: state)
             ctx.translateBy(x: rect.midX, y: rect.midY)
-            ctx.scaleBy(x: bulgeScale, y: bulgeScale)
+            ctx.scaleBy(x: springScale, y: springScale)
             ctx.translateBy(x: -base.width / 2, y: -base.height / 2)
-        }
-        if let (angle, x) = trayWobbleTransform(now: Date()) {
-            // Wobble: gentle rock + shake around the center, decaying.
-            ctx.translateBy(x: rect.midX + x, y: rect.midY)
-            ctx.rotate(by: angle)
-            ctx.translateBy(x: -rect.midX, y: -rect.midY)
         }
         ctx.saveGState()
         ctx.addPath(path)
@@ -2214,60 +2218,65 @@ final class IslandView: NSView, NSDraggingSource {
     private var trayFiles: [TrayFile] = []
     private var trayFilesLoaded = false
     /// While a drag hovers with a valid file URL. Read by
-    /// AppDelegate.windowSize (bulge) — hence internal, not private.
+    /// AppDelegate.windowSize (bounce headroom) — hence internal,
+    /// not private.
     var trayDropHighlight = false {
         didSet {
             needsDisplay = true
-            // Bulge animation + window resize on change only.
             if oldValue != trayDropHighlight {
-                let now = Date()
-                trayBulgeFrom = trayBulgeScale(now: now)
-                trayBulgeTo = trayDropHighlight ? Self.dropBulgeFactor : 1.0
-                trayBulgeStart = now
-                onTrayDropHighlightChanged?()
+                // Spring into the bulge (hover) or back to normal
+                // (drag leaves without dropping).
+                triggerTraySpring(to: trayDropHighlight ? 1.05 : 1.0)
+                onTraySizeChanged?()
             }
         }
     }
-    /// Drop bulge factor (window + draw scale together).
-    static let dropBulgeFactor: CGFloat = 1.05
-    /// Called when trayDropHighlight flips (bulge on/off) so
-    /// AppDelegate re-applies the window size (animator).
-    var onTrayDropHighlightChanged: (() -> Void)?
-    /// Bulge animation (0.35s, easeOutCubic, matching the window
-    /// animator so draw scale and window size stay in sync).
-    private var trayBulgeFrom: CGFloat = 1.0
-    private var trayBulgeTo: CGFloat = 1.0
-    private var trayBulgeStart: Date?
-    private func trayBulgeScale(now: Date) -> CGFloat {
-        guard let start = trayBulgeStart else { return trayBulgeTo }
-        let t = min(now.timeIntervalSince(start) / 0.35, 1)
-        let u = 1 - CGFloat(t)
-        let ease = 1 - u * u * u  // easeOutCubic
-        return trayBulgeFrom + (trayBulgeTo - trayBulgeFrom) * ease
+    /// Bounce headroom: while a drag hovers or a bounce runs, the
+    /// window is this much larger than the card so the bouncing
+    /// card (up to ~1.12x) never clips; the margin is transparent.
+    static let bounceHeadroomFactor: CGFloat = 1.15
+    /// Called when the tray's size factors change (drop highlight
+    /// flips, bounce settles) so AppDelegate re-applies window size.
+    var onTraySizeChanged: (() -> Void)?
+    /// Bubble bounce: a damped-cosine spring around a target,
+    /// scale(t) = to + (from - to) * e^(-3t) * cos(4πt) — the
+    /// island pops and bounces like a bubble, then settles.
+    /// Hover enter springs to 1.05 (bulged); hover exit springs
+    /// back to 1.0; drop pops to 1.12 then springs to 1.0.
+    private var traySpringFrom: CGFloat = 1.0
+    private var traySpringTo: CGFloat = 1.0
+    private var traySpringStart: Date?
+    private var traySpringTimer: Timer?
+    private func traySpringScale(now: Date) -> CGFloat {
+        guard let start = traySpringStart else { return traySpringTo }
+        let t = now.timeIntervalSince(start)
+        let decay = CGFloat(exp(-3 * t))
+        let osc = CGFloat(cos(4 * Double.pi * t))
+        return traySpringTo + (traySpringFrom - traySpringTo) * decay * osc
     }
-    /// Wobble after a drop (0.5s, 3 oscillations, decaying).
-    private var trayWobbleStart: Date?
-    private var trayWobbleTimer: Timer?
-    private func trayWobbleTransform(now: Date) -> (angle: CGFloat, x: CGFloat)? {
-        guard let start = trayWobbleStart else { return nil }
-        let t = now.timeIntervalSince(start) / 0.5
-        guard t >= 0, t < 1 else { return nil }
-        let decay = 1 - CGFloat(t)
-        let s = sin(CGFloat(t) * 6 * CGFloat.pi) * decay
-        return (angle: 0.0175 * s, x: 3 * s)  // 1° + 3px
-    }
-    private func startTrayWobble() {
-        trayWobbleStart = Date()
-        guard trayWobbleTimer == nil else { return }
-        trayWobbleTimer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
-            guard let self else { return }
+    /// True while a bounce is running (window stays headroom-sized).
+    var isTrayBouncing: Bool { traySpringTimer != nil }
+    private func triggerTraySpring(to: CGFloat, from impulse: CGFloat? = nil) {
+        let now = Date()
+        traySpringFrom = impulse ?? traySpringScale(now: now)
+        traySpringTo = to
+        traySpringStart = now
+        guard traySpringTimer == nil else { return }
+        traySpringTimer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            guard let self, let start = self.traySpringStart else {
+                self?.traySpringTimer?.invalidate()
+                self?.traySpringTimer = nil
+                return
+            }
             self.needsDisplay = true
-            if self.trayWobbleTransform(now: Date()) == nil {
-                self.trayWobbleTimer?.invalidate()
-                self.trayWobbleTimer = nil
+            let t = Date().timeIntervalSince(start)
+            if CGFloat(exp(-3 * t)) * abs(self.traySpringFrom - self.traySpringTo) < 0.002 {
+                self.traySpringTimer?.invalidate()
+                self.traySpringTimer = nil
+                self.onTraySizeChanged?()
             }
         }
-        if let trayWobbleTimer { RunLoop.main.add(trayWobbleTimer, forMode: .common) }
+        if let traySpringTimer { RunLoop.main.add(traySpringTimer, forMode: .common) }
     }
     /// The island's size without the drop bulge (single source of
     /// truth for AppDelegate.windowSize's base).
@@ -2368,7 +2377,8 @@ final class IslandView: NSView, NSDraggingSource {
         if !addedFiles.isEmpty {
             saveTrayFiles()
             startTrayPops(for: addedFiles)
-            startTrayWobble()
+            // Drop pops the bubble, then it bounces back to normal.
+        triggerTraySpring(to: 1.0, from: 1.12)
             needsDisplay = true
         }
         return addedFiles.count

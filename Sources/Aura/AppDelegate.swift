@@ -120,9 +120,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.islandView.showTray()
             self?.setState(.expanded)
         }
-        islandView.onTrayDropHighlightChanged = { [weak self] in
-            // Re-apply the current state so windowSize (bulged while
-            // a file drag hovers, normal otherwise) is animated to.
+        islandView.onTraySizeChanged = { [weak self] in
+            // Re-apply the current state so windowSize (headroom
+            // while hovering/bouncing, normal otherwise) is
+            // animated to.
             guard let self else { return }
             self.setState(self.islandView.state)
         }
@@ -302,12 +303,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// cancels a live alert (see setState).
     private func windowSize(for state: IslandState) -> NSSize {
         // Base size lives in IslandView (single source of truth);
-        // while a file drag hovers, the island swells slightly
-        // (the draw transform scales content to fill it).
+        // while a file drag hovers or a bounce runs, the window is
+        // headroom-sized so the bouncing card never clips (the
+        // margin is transparent).
         let base = islandView.unbulgedSize(for: state)
-        if islandView.trayDropHighlight {
-            return NSSize(width: base.width * IslandView.dropBulgeFactor,
-                          height: base.height * IslandView.dropBulgeFactor)
+        if islandView.trayDropHighlight || islandView.isTrayBouncing {
+            return NSSize(width: base.width * IslandView.bounceHeadroomFactor,
+                          height: base.height * IslandView.bounceHeadroomFactor)
         }
         return base
     }
