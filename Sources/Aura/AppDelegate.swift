@@ -227,13 +227,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         islandView.session = current
-        // Album artwork: the JXA sensor cannot read it from the system,
-        // so look it up online (iTunes Search, no key) when missing.
-        // The lookup is cached per track (title|artist|duration) and
-        // picks the best-matching candidate (title, artist, closest
-        // duration), so the cover matches the playing track instead
-        // of the first search result. When it lands, refresh() runs
-        // again and the cached cover is attached here.
+        // Album artwork: the JXA sensor cannot read it from the system
+        // in the per-second poll, so fetch it from the playing app
+        // itself (same nowPlayingInfo, once per track) when missing.
+        // Never an online search — the cover is exactly what the app
+        // reports. The lookup is cached per track; when it lands,
+        // refresh() runs again and the cached cover is attached here.
         if current.artwork == nil {
             if let cached = ArtworkFetcher.shared.cachedArtwork(title: current.title, artist: current.artist, duration: current.duration) {
                 islandView.session = current.withArtwork(cached)
@@ -261,6 +260,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // lyrics pill never keeps showing the previous song's
             // line for the new song (it falls back to the new title
             // until the new lyrics land).
+            lyricsLinesRaw = []
             lyricsLines = []
             islandView.lyricPrev = nil
             islandView.lyricCurrent = nil
@@ -270,13 +270,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // the current track's lines if the song changed again
                 // while it was in flight.
                 guard let self, self.currentTrackKey == key else { return }
-                self.lyricsLines = lines
-                self.refreshLyricLine()
-                // Redraw immediately: the inactive lyrics pill must
-                // show the new song's line the moment it lands,
-                // without waiting for the next poll or for the pill
-                // to be opened.
-                self.islandView.needsDisplay = true
+                self.lyricsLinesRaw = lines
+                self.applyLyricNudge()
             }
         }
         refreshLyricLine()
@@ -286,8 +281,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var lyricsLines: [(time: Double, text: String)] = []
+    /// Raw fetched lines, before the per-track nudge. The nudge is
+    /// re-applied from this, never stacked on already-nudged lines.
+    private var lyricsLinesRaw: [(time: Double, text: String)] = []
 
-    private func refreshLyricLine() {
+    /// Applies the current track's stored lyric shift (UserDefaults,
+    /// seconds, 0 when unset) to the raw lines. Called when lyrics
+    /// land and when the user nudges, so one tap shifts the whole
+    /// file at once. A version mismatch — the file's timestamps fit a
+    /// slightly different recording than the one playing — shows up
+    /// as a constant offset, and this is what corrects it per song.
+    private func applyLyricNudge() {
+        let nudge = currentTrackKey.map { UserDefaults.standard.double(forKey: "lyricNudge.\($0)") } ?? 0
+        lyricsLines = lyricsLinesRaw.map { (time: max(0, $0.time + nudge), text: $0.text) }
+        refreshLyricLine()
+        // Redraw immediately: the inactive lyrics pill must show the
+        // new song's line the moment it lands, without waiting for
+        // the next poll or for the pill to be opened.
+        islandView.needsDisplay = true
+    }
+
+    private func adjustLyricNudge(by delta: Double) {
+        guard let key = currentTrackKey, !lyricsLinesRaw.isEmpty else { return }
+        let current = UserDefaults.standard.double(forKey: "lyricNudge.\(key)")
+        UserDefaults.standard.set(current + delta, forKey: "lyricNudge.\(key)")
+        applyLyricNudge()
+    }
         guard sessions.current != nil else {
             islandView.lyricPrev = nil
             islandView.lyricCurrent = nil
@@ -329,6 +348,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         login.target = self
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
         menu.addItem(login)
+        // Manual lyric shift, per track, persisted: when a song's file
+        // fits a slightly different recording, its lines sit a constant
+        // amount early or late — one tap here moves the whole file.
+        let nudgePlus = NSMenuItem(title: "Lirik +1 detik (lebih lambat)", action: #selector(nudgeLyricPlus), keyEquivalent: "")
+        nudgePlus.target = self
+        menu.addItem(nudgePlus)
+        let nudgeMinus = NSMenuItem(title: "Lirik -1 detik (lebih cepat)", action: #selector(nudgeLyricMinus), keyEquivalent: "")
+        nudgeMinus.target = self
+        menu.addItem(nudgeMinus)
+        let nudgeReset = NSMenuItem(title: "Reset geseran lirik lagu ini", action: #selector(resetLyricNudge), keyEquivalent: "")
+        nudgeReset.target = self
+        menu.addItem(nudgeReset)
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "Keluar", action: #selector(quitApp), keyEquivalent: "q")
         quit.target = self
@@ -360,6 +391,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func setAuto() {
         sessions.unpin()
+    }
+
+    @objc private func nudgeLyricPlus() {
+        adjustLyricNudge(by: 1)
+    }
+
+    @objc private func nudgeLyricMinus() {
+        adjustLyricNudge(by: -1)
+    }
+
+    @objc private func resetLyricNudge() {
+        guard let key = currentTrackKey else { return }
+        UserDefaults.standard.removeObject(forKey: "lyricNudge.\(key)")
+        applyLyricNudge()
     }
 
     @objc private func unpinSession() {

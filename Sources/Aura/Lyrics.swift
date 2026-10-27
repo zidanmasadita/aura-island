@@ -28,8 +28,30 @@ final class LyricsClient {
             // extended, live) whose lyric timestamps differ, and the
             // first hit is often the wrong one — the common "lyrics
             // out of sync" cause. Prefer a result with synced lyrics
-            // whose duration matches the playing track; when durations
+            // whose title AND artist match the query (either direction,
+            // to tolerate "(Official Video)"-style suffixes on either
+            // side) and whose duration matches the playing track. When
+            // no candidate matches title/artist, fall back to the full
+            // pool rather than showing nothing — the sensor title may
+            // itself carry a suffix the API does not. When durations
             // are unknown, fall back to the first hit as before.
+            let normalize: (String) -> String = { s in
+                s.lowercased().split(separator: " ", omittingEmptySubsequences: true).joined(separator: " ")
+            }
+            let wantTitle = normalize(title)
+            let wantArtist = normalize(artist)
+            let matchesQuery: ([String: Any]) -> Bool = { result in
+                guard let trackName = result["trackName"] as? String else { return false }
+                let track = normalize(trackName)
+                let titleOK = !wantTitle.isEmpty
+                    && (track == wantTitle || track.contains(wantTitle) || wantTitle.contains(track))
+                guard titleOK else { return false }
+                guard !wantArtist.isEmpty,
+                      let artistName = result["artistName"] as? String else { return true }
+                let trackArtist = normalize(artistName)
+                return trackArtist == wantArtist
+                    || trackArtist.contains(wantArtist) || wantArtist.contains(trackArtist)
+            }
             let score: ([String: Any]) -> Double = { result in
                 guard duration > 0,
                       let d = result["duration"] as? Double, d > 0 else {
@@ -39,7 +61,9 @@ final class LyricsClient {
             }
             let withSynced = array.filter { ($0["syncedLyrics"] as? String)?.isEmpty == false }
             let pool = withSynced.isEmpty ? array : withSynced
-            let best = pool.min(by: { score($0) < score($1) }) ?? array[0]
+            let verified = pool.filter(matchesQuery)
+            let selectionPool = verified.isEmpty ? pool : verified
+            let best = selectionPool.min(by: { score($0) < score($1) }) ?? array[0]
             let lines = Self.parseSynced(best["syncedLyrics"] as? String)
                 ?? Self.parsePlain(best["plainLyrics"] as? String)
                 ?? []
@@ -47,10 +71,17 @@ final class LyricsClient {
         }.resume()
     }
 
-    /// Parses "[mm:ss.xx] text" lines into (seconds, text).
-    /// Honors the "[offset:+/-ms]" tag when present: it shifts every
-    /// timestamp (positive = lyrics later). The tag is usually at the
-    /// top, but it applies to the whole file regardless of position.
+    /// Parses "[mm:ss.xx] text" lines into (seconds, text), sorted by
+    /// time. Honors the "[offset:+/-ms]" tag when present: it shifts
+    /// every timestamp (positive = lyrics later). The tag is usually
+    /// at the top, but it applies to the whole file regardless of
+    /// position. A line may carry several timestamps
+    /// ("[00:12.00][00:15.00] text" — a repeated chorus): each one
+    /// becomes its own entry with the same text, so the line reappears
+    /// at every occurrence instead of showing the second stamp as
+    /// literal text. Metadata brackets ([ti:], [ar:], [al:], [by:])
+    /// before the first timestamp are skipped; a non-timestamp bracket
+    /// after timestamps (e.g. "[Chorus]") stays part of the text.
     private static func parseSynced(_ synced: String?) -> [(time: Double, text: String)]? {
         guard let synced, !synced.isEmpty else { return nil }
         var offsetSeconds = 0.0
@@ -63,16 +94,35 @@ final class LyricsClient {
         }
         var out: [(time: Double, text: String)] = []
         for rawLine in synced.components(separatedBy: "\n") {
-            guard rawLine.hasPrefix("["),
-                  let close = rawLine.firstIndex(of: "]") else { continue }
-            let stamp = String(rawLine[rawLine.index(after: rawLine.startIndex)..<close])
-            let text = String(rawLine[rawLine.index(after: close)...]).trimmingCharacters(in: .whitespacesAndNewlines)
-            let parts = stamp.components(separatedBy: ":")
-            guard parts.count == 2,
-                  let minutes = Double(parts[0]),
-                  let seconds = Double(parts[1]) else { continue }
-            out.append((time: max(0, minutes * 60 + seconds + offsetSeconds), text: text))
+            var line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            var times: [Double] = []
+            while line.hasPrefix("[") {
+                guard let close = line.firstIndex(of: "]") else { break }
+                let stamp = String(line[line.index(after: line.startIndex)..<close])
+                let rest = String(line[line.index(after: close)...])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let parts = stamp.components(separatedBy: ":")
+                if parts.count == 2,
+                   let minutes = Double(parts[0]),
+                   let seconds = Double(parts[1]) {
+                    times.append(max(0, minutes * 60 + seconds + offsetSeconds))
+                    line = rest
+                } else if times.isEmpty {
+                    // Metadata prefix ([ti:], [ar:], ...) — skip it and
+                    // keep scanning for a timestamp.
+                    line = rest
+                } else {
+                    // Non-timestamp bracket after timestamps — part of
+                    // the lyric text, not another stamp.
+                    break
+                }
+            }
+            guard !times.isEmpty else { continue }
+            for time in times {
+                out.append((time: time, text: line))
+            }
         }
+        out.sort { $0.time < $1.time }
         return out.isEmpty ? nil : out
     }
 

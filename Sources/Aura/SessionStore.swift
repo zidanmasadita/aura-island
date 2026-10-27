@@ -15,9 +15,10 @@ struct DisplaySession {
     /// support full transport through the macOS media keys.
     let supportsNextPrev: Bool
 
-    /// Copy with artwork attached (used for the iTunes lookup: the JXA
-    /// sensor reports no artwork, so AppDelegate attaches the looked-up
-    /// cover at display time without fighting the per-tick sensor update).
+    /// Copy with artwork attached (used for the system artwork fetch:
+    /// the JXA sensor reports no artwork in its poll, so AppDelegate
+    /// attaches the fetched cover at display time without fighting
+    /// the per-tick sensor update).
     func withArtwork(_ image: NSImage?) -> DisplaySession {
         DisplaySession(id: id, label: label, title: title, artist: artist,
                        isPlaying: isPlaying, position: position, duration: duration,

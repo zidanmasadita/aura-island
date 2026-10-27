@@ -1,0 +1,36 @@
+ObjC.import('Foundation');
+function run() {
+  try {
+    var bundle = $.NSBundle.bundleWithPath('/System/Library/PrivateFrameworks/MediaRemote.framework/');
+    // NOTE (JXA quirk): zero-argument ObjC methods are invoked by bare
+    // property access. `bundle.load()` tries to CALL the BOOL result and
+    // throws 'bundle.load is not a function' — this exact bug broke the
+    // sensor until the standalone osascript run proved it.
+    bundle.load;
+    var MRNowPlayingRequest = $.NSClassFromString('MRNowPlayingRequest');
+    if (!MRNowPlayingRequest) return JSON.stringify(null);
+    var item = MRNowPlayingRequest.localNowPlayingItem;
+    if (!item) return JSON.stringify(null);
+    var info = item.nowPlayingInfo;
+    if (!info) return JSON.stringify(null);
+    function str(key) {
+      var v = info.valueForKey(key);
+      return v ? v.js : '';
+    }
+    var b64 = null;
+    try {
+      var art = info.valueForKey('kMRMediaRemoteNowPlayingInfoArtwork');
+      // NSData in the info dict: base64 it so it survives JSON.
+      // Any other type (or a missing key) throws or yields nothing,
+      // and the caller falls back to the placeholder.
+      if (art) b64 = art.base64EncodedStringWithOptions(0).js;
+    } catch (e) {}
+    return JSON.stringify({
+      title: str('kMRMediaRemoteNowPlayingInfoTitle'),
+      artist: str('kMRMediaRemoteNowPlayingInfoArtist'),
+      artwork: b64
+    });
+  } catch (e) {
+    return JSON.stringify({ error: String(e) });
+  }
+}

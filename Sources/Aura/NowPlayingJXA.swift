@@ -15,12 +15,17 @@ import Foundation
 /// daemon patching, no private entitlement needed.
 ///
 /// Trade-offs vs the direct path (documented, accepted):
-/// - No album artwork: JXA cannot carry the image bytes back, so the
-///   expanded card shows its placeholder glyph on this path.
 /// - Polling only (no change notifications); the app already polls
 ///   every second, so this costs one osascript spawn per tick.
 /// - Browser elapsed time can go stale in the info dict; the script
 ///   prefers metadata.calculatedPlaybackPosition when available.
+/// - Artwork is NOT in the per-second poll (base64 image bytes would
+///   bloat every tick). It is fetched separately, once per track,
+///   via fetchArtwork: the same nowPlayingInfo read, but returning
+///   only the artwork bytes as base64 plus the title/artist they
+///   belong to, so the caller can discard them if the track changed
+///   mid-fetch. No online search is involved — the cover is exactly
+///   what the playing app reports to the system.
 enum NowPlayingJXA {
     private static let script = """
         ObjC.import('Foundation');
@@ -88,6 +93,103 @@ enum NowPlayingJXA {
                 completion(result.now, result.client, result.failure)
             }
         }
+    }
+
+    /// Artwork for the CURRENT item only, as base64 image bytes from
+    /// the same nowPlayingInfo dict the poll reads — i.e. exactly what
+    /// the playing app reports, never an online guess. Delivered on the
+    /// main thread as (title, artist, image): the title/artist use the
+    /// same fallback as the poll (title, else artist, else "Musik"),
+    /// so the caller can verify the artwork still belongs to the track
+    /// it asked for. Empty title/artist means the script failed or no
+    /// item exists; nil image with a title means the player simply
+    /// provides no artwork (placeholder stays).
+    static func fetchArtwork(completion: @escaping (String, String, NSImage?) -> Void) {
+        DispatchQueue.global(qos: .utility).async {
+            let result = runArtworkScript()
+            DispatchQueue.main.async {
+                completion(result.title, result.artist, result.image)
+            }
+        }
+    }
+
+    private static let artworkScript = """
+        ObjC.import('Foundation');
+        function run() {
+          try {
+            var bundle = $.NSBundle.bundleWithPath('/System/Library/PrivateFrameworks/MediaRemote.framework/');
+            // Same JXA quirk as the poll script: bare property access
+            // invokes a zero-argument ObjC method; `bundle.load()` would
+            // try to call the BOOL result.
+            bundle.load;
+            var MRNowPlayingRequest = $.NSClassFromString('MRNowPlayingRequest');
+            if (!MRNowPlayingRequest) return JSON.stringify(null);
+            var item = MRNowPlayingRequest.localNowPlayingItem;
+            if (!item) return JSON.stringify(null);
+            var info = item.nowPlayingInfo;
+            if (!info) return JSON.stringify(null);
+            function str(key) {
+              var v = info.valueForKey(key);
+              return v ? v.js : '';
+            }
+            var b64 = null;
+            try {
+              var art = info.valueForKey('kMRMediaRemoteNowPlayingInfoArtwork');
+              // NSData in the info dict: base64 it so it survives JSON.
+              // Any other type (or a missing key) throws or yields
+              // nothing, and the caller falls back to the placeholder.
+              if (art) b64 = art.base64EncodedStringWithOptions(0).js;
+            } catch (e) {}
+            return JSON.stringify({
+              title: str('kMRMediaRemoteNowPlayingInfoTitle'),
+              artist: str('kMRMediaRemoteNowPlayingInfoArtist'),
+              artwork: b64
+            });
+          } catch (e) {
+            return JSON.stringify({ error: String(e) });
+          }
+        }
+        """
+
+    private static func runArtworkScript() -> (title: String, artist: String, image: NSImage?) {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        proc.arguments = ["-l", "JavaScript", "-e", artworkScript]
+        let out = Pipe()
+        proc.standardOutput = out
+        proc.standardError = FileHandle.nullDevice
+        do {
+            try proc.run()
+        } catch {
+            return ("", "", nil)
+        }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 5) {
+            if proc.isRunning {
+                proc.terminate()
+            }
+        }
+        proc.waitUntilExit()
+        guard proc.terminationStatus == 0 else {
+            return ("", "", nil)
+        }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        guard let text = String(data: data, encoding: .utf8),
+              text.trimmingCharacters(in: .whitespacesAndNewlines) != "null",
+              let jsonData = text.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+              obj["error"] == nil else {
+            return ("", "", nil)
+        }
+        let rawTitle = obj["title"] as? String ?? ""
+        let artist = obj["artist"] as? String ?? ""
+        // Same fallback as the poll, so the caller compares like with like.
+        let title = !rawTitle.isEmpty ? rawTitle : (!artist.isEmpty ? artist : "Musik")
+        var image: NSImage?
+        if let b64 = obj["artwork"] as? String,
+           let imageData = Data(base64Encoded: b64) {
+            image = NSImage(data: imageData)
+        }
+        return (title, artist, image)
     }
 
     private static func runScript() -> (now: NowPlaying?, client: String, failure: String?) {
