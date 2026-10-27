@@ -11,12 +11,12 @@ import AppKit
 ///   lyrics mode 360x32 (note icon + lyric line).
 /// - expanded, wide and short (never tall): music is the dense Nusa
 ///   music card (520x180: header, artwork, title/artist, progress,
-///   controls, chevron, dots); opening lyrics only widens the card
+///   controls, dots); opening lyrics only widens the card
 ///   (700x180, same height) and compresses the music part, putting
 ///   the lyrics panel on the right, like Nusa; sources is the picker
-///   on the 640x220 footprint. The bubble toggles
-///   music/lyrics, the chevron advances a page, and the dots jump
-///   pages.
+///   on the 640x220 footprint; pomodoro is the timer on 640x180.
+///   The bubble toggles music/lyrics, the circled side arrows move
+///   to the previous/next section, and the dots jump sections.
 /// - closed pill in lyrics mode: once the card was closed from the
 ///   lyrics page, the inactive pill shows a note icon + the current
 ///   lyric line — never clock, battery ring, or waveform — until the
@@ -43,7 +43,7 @@ final class IslandView: NSView {
                 lyricsMode = (cardPage == .lyrics)
             }
             // Leaving the expanded card always returns to the music
-            // page, so reopening never lands on a stale lyrics/sources page.
+            // page, so reopening never lands on a stale lyrics/pomodoro/sources page.
             if state != .expanded { cardPage = .music }
             needsDisplay = true
         }
@@ -290,7 +290,7 @@ final class IslandView: NSView {
     var batteryCharging: Bool = false
 
     /// The expanded card's current page. View-internal display state;
-    /// the chevron, dots, and bubble icon switch it, nothing else reads it.
+    /// the section arrows, dots, and bubble icon switch it, nothing else reads it.
     private var cardPage: CardPage = .music {
         didSet {
             if state == .expanded { onExpandedSizeChanged?(expandedSize) }
@@ -302,11 +302,13 @@ final class IslandView: NSView {
     /// the dense 520x180 card (shorter but packed: header, 56px cover,
     /// progress, controls, dots); lyrics only widens it to 700x180 —
     /// the height does not change, so switching pages never moves
-    /// the music part vertically; sources stays 640x220.
+    /// the music part vertically; sources stays 640x220; pomodoro is
+    /// 640x180 (ring + timer + mode pills, like the reference).
     var expandedSize: NSSize {
         switch currentPage {
         case .music: return NSSize(width: 520, height: 180)
         case .lyrics: return NSSize(width: 700, height: 180)
+        case .pomodoro: return NSSize(width: 640, height: 180)
         case .sources: return NSSize(width: 640, height: 220)
         }
     }
@@ -321,26 +323,39 @@ final class IslandView: NSView {
         lyricsMode ? NSSize(width: 360, height: 32) : NSSize(width: 160, height: 32)
     }
 
-    private enum CardPage { case music, lyrics, sources }
+    private enum CardPage { case music, lyrics, pomodoro, sources }
 
-    /// Pages the dots offer: music + lyrics always, sources only when
-    /// there is more than one session to choose from.
-    private var availablePages: [CardPage] {
-        sessionsForPicker.count > 1 ? [.music, .lyrics, .sources] : [.music, .lyrics]
+    /// Sections the dots and side arrows offer: music + pomodoro
+    /// always, sources only when there is more than one session to
+    /// choose from. Lyrics is NOT a section — it is a panel of the
+    /// music section (via the bubble), so arrows and dots never land
+    /// on it; that was the old chevron's mistake (it jumped to lyrics).
+    private var availableSections: [CardPage] {
+        sessionsForPicker.count > 1 ? [.music, .pomodoro, .sources] : [.music, .pomodoro]
     }
 
+    /// The page actually drawn (lyrics included). Sources falls back
+    /// to music when it stops being available (sessions drop to one).
     private var currentPage: CardPage {
-        availablePages.contains(cardPage) ? cardPage : .music
+        (cardPage == .sources && sessionsForPicker.count <= 1) ? .music : cardPage
+    }
+
+    /// The section the dots/arrows act on: lyrics counts as music
+    /// (its panel belongs to the music section).
+    private var sectionForDots: CardPage {
+        currentPage == .lyrics ? .music : currentPage
     }
 
     /// Rects for the interactive elements of the expanded card.
-    /// The bubble toggles music/lyrics; the chevron advances a page.
-    /// The bubble sits further right than the card edge so it does not
-    /// hug the corner. Both pages share the dense row (controls at
-    /// y140, bubble y126); the chevron sits at the card's middle
-    /// (y76) — only the music page has one.
+    /// The bubble toggles music/lyrics. Section arrows are circled
+    /// chevrons at the card's left/right edges, mid-height; they move
+    /// to the previous/next section and never open lyrics. The bubble
+    /// sits further right than the card edge so it does not hug the
+    /// corner. Both music pages share the dense row (controls at
+    /// y140, bubble y126).
     private var musicBubbleRect: NSRect { NSRect(x: 42, y: 126, width: 28, height: 28) }
-    private var chevronRect: NSRect { NSRect(x: 590, y: 76, width: 28, height: 28) }
+    private var leftArrowRect: NSRect { NSRect(x: 12, y: bounds.height / 2 - 14, width: 28, height: 28) }
+    private var rightArrowRect: NSRect { NSRect(x: bounds.width - 40, y: bounds.height / 2 - 14, width: 28, height: 28) }
 
     // MARK: - Realtime position
 
@@ -399,8 +414,8 @@ final class IslandView: NSView {
 
     /// Visual rects of the page dots (active = wide dash, rest = dots).
     private func dotRects() -> [NSRect] {
-        let pages = availablePages
-        let active = pages.firstIndex(of: currentPage) ?? 0
+        let pages = availableSections
+        let active = pages.firstIndex(of: sectionForDots) ?? 0
         var total: CGFloat = 0
         for i in pages.indices { total += (i == active ? 16 : 6) + 12 }
         total -= 12
@@ -435,7 +450,7 @@ final class IslandView: NSView {
     var onNext: (() -> Void)?
     var onPrevious: (() -> Void)?
     /// Fired when the expanded card's page changes, so the window can
-    /// resize to the page (music/sources 640, lyrics 700 wide).
+    /// resize to the page (music 520, pomodoro/sources 640, lyrics 700 wide).
     /// AppDelegate ignores it unless expanded.
     var onExpandedSizeChanged: ((NSSize) -> Void)?
 
@@ -493,23 +508,31 @@ final class IslandView: NSView {
         let point = convert(event.locationInWindow, from: nil)
         // Page dots (every card page has them now).
         if let index = dotIndex(at: point) {
-            let pages = availablePages
-            if index < pages.count {
-                cardPage = pages[index]
+            let sections = availableSections
+            if index < sections.count {
+                cardPage = sections[index]
                 needsDisplay = true
             }
+            return
+        }
+        // Section arrows (circled chevrons at the edges): previous /
+        // next section. The lyrics page has no right arrow (the panel
+        // occupies the right edge).
+        if leftArrowRect.contains(point) {
+            moveSection(by: -1)
+            return
+        }
+        if currentPage != .lyrics && rightArrowRect.contains(point) {
+            moveSection(by: 1)
             return
         }
         switch currentPage {
         case .music:
             // Speech bubble opens lyrics (the card extends horizontally).
+            // No arrow opens lyrics anymore — arrows switch sections.
             if musicBubbleRect.contains(point) {
                 cardPage = .lyrics
                 needsDisplay = true
-                return
-            }
-            if chevronRect.contains(point) {
-                advancePage()
                 return
             }
             if let hit = controlHit(at: point, centers: [208, 260, 312], yMin: 130, yMax: 150) {
@@ -523,12 +546,28 @@ final class IslandView: NSView {
                 needsDisplay = true
                 return
             }
-            // No chevron here: the widened lyrics panel occupies the
-            // music card's right edge where the chevron lives.
             // Controls are the music card's own row, recentered on the
             // compressed music part (see drawMusicCard).
             if let hit = controlHit(at: point, centers: [118, 170, 222], yMin: 130, yMax: 150) {
                 performControl(hit)
+                return
+            }
+        case .pomodoro:
+            let buttons = pomodoroButtonRects()
+            if buttons.play.contains(point) {
+                togglePomodoro()
+                return
+            }
+            if buttons.reset.contains(point) {
+                resetPomodoro()
+                return
+            }
+            if buttons.shortBreak.contains(point) {
+                setPomodoroMode(.shortBreak)
+                return
+            }
+            if buttons.focus.contains(point) {
+                setPomodoroMode(.focus)
                 return
             }
         case .sources:
@@ -548,7 +587,8 @@ final class IslandView: NSView {
         }
         // Any other click on the expanded card collapses it. Without this
         // fallthrough there was no way to close the card by clicking: only
-        // the controls and picker rows responded, the rest did nothing.
+        // the controls, picker rows, and pomodoro buttons responded, the
+        // rest did nothing.
         onClicked?()
     }
 
@@ -560,12 +600,16 @@ final class IslandView: NSView {
         }
     }
 
-    /// Chevron: advance one page in dot order (music -> lyrics ->
-    /// sources when available -> back to music).
-    private func advancePage() {
-        let pages = availablePages
-        guard let i = pages.firstIndex(of: currentPage) else { return }
-        cardPage = pages[(i + 1) % pages.count]
+    /// Section arrows: move to the previous/next section in dot order
+    /// (music -> pomodoro -> sources when available -> back to music),
+    /// wrapping. Lyrics is not a section (it is a panel of music, via
+    /// the bubble), so moving from lyrics uses the music section.
+    private func moveSection(by delta: Int) {
+        let sections = availableSections
+        guard !sections.isEmpty else { return }
+        let current = sections.firstIndex(of: sectionForDots) ?? 0
+        let next = (current + delta + sections.count) % sections.count
+        cardPage = sections[next]
         needsDisplay = true
     }
 
@@ -581,7 +625,7 @@ final class IslandView: NSView {
         // The card stays boxy; the bezel-touching ends curve concave
         // like the original design (12pt tuck). The 1/4-height sweep
         // was too deep: it inset the sides so far that content laid
-        // out for the full width (cover, header waveform, chevron)
+        // out for the full width (cover, header waveform, section arrows)
         // stuck out past the shape.
         let path = notchPath(
             rect: rect,
@@ -909,36 +953,43 @@ final class IslandView: NSView {
     // MARK: - Expanded card
 
     private func drawExpanded() {
-        guard let session else {
-            drawCentered("Tidak ada media yang diputar",
-                         font: NSFont.systemFont(ofSize: 13),
-                         color: NSColor.white.withAlphaComponent(0.7),
-                         y: bounds.height / 2 - 8)
-            return
+        // Pomodoro works without music (its own timer), so it bypasses
+        // the no-media guard every other page sits behind.
+        if currentPage == .pomodoro {
+            drawPomodoro()
+        } else {
+            guard let session else {
+                drawCentered("Tidak ada media yang diputar",
+                             font: NSFont.systemFont(ofSize: 13),
+                             color: NSColor.white.withAlphaComponent(0.7),
+                             y: bounds.height / 2 - 8)
+                return
+            }
+            switch currentPage {
+            case .music:
+                drawMusicCard(session)
+            case .lyrics:
+                // 700x180: same height as the music card, only wider.
+                // The music part compresses (title and progress narrower,
+                // see drawMusicCard) and the lyrics panel takes the right
+                // portion inside the same card, like Nusa. No header here:
+                // the lyrics page shows no clock or waveform.
+                drawMusicCard(session, lyricsOpen: true)
+                drawLyricsPanel()
+            case .sources:
+                drawCardHeader()
+                drawPicker(startY: 64)
+            case .pomodoro:
+                break // handled above
+            }
         }
-        switch currentPage {
-        case .music:
-            drawMusicCard(session)
-            drawPageDots()
-        case .lyrics:
-            // 700x180: same height as the music card, only wider.
-            // The music part compresses (title and progress narrower,
-            // see drawMusicCard) and the lyrics panel takes the right
-            // portion inside the same card, like Nusa. No header here:
-            // the lyrics page shows no clock or waveform.
-            drawMusicCard(session, lyricsOpen: true)
-            drawLyricsPanel()
-            drawPageDots()
-        case .sources:
-            drawCardHeader()
-            drawPicker(startY: 64)
-            drawPageDots()
-        }
+        drawPageDots()
+        drawSectionArrows()
     }
 
     /// Header for the card pages, like Nusa's music card: green dot
-    /// + date/time, waveform top-right. Used on the music and sources
-    /// pages (640 wide); the lyrics page has no header at all — no
+    /// + date/time, waveform top-right. Used on the music, pomodoro, and sources
+    /// pages; the lyrics page has no header at all — no
     /// clock, no waveform. No battery ring here — the reference card
     /// has none; the ring lives in the closed state.
     private func drawCardHeader(width: CGFloat = 640) {
@@ -954,8 +1005,8 @@ final class IslandView: NSView {
     }
 
     /// Music card, modelled on Nusa's music card: header, artwork,
-    /// big title/artist, full-width progress, controls, and a chevron
-    /// that advances a page. The dense 520x180 card — 56px artwork,
+    /// big title/artist, full-width progress, and controls. The dense
+    /// 520x180 card — 56px artwork,
     /// tighter gaps — shorter but packed, shared by the music page
     /// and the lyrics page's music part (same vertical positions, so
     /// switching pages never moves it). The lyrics page reuses it
@@ -963,8 +1014,8 @@ final class IslandView: NSView {
     /// music part into 340px (title/artist 212, progress bar 172,
     /// controls centered on 170) and the lyrics panel takes the right
     /// portion of the slightly wider 700-wide card — and the header
-    /// (clock + waveform) is omitted there. The chevron
-    /// (which would sit inside the panel) is omitted too.
+    /// (clock + waveform) is omitted there. The right section
+    /// arrow is omitted there too (the panel occupies that edge).
     private func drawMusicCard(_ session: DisplaySession, lyricsOpen: Bool = false) {
         // No header on the lyrics page: no clock, no waveform.
         if !lyricsOpen {
@@ -995,9 +1046,6 @@ final class IslandView: NSView {
         drawSymbol(session.isPlaying ? "pause.fill" : "play.fill", size: 20,
                    center: CGPoint(x: controls[1], y: 140), fallback: session.isPlaying ? "❚❚" : "▶")
         drawSymbol("forward.fill", size: 20, center: CGPoint(x: controls[2], y: 140), fallback: "›")
-        if !lyricsOpen {
-            drawSymbol("chevron.right", size: 20, center: CGPoint(x: 484, y: 90), fallback: "›")
-        }
     }
 
     private var cachedThumbKey: String?
@@ -1207,7 +1255,7 @@ final class IslandView: NSView {
     private func drawPageDots() {
         let rects = dotRects()
         for (i, rect) in rects.enumerated() {
-            if availablePages[i] == currentPage {
+            if availableSections[i] == sectionForDots {
                 let dash = NSBezierPath(roundedRect: rect, xRadius: 3, yRadius: 3)
                 NSColor.white.setFill()
                 dash.fill()
@@ -1273,6 +1321,186 @@ final class IslandView: NSView {
             drawText(truncated(label, toWidth: 480, font: rowFont),
                      font: rowFont, color: .white, at: NSPoint(x: 20, y: y))
             y += 22
+        }
+    }
+
+    // MARK: - Pomodoro
+
+    /// Pomodoro timer section (640x180, like the reference screenshot):
+    /// title + header, progress ring + stopwatch on the left, big
+    /// countdown + reset + mode label on the right, mode pills below.
+    /// The timer is wall-clock based (endDate), so it keeps counting
+    /// while the card is closed and shows the right remaining time on
+    /// reopen; AppDelegate's 1s refresh redraws it. The ring shows
+    /// REMAINING fraction (full at the start, empty at the end) — that
+    /// is why the reference screenshot's fresh 25:00 timer has a full
+    /// red ring. Focus is red, short break is green. The play pill
+    /// takes the mode color too.
+    private enum PomodoroMode { case focus, shortBreak }
+    private var pomodoroMode: PomodoroMode = .focus
+    private var pomodoroIsRunning = false
+    private var pomodoroEndDate: Date?
+    private var pomodoroRemaining: TimeInterval = 25 * 60
+
+    private var pomodoroDuration: TimeInterval {
+        pomodoroMode == .focus ? 25 * 60 : 5 * 60
+    }
+
+    private var pomodoroColor: NSColor {
+        pomodoroMode == .focus ? .systemRed : .systemGreen
+    }
+
+    /// Remaining seconds right now. While running it is wall-clock
+    /// (endDate minus now); while paused it is the stored value. When
+    /// the countdown reaches zero it flips to stopped here (the 1s
+    /// refresh drives this; no dedicated timer is needed).
+    private func pomodoroRemainingNow() -> TimeInterval {
+        if pomodoroIsRunning, let end = pomodoroEndDate {
+            let left = end.timeIntervalSinceNow
+            if left <= 0 {
+                pomodoroIsRunning = false
+                pomodoroEndDate = nil
+                pomodoroRemaining = 0
+                return 0
+            }
+            return left
+        }
+        return pomodoroRemaining
+    }
+
+    private func pomodoroTimeString(_ seconds: TimeInterval) -> String {
+        let total = max(0, Int(seconds.rounded()))
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
+
+    private func togglePomodoro() {
+        if pomodoroIsRunning {
+            pomodoroRemaining = pomodoroRemainingNow()
+            pomodoroEndDate = nil
+            pomodoroIsRunning = false
+        } else {
+            if pomodoroRemaining <= 0 { pomodoroRemaining = pomodoroDuration }
+            pomodoroEndDate = Date().addingTimeInterval(pomodoroRemaining)
+            pomodoroIsRunning = true
+        }
+        needsDisplay = true
+    }
+
+    private func resetPomodoro() {
+        pomodoroIsRunning = false
+        pomodoroEndDate = nil
+        pomodoroRemaining = pomodoroDuration
+        needsDisplay = true
+    }
+
+    private func setPomodoroMode(_ mode: PomodoroMode) {
+        guard mode != pomodoroMode else { return }
+        pomodoroMode = mode
+        pomodoroIsRunning = false
+        pomodoroEndDate = nil
+        pomodoroRemaining = pomodoroDuration
+        needsDisplay = true
+    }
+
+    /// Hit rects for the pomodoro buttons, computed from the same
+    /// layout drawPomodoro uses, so hit and drawn always agree.
+    private func pomodoroButtonRects() -> (shortBreak: NSRect, play: NSRect, focus: NSRect, reset: NSRect) {
+        let pillY: CGFloat = 130
+        let pillH: CGFloat = 28
+        let shortWidth = pomodoroModePillWidth(label: "Short Break")
+        let focusWidth = pomodoroModePillWidth(label: "Focus Time")
+        let shortBreak = NSRect(x: 220, y: pillY, width: shortWidth, height: pillH)
+        let play = NSRect(x: shortBreak.maxX + 8, y: pillY, width: 56, height: pillH)
+        let focus = NSRect(x: play.maxX + 8, y: pillY, width: focusWidth, height: pillH)
+        let reset = NSRect(x: 362, y: 58, width: 32, height: 32)
+        return (shortBreak, play, focus, reset)
+    }
+
+    private func pomodoroModePillWidth(label: String) -> CGFloat {
+        let font = NSFont.systemFont(ofSize: 14, weight: .medium)
+        let textWidth = (label as NSString).size(withAttributes: [.font: font]).width
+        return 12 + 16 + 6 + textWidth + 12
+    }
+
+    private func drawPomodoro() {
+        drawCardHeader(width: 640)
+        drawText("Pomodoro", font: NSFont.boldSystemFont(ofSize: 20), color: .white, at: NSPoint(x: 28, y: 10))
+        // Progress ring (left): background + remaining arc + tinted
+        // interior + stopwatch. The arc is built point-by-point
+        // (increasing angle from the top, clockwise on screen in this
+        // flipped view) to avoid the flipped-arc direction gotcha in
+        // NSBezierPath/CGContext arcs.
+        let ringCenter = CGPoint(x: 130, y: 100)
+        let ringRadius: CGFloat = 42
+        let ringWidth: CGFloat = 8
+        NSColor.white.withAlphaComponent(0.15).setStroke()
+        let bgRing = NSBezierPath(ovalIn: NSRect(x: ringCenter.x - ringRadius, y: ringCenter.y - ringRadius,
+                                                 width: ringRadius * 2, height: ringRadius * 2))
+        bgRing.lineWidth = ringWidth
+        bgRing.stroke()
+        let remaining = pomodoroRemainingNow()
+        let fraction = pomodoroDuration > 0 ? max(0, min(1, remaining / pomodoroDuration)) : 0
+        if fraction > 0 {
+            let steps = max(2, Int(fraction * 72))
+            let path = NSBezierPath()
+            for i in 0...steps {
+                let theta = -Double.pi / 2 + (Double(i) / Double(steps)) * Double(fraction) * 2 * Double.pi
+                let pt = NSPoint(x: ringCenter.x + ringRadius * CGFloat(cos(theta)),
+                                 y: ringCenter.y + ringRadius * CGFloat(sin(theta)))
+                if i == 0 { path.move(to: pt) } else { path.line(to: pt) }
+            }
+            pomodoroColor.setStroke()
+            path.lineWidth = ringWidth
+            path.lineCapStyle = .round
+            path.lineJoinStyle = .round
+            path.stroke()
+        }
+        pomodoroColor.withAlphaComponent(0.15).setFill()
+        NSBezierPath(ovalIn: NSRect(x: ringCenter.x - 33, y: ringCenter.y - 33, width: 66, height: 66)).fill()
+        drawSymbol("stopwatch", size: 36, center: ringCenter, fallback: "◷")
+        // Countdown (right) + reset + mode label.
+        drawText(pomodoroTimeString(remaining), font: NSFont.boldSystemFont(ofSize: 44), color: .white,
+                 at: NSPoint(x: 220, y: 48))
+        let buttons = pomodoroButtonRects()
+        NSColor.white.withAlphaComponent(0.12).setFill()
+        NSBezierPath(ovalIn: buttons.reset).fill()
+        drawSymbol("arrow.clockwise", size: 16,
+                   center: CGPoint(x: buttons.reset.midX, y: buttons.reset.midY), fallback: "↻")
+        drawText(pomodoroMode == .focus ? "Focus time" : "Short break",
+                 font: NSFont.systemFont(ofSize: 16),
+                 color: NSColor.white.withAlphaComponent(0.6), at: NSPoint(x: 220, y: 106))
+        // Mode pills: Short Break, play/pause (mode color), Focus Time.
+        // The active mode pill is brighter, so the mode reads at a glance.
+        func modePill(_ rect: NSRect, icon: String, iconFallback: String, label: String, active: Bool) {
+            (active ? NSColor.white.withAlphaComponent(0.22) : NSColor.white.withAlphaComponent(0.10)).setFill()
+            NSBezierPath(roundedRect: rect, xRadius: rect.height / 2, yRadius: rect.height / 2).fill()
+            drawSymbol(icon, size: 16, center: CGPoint(x: rect.minX + 20, y: rect.midY), fallback: iconFallback)
+            drawText(label, font: NSFont.systemFont(ofSize: 14, weight: .medium),
+                     color: active ? .white : NSColor.white.withAlphaComponent(0.75),
+                     at: NSPoint(x: rect.minX + 34, y: rect.minY + 6))
+        }
+        modePill(buttons.shortBreak, "cup.and.saucer", "●", "Short Break", pomodoroMode == .shortBreak)
+        pomodoroColor.setFill()
+        NSBezierPath(roundedRect: buttons.play, xRadius: buttons.play.height / 2, yRadius: buttons.play.height / 2).fill()
+        drawSymbol(pomodoroIsRunning ? "pause.fill" : "play.fill", size: 16,
+                   center: CGPoint(x: buttons.play.midX, y: buttons.play.midY),
+                   fallback: pomodoroIsRunning ? "❚❚" : "▶")
+        modePill(buttons.focus, "target", "◎", "Focus Time", pomodoroMode == .focus)
+    }
+
+    /// Section arrows: circled chevrons at the card's left/right edges,
+    /// mid-height, for previous/next section. Drawn after the page
+    /// content (on top, like floating buttons). The lyrics page has no
+    /// right arrow (the panel occupies the right edge).
+    private func drawSectionArrows() {
+        func arrow(_ rect: NSRect, _ symbol: String, _ fallback: String) {
+            NSColor.white.withAlphaComponent(0.18).setFill()
+            NSBezierPath(ovalIn: rect).fill()
+            drawSymbol(symbol, size: 16, center: CGPoint(x: rect.midX, y: rect.midY), fallback: fallback)
+        }
+        arrow(leftArrowRect, "chevron.left", fallback: "‹")
+        if currentPage != .lyrics {
+            arrow(rightArrowRect, "chevron.right", fallback: "›")
         }
     }
 }
