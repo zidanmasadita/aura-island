@@ -40,13 +40,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var jxaInFlight = false
     private var isHovering = false
 
-    /// Previous tick's battery reading, for edge detection (charger
-    /// plug/unplug, low/full crossings). Nil until the first fetch,
-    /// so launching with an already-low battery never fires a
+    /// Previous readings for pill alert edges. Battery/caps are
+    /// edge baselines (advance every tick); volume/brightness are
+    /// level baselines (advance only when an alert fires, so slow
+    /// drags accumulate instead of never crossing a per-tick
+    /// threshold). Nil until the first read, so launching with an
+    /// already-low battery (or muted volume) never fires a
     /// spurious alert.
     private var prevBattery: (percent: Double, charging: Bool)?
-    /// How long a battery alert pill stays widened (wall clock).
-    private let batteryAlertDuration: TimeInterval = 4
+    private var prevCaps: Bool?
+    private var prevVolume: (level: Double, muted: Bool)?
+    private var prevBrightness: Double?
+    /// How long a pill alert stays widened (wall clock).
+    private let pillAlertDuration: TimeInterval = 4
+    private var alertTimer: Timer?
 
     /// macOS 15.4+ denies direct MediaRemote reads to third-party
     /// clients (see NowPlayingJXA). Below that, the direct path works
@@ -115,7 +122,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.tick()
         }
+        // Alert triggers poll faster than the 1s session poll: the
+        // 1s poll + 0.35s animation made battery alerts feel delayed
+        // (~1.35s worst case). 0.25s + animation is ~0.6s. .common
+        // modes so it fires during drags/scrolls too (the session
+        // poll's .default mode pauses during tracking).
+        alertTimer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
+            self?.updatePillAlerts()
+        }
+        if let alertTimer { RunLoop.main.add(alertTimer, forMode: .common) }
         tick()
+        updatePillAlerts()
     }
 
     // MARK: - Interaction
@@ -152,10 +169,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func setState(_ state: IslandState) {
-        // Opening a card cancels a live battery alert: the user's
+        // Opening a card cancels a live pill alert: the user's
         // action wins, and the alert must not resurrect when the
         // card closes (its 4s would otherwise still be running).
-        if state == .expanded { islandView.batteryAlert = nil }
+        if state == .expanded { islandView.pillAlert = nil }
         islandView.state = state
         // Expanded size follows the card's page (music 520x180,
         // lyrics 700x180 — same height, only the width grows —
@@ -167,13 +184,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         animator.animate(to: windowSize(for: state))
     }
 
-    /// Window size for a state. A live battery alert widens every
+    /// Window size for a state. A live pill alert widens every
     /// closed pill to 360x32 — horizontal only, the height never
     /// changes for an alert. An expanded card is never overridden:
     /// alerts do not fire while one is open, and opening one
     /// cancels a live alert (see setState).
     private func windowSize(for state: IslandState) -> NSSize {
-        if islandView.batteryAlert != nil && state != .expanded {
+        if islandView.pillAlert != nil && state != .expanded {
             return NSSize(width: 360, height: 32)
         }
         switch state {
@@ -242,49 +259,141 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             islandView.batteryPercent = nil
         }
-        updateBatteryAlert(with: battery)
         refresh()
     }
 
-    /// Battery alert edges, checked each tick (horizontal pill
-    /// only, never vertical): charger plug/unplug, low crossing
-    /// (down through 20%), full crossing (up to 100% while
-    /// charging). One alert per tick; a newer event replaces a
-    /// live one (timer restarts). A live alert expires after
-    /// batteryAlertDuration and the pill shrinks back. Skipped
-    /// while a card is expanded (alerts never interrupt an open
-    /// card) and when there is no battery (desktops: fetch is nil
-    /// and prev is left alone, so a transient nil never fakes a
-    /// crossing when readings resume).
-    private func updateBatteryAlert(with battery: (percent: Double, charging: Bool)?) {
-        guard let battery else { return }
-        defer { prevBattery = battery }
-        if islandView.state != .expanded,
-           let kind = batteryAlertKind(prev: prevBattery, current: battery) {
-            islandView.batteryAlert = IslandView.BatteryAlert(
-                kind: kind, percent: battery.percent, charging: battery.charging,
-                until: Date() + batteryAlertDuration)
-            animator.animate(to: windowSize(for: islandView.state))
-            return
+    /// Pill alert edges, checked on the fast alert timer (0.25s):
+    /// battery (plug/unplug, low/full crossings), caps lock toggle,
+    /// volume change/mute, brightness change. One alert slot: a
+    /// newer event replaces a live one (timer restarts). A live
+    /// alert expires after pillAlertDuration and the pill shrinks
+    /// back. Skipped while a card is expanded (alerts never
+    /// interrupt an open card); baselines still advance while
+    /// expanded, so missed changes are dropped, not queued. A
+    /// source that reads nil (no battery, no volume device, no
+    /// brightness control) simply never fires and leaves its
+    /// baseline alone, so a transient failure never fakes an edge.
+    private func updatePillAlerts() {
+        let battery = Battery.fetch()
+        let caps = CapsLock.fetch()
+        let volume = Volume.fetch()
+        let brightness = Brightness.fetch()
+        var fired = false
+        if islandView.state != .expanded {
+            if let alert = batteryAlert(for: battery) { islandView.pillAlert = alert; fired = true }
+            if let alert = capsAlert(for: caps) { islandView.pillAlert = alert; fired = true }
+            if let alert = volumeAlert(for: volume) { islandView.pillAlert = alert; fired = true; prevVolume = volume }
+            if let alert = brightnessAlert(for: brightness) { islandView.pillAlert = alert; fired = true; prevBrightness = brightness }
+            if fired {
+                animator.animate(to: windowSize(for: islandView.state))
+            }
         }
-        if let alert = islandView.batteryAlert, Date() >= alert.until {
-            islandView.batteryAlert = nil
+        // Baselines: battery/caps advance every tick (edge
+        // detection); volume/brightness advance on fire (level
+        // tracking, so slow drags accumulate) — except while
+        // expanded (sync them, dropping missed changes) and on
+        // first read (initialize silently).
+        if let battery { prevBattery = battery }
+        prevCaps = caps
+        if islandView.state == .expanded || prevVolume == nil {
+            if let volume { prevVolume = volume }
+        }
+        if islandView.state == .expanded || prevBrightness == nil {
+            if let brightness { prevBrightness = brightness }
+        }
+        if islandView.state != .expanded, !fired,
+           let alert = islandView.pillAlert, Date() >= alert.until {
+            islandView.pillAlert = nil
             animator.animate(to: windowSize(for: islandView.state))
         }
     }
 
-    /// Which battery event (if any) a tick's reading crosses, from
-    /// the previous tick. Thresholds first, then plug/unplug, so a
-    /// plug that lands exactly on 100% reports full, not charging.
-    /// Nil on the first fetch (no previous reading to cross from).
-    private func batteryAlertKind(prev: (percent: Double, charging: Bool)?,
-                                  current: (percent: Double, charging: Bool)) -> IslandView.BatteryAlert.Kind? {
-        guard let prev else { return nil }
-        if current.charging && current.percent >= 1.0 && prev.percent < 1.0 { return .fullPower }
-        if current.percent <= 0.20 && prev.percent > 0.20 { return .lowPower }
-        if !prev.charging && current.charging { return .charging }
-        if prev.charging && !current.charging { return .unplugged }
-        return nil
+    /// Battery pill alert for a reading, or nil when it crosses
+    /// nothing. Thresholds first, then plug/unplug, so a plug that
+    /// lands exactly on 100% reports Fully Charged, not Charging.
+    /// Nil on the first read (no previous reading to cross from).
+    private func batteryAlert(for battery: (percent: Double, charging: Bool)?) -> IslandView.PillAlert? {
+        guard let battery, let prev = prevBattery else { return nil }
+        let message: String
+        if battery.charging && battery.percent >= 1.0 && prev.percent < 1.0 {
+            message = "Fully Charged"
+        } else if battery.percent <= 0.20 && prev.percent > 0.20 {
+            message = "Low Battery"
+        } else if !prev.charging && battery.charging {
+            message = "Charging"
+        } else if prev.charging && !battery.charging {
+            message = "Charger unplugged"
+        } else {
+            return nil
+        }
+        let tint = battery.charging ? NSColor.systemGreen
+            : (battery.percent <= 0.20 ? NSColor.systemRed : NSColor.white)
+        return IslandView.PillAlert(
+            icon: .battery(percent: battery.percent, charging: battery.charging),
+            message: message,
+            detail: "\(Int(round(battery.percent * 100)))%",
+            tint: tint,
+            until: Date() + pillAlertDuration)
+    }
+
+    /// Caps Lock pill alert on toggle, or nil when unchanged.
+    /// Nil on the first read.
+    private func capsAlert(for caps: Bool) -> IslandView.PillAlert? {
+        guard let prev = prevCaps, caps != prev else { return nil }
+        return IslandView.PillAlert(
+            icon: .symbol(name: caps ? "capslock.fill" : "capslock", fallback: "A", size: 20),
+            message: caps ? "Caps Lock On" : "Caps Lock Off",
+            detail: nil,
+            tint: .white,
+            until: Date() + pillAlertDuration)
+    }
+
+    /// Volume pill alert on a level/mute change, or nil. Fires when
+    /// the level moves at least 1% from the last fired value (so
+    /// slow drags accumulate instead of never crossing a per-tick
+    /// threshold) or mute flips. Nil on the first read.
+    private func volumeAlert(for volume: (level: Double, muted: Bool)?) -> IslandView.PillAlert? {
+        guard let volume, let prev = prevVolume else { return nil }
+        guard volume.muted != prev.muted || abs(volume.level - prev.level) >= 0.01 else { return nil }
+        if volume.muted {
+            return IslandView.PillAlert(
+                icon: .symbol(name: "speaker.slash", fallback: "♪", size: 20),
+                message: "Muted",
+                detail: nil,
+                tint: .white,
+                until: Date() + pillAlertDuration)
+        }
+        let symbol: String
+        if volume.level <= 0 {
+            symbol = "speaker"
+        } else if volume.level < 0.5 {
+            symbol = "speaker.wave.1"
+        } else {
+            symbol = "speaker.wave.2"
+        }
+        return IslandView.PillAlert(
+            icon: .symbol(name: symbol, fallback: "♪", size: 20),
+            message: "Volume",
+            detail: "\(Int(round(volume.level * 100)))%",
+            tint: .white,
+            until: Date() + pillAlertDuration)
+    }
+
+    /// Brightness pill alert on a level change of at least 1% from
+    /// the last fired value (same accumulation rule as volume), or
+    /// nil. Nil on the first read. Note: with auto-brightness on,
+    /// ambient-light changes fire too (they are real brightness
+    /// changes); gating to key presses only is a follow-up if that
+    /// gets noisy.
+    private func brightnessAlert(for brightness: Double?) -> IslandView.PillAlert? {
+        guard let brightness, let prev = prevBrightness,
+              abs(brightness - prev) >= 0.01 else { return nil }
+        return IslandView.PillAlert(
+            icon: .symbol(name: "sun.max", fallback: "○", size: 20),
+            message: "Brightness",
+            detail: "\(Int(round(brightness * 100)))%",
+            tint: .white,
+            until: Date() + pillAlertDuration)
     }
 
     private func refresh() {

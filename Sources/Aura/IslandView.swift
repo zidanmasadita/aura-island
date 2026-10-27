@@ -292,21 +292,27 @@ final class IslandView: NSView {
     var batteryPercent: Double?
     var batteryCharging: Bool = false
 
-    /// A live battery alert: a temporary horizontally-widened pill
-    /// (360x32, height unchanged) showing one battery event, then
+    /// A live pill alert: a temporary horizontally-widened pill
+    /// (360x32, height unchanged) showing one trigger event, then
     /// shrinking back when it expires. Set and cleared by AppDelegate
-    /// on battery edges (charger plug/unplug, low crossing, full
-    /// crossing); percent/charging are snapshots at fire time, so
-    /// the pill shows exactly the event even if the level ticks
-    /// during the 4 seconds.
-    struct BatteryAlert {
-        enum Kind { case charging, unplugged, lowPower, fullPower }
-        let kind: Kind
-        let percent: Double
-        let charging: Bool
+    /// on trigger edges (battery, caps lock, volume, brightness);
+    /// only one alert shows at a time — a newer event replaces a
+    /// live one (timer restarts).
+    struct PillAlert {
+        /// How the icon is drawn: the custom iOS battery icon
+        /// (battery events, snapshot values) or an SF Symbol in a
+        /// square slot of its size (everything else).
+        enum Icon {
+            case battery(percent: Double, charging: Bool)
+            case symbol(name: String, fallback: String, size: CGFloat)
+        }
+        let icon: Icon
+        let message: String
+        let detail: String?
+        let tint: NSColor
         let until: Date
     }
-    var batteryAlert: BatteryAlert? {
+    var pillAlert: PillAlert? {
         didSet { needsDisplay = true }
     }
 
@@ -785,12 +791,12 @@ final class IslandView: NSView {
         ctx.strokePath()
         ctx.restoreGState()
 
-        // A live battery alert takes over every closed pill (zen,
+        // A live pill alert takes over every closed pill (zen,
         // compact, split) with its widened horizontal layout; it
         // never touches an expanded card (alerts do not fire while
         // one is open, and opening one cancels a live alert).
-        if batteryAlert != nil && state != .expanded {
-            drawBatteryAlert()
+        if pillAlert != nil && state != .expanded {
+            drawPillAlert()
         } else {
             switch state {
             case .zen:
@@ -1049,34 +1055,34 @@ final class IslandView: NSView {
 
     // MARK: - Closed (compact) state
 
-    /// Battery alert pill (360x32, horizontal only): iOS battery
-    /// icon + message + percent, centered as one group. Icon and
-    /// percent use the alert's snapshot (not the live values), and
-    /// the percent tint follows the pill icon: green while charging,
-    /// red at 20% and below, else white.
-    private func drawBatteryAlert() {
-        guard let alert = batteryAlert else { return }
+    /// Pill alert (360x32, horizontal only): icon + message +
+    /// optional detail, centered as one group. Battery icons use
+    /// the alert's snapshot (not the live values); symbols draw
+    /// white in a square slot of their size.
+    private func drawPillAlert() {
+        guard let alert = pillAlert else { return }
         let midY = bounds.height / 2
         let font = NSFont.systemFont(ofSize: 14, weight: .semibold)
-        let message: String
-        switch alert.kind {
-        case .charging: message = "Mengisi daya"
-        case .unplugged: message = "Charger dilepas"
-        case .lowPower: message = "Baterai lemah"
-        case .fullPower: message = "Terisi penuh"
+        let messageWidth = (alert.message as NSString).size(withAttributes: [.font: font]).width
+        let detailWidth = alert.detail.map { ($0 as NSString).size(withAttributes: [.font: font]).width } ?? 0
+        let iconWidth: CGFloat
+        switch alert.icon {
+        case .battery: iconWidth = 27
+        case .symbol(_, _, let size): iconWidth = size
         }
-        let percentText = "\(Int(round(alert.percent * 100)))%"
-        let tint = alert.charging ? NSColor.systemGreen
-            : (alert.percent <= 0.20 ? NSColor.systemRed : NSColor.white)
-        let messageWidth = (message as NSString).size(withAttributes: [.font: font]).width
-        let percentWidth = (percentText as NSString).size(withAttributes: [.font: font]).width
-        // Icon spans 27pt (24 outline + 1 gap + 2 nub), then 10pt and
-        // 8pt gaps; the whole group is centered on the pill.
-        let total = 27 + 10 + messageWidth + 8 + percentWidth
+        // Icon + 10pt gap + message + (8pt gap + detail).
+        let total = iconWidth + 10 + messageWidth + (alert.detail != nil ? 8 + detailWidth : 0)
         let startX = (bounds.width - total) / 2
-        drawBatteryIcon(center: CGPoint(x: startX + 12, y: midY), percent: alert.percent, charging: alert.charging)
-        drawText(message, font: font, color: .white, at: NSPoint(x: startX + 27 + 10, y: midY - 8))
-        drawText(percentText, font: font, color: tint, at: NSPoint(x: startX + 27 + 10 + messageWidth + 8, y: midY - 8))
+        switch alert.icon {
+        case .battery(let percent, let charging):
+            drawBatteryIcon(center: CGPoint(x: startX + 12, y: midY), percent: percent, charging: charging)
+        case .symbol(let name, let fallback, let size):
+            drawSymbol(name, size: size, center: CGPoint(x: startX + iconWidth / 2, y: midY), fallback: fallback)
+        }
+        drawText(alert.message, font: font, color: .white, at: NSPoint(x: startX + iconWidth + 10, y: midY - 8))
+        if let detail = alert.detail {
+            drawText(detail, font: font, color: alert.tint, at: NSPoint(x: startX + iconWidth + 10 + messageWidth + 8, y: midY - 8))
+        }
     }
 
     private func drawClosed() {
