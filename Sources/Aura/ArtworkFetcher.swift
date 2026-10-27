@@ -15,8 +15,17 @@ import Foundation
 /// (ChromeTabArtwork: match the tab by song title, video ID ->
 /// i.ytimg.com thumbnail). That image is the tab's own cover, not a
 /// search result — the "from the playing app" rule still holds, only
-/// the channel changes. A fallback miss counts as a miss like any
-/// other (failed set), so the tab list is not re-run every second.
+/// the channel changes. It cannot cover playing from home/
+/// recommendations (the tab stays on the home URL, no video ID).
+///
+/// Fallback 2 (iTunes Search, by title + artist): the catalog search
+/// brought back by explicit user choice (Oct 2026) as the final
+/// fallback, precisely for the cases the exact sources cannot cover
+/// (home/recommendations, non-Chrome players). It is a search, not
+/// the playing app's image — the acknowledged exception, reached
+/// only after system and tab both failed. A fallback miss counts as
+/// a miss like any other (failed set), so neither fallback is
+/// re-run every second.
 ///
 /// Race guard: the artwork read returns the title/artist it belongs
 /// to. If the track changed mid-fetch, the result is discarded (not
@@ -68,18 +77,27 @@ final class ArtworkFetcher {
                 return
             }
             // System path yielded nothing for THIS track (matched but
-            // nil, or the script failed): try the Chrome tab fallback
-            // before marking the track failed.
+            // nil, or the script failed): try the Chrome tab fallback,
+            // then iTunes, before marking the track failed.
             ChromeTabArtwork.fetch(title: title, artist: artist) { [weak self] tabImage in
                 guard let self else { return }
                 if let tabImage {
                     cache[cacheKey] = tabImage
-                } else {
-                    // Neither system nor tab provided artwork.
-                    failed.insert(cacheKey)
+                    inFlight.remove(cacheKey)
+                    completion()
+                    return
                 }
-                inFlight.remove(cacheKey)
-                completion()
+                ITunesArtwork.fetch(title: title, artist: artist) { [weak self] itunesImage in
+                    guard let self else { return }
+                    if let itunesImage {
+                        cache[cacheKey] = itunesImage
+                    } else {
+                        // System, tab, and iTunes all provided nothing.
+                        failed.insert(cacheKey)
+                    }
+                    inFlight.remove(cacheKey)
+                    completion()
+                }
             }
         }
     }
