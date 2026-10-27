@@ -7,12 +7,12 @@ import AppKit
 /// Layouts (flipped coordinates, y grows downward):
 /// - zen (140x32): the idle face — two white eyes.
 /// - compact (380x64): the closed notch — battery ring, clock, waveform.
-/// - expanded: size follows the page — music is a slim strip (460x112:
-///   artwork, title/artist, current lyric line, thin progress, controls),
-///   lyrics is the full card (520x360: header, mini player, lyrics
-///   column, dots), sources is a shorter card (520x260: session picker).
-///   The bubble (or the lyric line) opens lyrics, the dots jump pages,
-///   and the lyrics page's bubble goes back to music.
+/// - expanded: size follows the page — music is the closed pill's
+///   footprint (380x64: artwork, title/artist, current lyric line, thin
+///   progress, controls), lyrics is the full card (520x360: header, mini
+///   player, lyrics column, dots), sources is a shorter card (520x260:
+///   session picker). The bubble (or the lyric line) opens lyrics, the
+///   dots jump pages, and the lyrics page's bubble goes back to music.
 final class IslandView: NSView {
     var state: IslandState = .zen {
         didSet {
@@ -43,11 +43,12 @@ final class IslandView: NSView {
     }
 
     /// Window size for the expanded card, per page: the music strip is
-    /// a slim bar (the "small pill" while lyrics are closed), lyrics and
-    /// sources are the full card.
+    /// the same small footprint as the closed pill (380x64) — opening
+    /// music no longer resizes the window at all, so there is no resize
+    /// animation to stutter. Lyrics and sources are the full card.
     var expandedSize: NSSize {
         switch currentPage {
-        case .music: return NSSize(width: 460, height: 112)
+        case .music: return NSSize(width: 380, height: 64)
         case .lyrics: return NSSize(width: 520, height: 360)
         case .sources: return NSSize(width: 520, height: 260)
         }
@@ -68,8 +69,8 @@ final class IslandView: NSView {
     /// Rects for the interactive elements of the expanded card.
     /// The music strip's bubble opens lyrics; the lyric line itself is
     /// also tappable for the same. The lyrics page's bubble goes back.
-    private var stripBubbleRect: NSRect { NSRect(x: 310, y: 42, width: 28, height: 28) }
-    private var stripLyricRect: NSRect { NSRect(x: 100, y: 66, width: 200, height: 16) }
+    private var stripBubbleRect: NSRect { NSRect(x: 238, y: 16, width: 28, height: 28) }
+    private var stripLyricRect: NSRect { NSRect(x: 68, y: 43, width: 172, height: 14) }
     private var lyricsBubbleRect: NSRect { NSRect(x: 14, y: 176, width: 28, height: 28) }
 
     /// Which control (0 = previous, 1 = play/pause, 2 = next) a point hits,
@@ -195,7 +196,7 @@ final class IslandView: NSView {
                 return
             }
             // Controls row (right side of the strip).
-            if let hit = controlHit(at: point, centers: [362, 400, 438], yMin: 38, yMax: 74, halfWidth: 18) {
+            if let hit = controlHit(at: point, centers: [286, 320, 354], yMin: 14, yMax: 46, halfWidth: 16) {
                 switch hit {
                 case 0: onPrevious?()
                 case 1: onPlayPause?()
@@ -252,7 +253,10 @@ final class IslandView: NSView {
         let path = notchPath(
             rect: rect,
             tuck: 12,
-            bottomRadius: state == .expanded ? 28 : rect.height / 2
+            // Full cards keep the 28pt bottom rounding from the Nusa
+            // reference; short pills (compact, music strip) are fully
+            // rounded like the closed pill.
+            bottomRadius: state == .expanded && rect.height > 100 ? 28 : rect.height / 2
         )
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
         ctx.saveGState()
@@ -559,48 +563,80 @@ final class IslandView: NSView {
         drawWaveform(in: NSRect(x: 452, y: 18, width: 48, height: 18))
     }
 
-    /// Music strip (460x112): the "small pill" while lyrics are closed —
+    /// Music strip (380x64): the same footprint as the closed pill —
     /// artwork, title/artist, the current lyric line, a thin progress
     /// bar, and controls. The bubble (or the lyric line) opens lyrics.
     private func drawMusicStrip(_ session: DisplaySession) {
-        drawArtwork(session.artwork, in: NSRect(x: 16, y: 20, width: 72, height: 72), cornerRadius: 12)
-        let titleFont = NSFont.boldSystemFont(ofSize: 16)
-        drawText(truncated(session.title, toWidth: 200, font: titleFont),
-                 font: titleFont, color: .white, at: NSPoint(x: 100, y: 24))
-        let artistFont = NSFont.systemFont(ofSize: 12)
-        drawText(truncated(session.artist, toWidth: 200, font: artistFont),
+        drawArtwork(artworkThumb(for: session), in: NSRect(x: 12, y: 8, width: 48, height: 48), cornerRadius: 10)
+        let titleFont = NSFont.boldSystemFont(ofSize: 14)
+        drawText(truncated(session.title, toWidth: 172, font: titleFont),
+                 font: titleFont, color: .white, at: NSPoint(x: 68, y: 8))
+        let artistFont = NSFont.systemFont(ofSize: 11)
+        drawText(truncated(session.artist, toWidth: 172, font: artistFont),
                  font: artistFont, color: NSColor.white.withAlphaComponent(0.65),
-                 at: NSPoint(x: 100, y: 48))
+                 at: NSPoint(x: 68, y: 27))
         if let line = lyricCurrent {
-            let lyricFont = NSFont.systemFont(ofSize: 12)
-            drawText(truncated(line, toWidth: 200, font: lyricFont),
+            let lyricFont = NSFont.systemFont(ofSize: 11)
+            drawText(truncated(line, toWidth: 172, font: lyricFont),
                      font: lyricFont, color: NSColor.white.withAlphaComponent(0.55),
-                     at: NSPoint(x: 100, y: 68))
+                     at: NSPoint(x: 68, y: 44))
         }
         // Thin progress bar along the bottom of the strip.
         if session.duration > 0 {
-            let bg = NSBezierPath(roundedRect: NSRect(x: 16, y: 102, width: 428, height: 3),
+            let bg = NSBezierPath(roundedRect: NSRect(x: 12, y: 59, width: 356, height: 3),
                                   xRadius: 1.5, yRadius: 1.5)
             NSColor.white.withAlphaComponent(0.25).setFill()
             bg.fill()
             let filled = min(1.0, session.position / session.duration)
-            let fg = NSBezierPath(roundedRect: NSRect(x: 16, y: 102, width: 428 * CGFloat(filled), height: 3),
+            let fg = NSBezierPath(roundedRect: NSRect(x: 12, y: 59, width: 356 * CGFloat(filled), height: 3),
                                   xRadius: 1.5, yRadius: 1.5)
             NSColor.white.setFill()
             fg.fill()
         }
         // Controls (right side).
-        drawSymbol("ellipsis.bubble.fill", size: 20, center: CGPoint(x: 324, y: 56), fallback: "···")
-        drawSymbol("backward.fill", size: 20, center: CGPoint(x: 362, y: 56), fallback: "‹")
-        drawSymbol(session.isPlaying ? "pause.fill" : "play.fill", size: 20,
-                   center: CGPoint(x: 400, y: 56), fallback: session.isPlaying ? "❚❚" : "▶")
-        drawSymbol("forward.fill", size: 20, center: CGPoint(x: 438, y: 56), fallback: "›")
+        drawSymbol("ellipsis.bubble.fill", size: 18, center: CGPoint(x: 252, y: 30), fallback: "···")
+        drawSymbol("backward.fill", size: 18, center: CGPoint(x: 286, y: 30), fallback: "‹")
+        drawSymbol(session.isPlaying ? "pause.fill" : "play.fill", size: 18,
+                   center: CGPoint(x: 320, y: 30), fallback: session.isPlaying ? "❚❚" : "▶")
+        drawSymbol("forward.fill", size: 18, center: CGPoint(x: 354, y: 30), fallback: "›")
+    }
+
+    private var cachedThumbKey: String?
+    private var cachedThumb: NSImage?
+
+    /// 96px aspect-fill thumbnail of the session artwork, cached per
+    /// track. Scaling the full 600px cover on every 10x/second waveform
+    /// redraw is the most expensive part of a frame; the thumbnail
+    /// makes redraws cheap, which is what stuttered when the pill opened.
+    private func artworkThumb(for session: DisplaySession) -> NSImage? {
+        guard let artwork = session.artwork else { return nil }
+        let key = "\(session.title)|\(session.artist)"
+        if key != cachedThumbKey || cachedThumb == nil {
+            cachedThumbKey = key
+            cachedThumb = aspectFillThumb(artwork, size: 96)
+        }
+        return cachedThumb
+    }
+
+    private func aspectFillThumb(_ image: NSImage, size: CGFloat) -> NSImage {
+        let img = NSImage(size: NSSize(width: size, height: size))
+        img.lockFocus()
+        let imgSize = image.size
+        let scale = max(size / imgSize.width, size / imgSize.height)
+        let srcW = size / scale
+        let srcH = size / scale
+        let src = NSRect(x: (imgSize.width - srcW) / 2, y: (imgSize.height - srcH) / 2,
+                         width: srcW, height: srcH)
+        image.draw(in: NSRect(x: 0, y: 0, width: size, height: size),
+                   from: src, operation: .sourceOver, fraction: 1.0)
+        img.unlockFocus()
+        return img
     }
 
     /// Lyrics page, modelled on Nusa's lyrics card: mini player on the
     /// left, lyrics column on the right, divider between them.
     private func drawLyricsPage(_ session: DisplaySession) {
-        drawArtwork(session.artwork, in: NSRect(x: 20, y: 56, width: 76, height: 76), cornerRadius: 12)
+        drawArtwork(artworkThumb(for: session), in: NSRect(x: 20, y: 56, width: 76, height: 76), cornerRadius: 12)
         let titleFont = NSFont.boldSystemFont(ofSize: 19)
         drawText(truncated(session.title, toWidth: 127, font: titleFont),
                  font: titleFont, color: .white, at: NSPoint(x: 108, y: 60))
