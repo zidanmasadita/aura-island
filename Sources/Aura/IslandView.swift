@@ -1030,13 +1030,24 @@ final class IslandView: NSView, NSDraggingSource {
         // was too deep: it inset the sides so far that content laid
         // out for the full width (cover, header waveform, section arrows)
         // stuck out past the shape.
+        // Spring scale is computed first: when a bounce runs, the
+        // path is built from the NOMINAL card size (base), not from
+        // bounds (the headroom window) — building from bounds would
+        // scale an already-grown pill a second time, rendering it
+        // clipped/misaligned (a "new pill" instead of the existing
+        // one). The transform below maps base coords to window coords.
+        let springScale = traySpringScale(now: Date())
+        let base = unbulgedSize(for: state)
+        let pathRect = springScale != 1.0
+            ? NSRect(x: 0, y: 0, width: base.width, height: base.height)
+            : rect
         let path = notchPath(
-            rect: rect,
+            rect: pathRect,
             tuck: 12,
             // Full cards keep the 28pt bottom rounding from the Nusa
             // reference; short pills (compact, music strip) are fully
             // rounded like the closed pill.
-            bottomRadius: state == .expanded && rect.height > 100 ? 28 : rect.height / 2
+            bottomRadius: state == .expanded && pathRect.height > 100 ? 28 : pathRect.height / 2
         )
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
         // Clear first: this window is transparent and the view is
@@ -1051,6 +1062,14 @@ final class IslandView: NSView, NSDraggingSource {
         // later one). Clearing to transparent keeps the intended
         // 0.98 translucency (over the desktop, not over old text).
         ctx.clear(rect)
+        // Bounce the EXISTING pill (background + content, both in
+        // base coords) around the top-center (bezel), so it stays
+        // glued to the menu bar and fits the headroom window.
+        if springScale != 1.0 {
+            ctx.translateBy(x: rect.midX, y: rect.minY)
+            ctx.scaleBy(x: springScale, y: springScale)
+            ctx.translateBy(x: -base.width / 2, y: 0)
+        }
         ctx.saveGState()
         ctx.addPath(path)
         ctx.setFillColor(NSColor.black.withAlphaComponent(0.98).cgColor)
@@ -1068,8 +1087,8 @@ final class IslandView: NSView, NSDraggingSource {
                 colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: [0, 1]) {
                 ctx.drawLinearGradient(
                     gradient,
-                    start: CGPoint(x: 0, y: rect.minY),
-                    end: CGPoint(x: 0, y: rect.maxY),
+                    start: CGPoint(x: 0, y: pathRect.minY),
+                    end: CGPoint(x: 0, y: pathRect.maxY),
                     options: []
                 )
             }
@@ -2225,11 +2244,68 @@ final class IslandView: NSView, NSDraggingSource {
 
     private var trayFiles: [TrayFile] = []
     private var trayFilesLoaded = false
-    /// While a drag hovers with a valid file URL. The card keeps
-    /// its exact shape while hovering (Nusa-style — only the drop
-    /// zone inside highlights); the window does not grow.
+    /// While a drag hovers with a valid file URL. The EXISTING tray
+    /// pill is what bounces (never a new pill): hovering springs it
+    /// slightly larger (1.03x), dropping pops it (1.12x) then springs
+    /// it back to exact size. Read by AppDelegate.windowSize
+    /// (headroom) — hence internal, not private.
     var trayDropHighlight = false {
-        didSet { needsDisplay = true }
+        didSet {
+            needsDisplay = true
+            if oldValue != trayDropHighlight {
+                // Slight expand while a file hovers (same pill, just
+                // slightly larger); back to exact when it leaves.
+                triggerTraySpring(to: trayDropHighlight ? 1.03 : 1.0)
+                onTraySizeChanged?()
+            }
+        }
+    }
+    /// Bounce headroom: while a drag hovers or a bounce runs, the
+    /// window is this much larger than the card so the bouncing
+    /// card (up to ~1.12x) never clips; the margin is transparent.
+    static let bounceHeadroomFactor: CGFloat = 1.15
+    /// Called when the tray's size factors change (drop highlight
+    /// flips, bounce settles) so AppDelegate re-applies window size.
+    var onTraySizeChanged: (() -> Void)?
+    /// Bubble bounce: a damped-cosine spring around a target,
+    /// scale(t) = to + (from - to) * e^(-3t) * cos(4πt) — the
+    /// existing pill pops and bounces like a bubble, then settles
+    /// to its exact size. Hover springs to 1.03 (slight expand);
+    /// drop pops to 1.12 then springs to 1.0.
+    private var traySpringFrom: CGFloat = 1.0
+    private var traySpringTo: CGFloat = 1.0
+    private var traySpringStart: Date?
+    private var traySpringTimer: Timer?
+    private func traySpringScale(now: Date) -> CGFloat {
+        guard let start = traySpringStart else { return traySpringTo }
+        let t = now.timeIntervalSince(start)
+        let decay = CGFloat(exp(-3 * t))
+        let osc = CGFloat(cos(4 * Double.pi * t))
+        return traySpringTo + (traySpringFrom - traySpringTo) * decay * osc
+    }
+    /// True while a bounce is running (window stays headroom-sized).
+    var isTrayBouncing: Bool { traySpringTimer != nil }
+    private func triggerTraySpring(to: CGFloat, from impulse: CGFloat? = nil) {
+        let now = Date()
+        traySpringFrom = impulse ?? traySpringScale(now: now)
+        traySpringTo = to
+        traySpringStart = now
+        guard traySpringTimer == nil else { return }
+        traySpringTimer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            guard let self, let start = self.traySpringStart else {
+                self?.traySpringTimer?.invalidate()
+                self?.traySpringTimer = nil
+                return
+            }
+            self.needsDisplay = true
+            let t = Date().timeIntervalSince(start)
+            if CGFloat(exp(-3 * t)) * abs(self.traySpringFrom - self.traySpringTo) < 0.002 {
+                self.traySpringTimer?.invalidate()
+                self.traySpringTimer = nil
+                self.onTraySizeChanged?()
+            }
+        }
+        if let traySpringTimer { RunLoop.main.add(traySpringTimer, forMode: .common) }
     }
     /// The island's size without the drop bulge (single source of
     /// truth for AppDelegate.windowSize's base).
@@ -2325,6 +2401,8 @@ final class IslandView: NSView, NSDraggingSource {
         }
         if !addedFiles.isEmpty {
             saveTrayFiles()
+            // Drop bounces the existing pill (pop, then settle exact).
+            triggerTraySpring(to: 1.0, from: 1.12)
             needsDisplay = true
         }
         return addedFiles.count
