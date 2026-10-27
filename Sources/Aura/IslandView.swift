@@ -1923,7 +1923,12 @@ final class IslandView: NSView {
                 waterEndDate = Date().addingTimeInterval(TimeInterval(waterStore.intervalMinutes * 60))
             }
             scheduleWaterNotification()
-        } else {
+        } else if Bundle.main.bundleIdentifier != nil {
+            // Guarded like schedule: the notification system cannot
+            // register a raw binary (no bundle), and calling it there
+            // crashed the app on toggle OFF. On a raw binary there is
+            // never anything pending (schedule is guarded too), so
+            // skipping the cancel is a no-op there.
             UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["water-reminder"])
         }
         needsDisplay = true
