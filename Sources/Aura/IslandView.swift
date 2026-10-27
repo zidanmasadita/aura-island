@@ -6,9 +6,9 @@ import AppKit
 ///
 /// Layouts (flipped coordinates, y grows downward):
 /// - zen (140x32): the idle face — two white eyes.
-/// - compact: the closed notch — 320x32 when playing without lyrics
-///   (battery ring, clock, waveform, tight), 320x64 in lyrics mode
-///   (note icon + lyric line, so the line fits).
+/// - compact: the closed notch — 320x32, both for plain playback
+///   (battery ring, clock, waveform, tight) and in lyrics mode
+///   (note icon + lyric line).
 /// - expanded, wide and short (never tall): music is the normal Nusa
 ///   music card (640x220: header, artwork, title/artist, progress,
 ///   controls, chevron, dots); opening lyrics EXTENDS it horizontally
@@ -84,12 +84,12 @@ final class IslandView: NSView {
         }
     }
 
-    /// Size of the closed (compact/split) pill: half height (320x32)
-    /// for plain music playback, full height (320x64) in lyrics mode
-    /// so the lyric line fits. AppDelegate uses this instead of the
+    /// Size of the closed (compact/split) pill: half height (320x32),
+    /// both for plain playback and in lyrics mode (the note icon +
+    /// lyric line fit in 32). AppDelegate uses this instead of the
     /// fixed state size for compact/split.
     var closedSize: NSSize {
-        lyricsMode ? NSSize(width: 320, height: 64) : NSSize(width: 320, height: 32)
+        NSSize(width: 320, height: 32)
     }
 
     private enum CardPage { case music, lyrics, sources }
@@ -625,9 +625,8 @@ final class IslandView: NSView {
 
     private func drawClosed() {
         // Positions follow the window height: the closed pill is 32
-        // tall for plain playback and 64 in lyrics mode (see
-        // closedSize), and the collapse animation passes through
-        // intermediate heights — fixed y values would drift off-center.
+        // tall, and the collapse animation passes through intermediate
+        // heights — fixed y values would drift off-center.
         let midY = bounds.height / 2
         // Lyrics mode (card was closed from the lyrics page): note icon
         // + current lyric line — never clock, battery ring, or
@@ -766,18 +765,20 @@ final class IslandView: NSView {
     }
 
     /// Lyrics panel for the lyrics page: a divider, then the lyrics
-    /// column on the right of the music card (x 576..916, 340 wide —
+    /// column on the right of the music card (x 564..916, 352 wide —
     /// wider than before, taking space from the progress bar: the bar
-    /// on this page is shorter, see drawMusicCard). The panel extends
-    /// the card horizontally only — same 220 height as music.
+    /// on this page is shorter, see drawMusicCard). The divider sits
+    /// exactly beside the song title: the title ends at most at 548
+    /// (108 + 440), and the divider is at 552. The panel extends the
+    /// card horizontally only — same 220 height as music.
     private func drawLyricsPanel() {
         // Divider between the music card (left) and the panel.
         NSColor.white.withAlphaComponent(0.12).setFill()
-        NSRect(x: 560, y: 44, width: 1, height: 132).fill()
+        NSRect(x: 552, y: 44, width: 1, height: 132).fill()
         // Lyrics column: dim previous, bold current, dim next,
         // vertically centered in the panel.
-        let x: CGFloat = 576
-        let width: CGFloat = 340
+        let x: CGFloat = 564
+        let width: CGFloat = 352
         if let prev = lyricPrev {
             let font = NSFont.systemFont(ofSize: 16)
             drawText(truncated(prev, toWidth: width, font: font),
