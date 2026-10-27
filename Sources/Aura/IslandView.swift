@@ -16,7 +16,7 @@ import UserNotifications
 ///   (700x180, same height) and compresses the music part, putting
 ///   the lyrics panel on the right, like Nusa; sources is the picker
 ///   on the 640x220 footprint; pomodoro is the timer on 640x180;
-///   todo is the task list on 640x220; water is the drink reminder
+///   todo is the task list on 640x220; water is the intake tracker
 ///   on 640x180. The bubble toggles
 ///   music/lyrics, three-finger swipe moves to the previous/next
 ///   section, and the dots jump sections.
@@ -309,7 +309,8 @@ final class IslandView: NSView {
     /// the music part vertically; sources stays 640x220; pomodoro is
     /// 640x180 (ring + timer + mode pills, like the reference); todo
     /// is 640x220 (task rows + add row, like sources); water is
-    /// 640x180 (ring + countdown + interval pills, like pomodoro).
+    /// 640x180 (intake + progress + hourly chart, like Nusa's
+    /// Water Reminder).
     var expandedSize: NSSize {
         switch currentPage {
         case .music: return NSSize(width: 520, height: 180)
@@ -591,20 +592,24 @@ final class IslandView: NSView {
             }
         case .water:
             let buttons = waterButtonRects()
-            if buttons.drank.contains(point) {
-                resetWater()
+            if buttons.toggle.contains(point) {
+                toggleWaterNotifications()
                 return
             }
-            if buttons.min30.contains(point) {
-                setWaterInterval(30 * 60)
+            if buttons.drink.contains(point) {
+                drinkWater()
                 return
             }
-            if buttons.min60.contains(point) {
-                setWaterInterval(60 * 60)
+            if buttons.settings.contains(point) {
+                showWaterSettingsAlert()
                 return
             }
-            if buttons.min90.contains(point) {
-                setWaterInterval(90 * 60)
+            if buttons.prev.contains(point) {
+                moveWaterDay(by: -1)
+                return
+            }
+            if buttons.next.contains(point) {
+                moveWaterDay(by: 1)
                 return
             }
         case .sources:
@@ -1387,31 +1392,35 @@ final class IslandView: NSView {
     /// Draws a white SF Symbol centered at a point, tinted from the
     /// symbol's alpha (SF Symbols rasterize black by default). Falls
     /// back to a text glyph if the symbol is unavailable.
-    private func drawSymbol(_ name: String, size: CGFloat, center: CGPoint, fallback: String) {
+    private func drawSymbol(_ name: String, size: CGFloat, center: CGPoint, fallback: String, color: NSColor = .white) {
         let key = "\(name)-\(Int(size))"
         let rect = NSRect(x: center.x - size / 2, y: center.y - size / 2, width: size, height: size)
-        if let cached = Self.symbolCache[key] {
+        if color == .white, let cached = Self.symbolCache[key] {
             cached.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1.0)
             return
         }
         guard let base = NSImage(systemSymbolName: name, accessibilityDescription: nil) else {
-            drawCenteredText(fallback, font: NSFont.systemFont(ofSize: size), color: .white, center: center)
+            drawCenteredText(fallback, font: NSFont.systemFont(ofSize: size), color: color, center: center)
             return
         }
         let img = NSImage(size: NSSize(width: size, height: size))
         img.lockFocus()
         base.draw(in: NSRect(x: 0, y: 0, width: size, height: size), from: .zero,
                   operation: .sourceOver, fraction: 1.0)
-        NSColor.white.set()
-        // Tint: source-in keeps the SOURCE color (white) masked by the
+        color.set()
+        // Tint: source-in keeps the SOURCE color masked by the
         // symbol's alpha. destination-in would keep the DESTINATION
         // color — the symbol rasterizes black — which is why the
         // buttons rendered black-on-black and looked dim instead of
         // white. (The cached image is per-launch, so a fresh build
-        // picks the white version up.)
+        // picks the white version up. Only white is cached; tinted
+        // variants are drawn fresh each time so they never collide
+        // in the cache.)
         NSRect(x: 0, y: 0, width: size, height: size).fill(using: .sourceIn)
         img.unlockFocus()
-        Self.symbolCache[key] = img
+        if color == .white {
+            Self.symbolCache[key] = img
+        }
         img.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1.0)
     }
 
@@ -1790,53 +1799,190 @@ final class IslandView: NSView {
 
     // MARK: - Water reminder
 
-    /// Drink reminder: a countdown to the next glass of water,
-    /// always running (wall-clock, like pomodoro, so it keeps
-    /// counting while the card is closed). In-memory only, like
-    /// pomodoro v1 (resets on relaunch; persistence not asked for
-    /// yet). When the countdown hits zero the section shows
-    /// "Waktunya minum!" and a system notification fires (the
-    /// notification is scheduled alongside the timer, so it
-    /// arrives even if the card is closed). Notifications are
-    /// skipped when run as a raw binary (no bundle identifier —
-    /// the notification system cannot register it, and calling
-    /// it there crashed the app); the section still works as a
-    /// timer there, and notifications work from the packaged
-    /// Aura.app. The timer is started from cardPage didSet
-    /// (event handling), never from draw.
-    private var waterInterval: TimeInterval = 60 * 60
+    /// Water intake tracker, modelled on Nusa's Water Reminder:
+    /// today's intake vs a daily goal (default 1.5 L), a progress
+    /// bar, a notification toggle, Drink (logs one glass) and
+    /// Settings (goal, glass size, reminder interval), plus an
+    /// hourly bar chart for the viewed day. Arrows move between
+    /// days (next is capped at today); Drink always logs to today
+    /// and jumps the view back to today. Intake + settings persist
+    /// in UserDefaults (key AuraWaterData) and reset per day. The
+    /// reminder itself is a wall-clock timer (started from cardPage
+    /// didSet, never from draw) that fires one system notification
+    /// when due; it resets on Drink and on an interval change.
+    /// Notifications are skipped when run as a raw binary (no
+    /// bundle identifier — calling it there crashed the app); the
+    /// section still works as a tracker there, and notifications
+    /// work from the packaged Aura.app.
+    private struct WaterDay: Codable { var hourly: [Int: Int] = [:] }
+    private struct WaterStore: Codable {
+        var goalMl: Int = 1500
+        var glassMl: Int = 250
+        var intervalMinutes: Int = 60
+        var notificationsEnabled: Bool = true
+        var days: [String: WaterDay] = [:]
+    }
+
+    private static let waterDayKeyFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US")
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+    private static let waterDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US")
+        f.dateFormat = "EEE d MMM yyyy"
+        return f
+    }()
+    private static let waterDayLabelFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US")
+        f.dateFormat = "EEE d MMM"
+        return f
+    }()
+
+    private var waterStore = WaterStore()
+    private var waterStoreLoaded = false
+    private var waterViewDate = Date()
     private var waterEndDate: Date?
 
-    /// Pure (no side effects): the timer is started from
-    /// cardPage didSet (ensureWaterStarted), never from draw.
-    private func waterRemainingNow() -> TimeInterval {
-        guard let end = waterEndDate else { return waterInterval }
-        return max(0, end.timeIntervalSinceNow)
+    private func loadWaterStoreIfNeeded() {
+        guard !waterStoreLoaded else { return }
+        waterStoreLoaded = true
+        if let data = UserDefaults.standard.data(forKey: "AuraWaterData"),
+           let decoded = try? JSONDecoder().decode(WaterStore.self, from: data) {
+            waterStore = decoded
+        }
     }
 
-    /// Starts the water timer on first navigation to the section
-    /// (called from cardPage didSet, i.e. event handling — never
-    /// from draw, so the notification authorization prompt never
-    /// appears mid-draw/mid-animation).
+    private func saveWaterStore() {
+        if let data = try? JSONEncoder().encode(waterStore) {
+            UserDefaults.standard.set(data, forKey: "AuraWaterData")
+        }
+    }
+
+    private func waterDayKey(_ date: Date) -> String {
+        Self.waterDayKeyFormatter.string(from: date)
+    }
+
+    private var waterViewKey: String { waterDayKey(waterViewDate) }
+    private var waterIsViewingToday: Bool {
+        Calendar.current.isDate(waterViewDate, inSameDayAs: Date())
+    }
+    private func waterTotal(forKey key: String) -> Int {
+        waterStore.days[key]?.hourly.values.reduce(0, +) ?? 0
+    }
+    private func waterHourly(forKey key: String) -> [Int: Int] {
+        waterStore.days[key]?.hourly ?? [:]
+    }
+
+    /// Starts the reminder timer on first navigation to the
+    /// section (called from cardPage didSet, i.e. event handling
+    /// — never from draw, so the notification authorization prompt
+    /// never appears mid-draw/mid-animation).
     private func ensureWaterStarted() {
+        loadWaterStoreIfNeeded()
         guard waterEndDate == nil else { return }
-        waterEndDate = Date().addingTimeInterval(waterInterval)
+        waterEndDate = Date().addingTimeInterval(TimeInterval(waterStore.intervalMinutes * 60))
         scheduleWaterNotification()
     }
 
-    private func resetWater() {
-        waterEndDate = Date().addingTimeInterval(waterInterval)
+    private func resetWaterTimer() {
+        loadWaterStoreIfNeeded()
+        waterEndDate = Date().addingTimeInterval(TimeInterval(waterStore.intervalMinutes * 60))
         scheduleWaterNotification()
-        needsDisplay = true
-    }
-
-    private func setWaterInterval(_ interval: TimeInterval) {
-        waterInterval = interval
-        resetWater()
     }
 
     private var waterAuthRequested = false
     private var waterAuthGranted = false
+
+    /// Logs one glass to TODAY (always today, even when viewing
+    /// a past day) and jumps the view back to today, so the new
+    /// total is visible immediately. Also resets the reminder.
+    private func drinkWater() {
+        loadWaterStoreIfNeeded()
+        let key = waterDayKey(Date())
+        let hour = Calendar.current.component(.hour, from: Date())
+        var day = waterStore.days[key] ?? WaterDay()
+        day.hourly[hour, default: 0] += waterStore.glassMl
+        waterStore.days[key] = day
+        saveWaterStore()
+        waterViewDate = Date()
+        resetWaterTimer()
+        needsDisplay = true
+    }
+
+    private func toggleWaterNotifications() {
+        loadWaterStoreIfNeeded()
+        waterStore.notificationsEnabled.toggle()
+        saveWaterStore()
+        if waterStore.notificationsEnabled {
+            let keepSchedule = waterEndDate.map { $0 > Date() } ?? false
+            if !keepSchedule {
+                waterEndDate = Date().addingTimeInterval(TimeInterval(waterStore.intervalMinutes * 60))
+            }
+            scheduleWaterNotification()
+        } else {
+            UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["water-reminder"])
+        }
+        needsDisplay = true
+    }
+
+    private func moveWaterDay(by days: Int) {
+        guard let next = Calendar.current.date(byAdding: .day, value: days, to: waterViewDate) else { return }
+        if days > 0 && Calendar.current.compare(next, to: Date(), toGranularity: .day) == .orderedDescending {
+            return // Next is capped at today.
+        }
+        waterViewDate = next
+        needsDisplay = true
+    }
+
+    private func showWaterSettingsAlert() {
+        loadWaterStoreIfNeeded()
+        let alert = NSAlert()
+        alert.messageText = "Pengaturan Minum"
+        alert.informativeText = "Ubah goal harian, ukuran gelas, dan interval pengingat."
+        alert.addButton(withTitle: "Simpan")
+        alert.addButton(withTitle: "Batal")
+        let accessory = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 90))
+        func row(_ label: String, value: String, y: CGFloat) -> NSTextField {
+            let labelField = NSTextField(labelWithString: label)
+            labelField.frame = NSRect(x: 0, y: y, width: 150, height: 22)
+            accessory.addSubview(labelField)
+            let field = NSTextField(frame: NSRect(x: 158, y: y, width: 80, height: 22))
+            field.stringValue = value
+            accessory.addSubview(field)
+            return field
+        }
+        let goalField = row("Goal harian (ml)", value: "\(waterStore.goalMl)", y: 68)
+        let glassField = row("Gelas (ml)", value: "\(waterStore.glassMl)", y: 38)
+        let intervalField = row("Interval (menit)", value: "\(waterStore.intervalMinutes)", y: 8)
+        alert.accessoryView = accessory
+        alert.window.initialFirstResponder = goalField
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let oldInterval = waterStore.intervalMinutes
+        if let v = Int(goalField.stringValue.trimmingCharacters(in: .whitespaces)), v > 0 {
+            waterStore.goalMl = v
+        }
+        if let v = Int(glassField.stringValue.trimmingCharacters(in: .whitespaces)), v > 0 {
+            waterStore.glassMl = v
+        }
+        if let v = Int(intervalField.stringValue.trimmingCharacters(in: .whitespaces)), v > 0 {
+            waterStore.intervalMinutes = v
+        }
+        saveWaterStore()
+        if waterStore.intervalMinutes != oldInterval {
+            resetWaterTimer()
+        }
+        needsDisplay = true
+    }
+
+    private func formatLiters(_ ml: Int) -> String {
+        if ml % 1000 == 0 { return "\(ml / 1000)" }
+        if ml % 100 == 0 { return String(format: "%.1f", Double(ml) / 1000.0) }
+        return String(format: "%.2f", Double(ml) / 1000.0)
+    }
 
     private func scheduleWaterNotification() {
         // Notifications need a bundled app (bundle identifier).
@@ -1846,6 +1992,8 @@ final class IslandView: NSView {
         // there (the section still works as a timer); notifications
         // work from the packaged Aura.app.
         guard Bundle.main.bundleIdentifier != nil else { return }
+        loadWaterStoreIfNeeded()
+        guard waterStore.notificationsEnabled else { return }
         let center = UNUserNotificationCenter.current()
         center.removePendingNotificationRequests(withIdentifiers: ["water-reminder"])
         guard let end = waterEndDate else { return }
@@ -1877,66 +2025,187 @@ final class IslandView: NSView {
         center.add(UNNotificationRequest(identifier: "water-reminder", content: content, trigger: trigger))
     }
 
-    /// Pills (same layout as drawn): "Sudah minum" (blue action)
-    /// then the interval pills (30/60/90 mnt), y130, h28, gap 8,
-    /// starting at x220. The active interval is brighter.
-    private func waterButtonRects() -> (drank: NSRect, min30: NSRect, min60: NSRect, min90: NSRect) {
+    /// Hit rects (same as drawn): toggle (top-right of the left
+    /// column), Drink + Settings pills (bottom row, left column),
+    /// day arrows (bottom corners, clear of the right-edge dots).
+    private func waterButtonRects() -> (toggle: NSRect, drink: NSRect, settings: NSRect, prev: NSRect, next: NSRect) {
         let font = NSFont.systemFont(ofSize: 14, weight: .medium)
         func pillWidth(_ label: String) -> CGFloat {
             let w = (label as NSString).size(withAttributes: [.font: font]).width
-            return 12 + w + 12
+            return 12 + 14 + 6 + w + 12
         }
-        let drank = NSRect(x: 220, y: 130, width: pillWidth("Sudah minum"), height: 28)
-        let min30 = NSRect(x: drank.maxX + 8, y: 130, width: pillWidth("30 mnt"), height: 28)
-        let min60 = NSRect(x: min30.maxX + 8, y: 130, width: pillWidth("60 mnt"), height: 28)
-        let min90 = NSRect(x: min60.maxX + 8, y: 130, width: pillWidth("90 mnt"), height: 28)
-        return (drank, min30, min60, min90)
+        let toggle = NSRect(x: 284, y: 54, width: 56, height: 32)
+        let drink = NSRect(x: 48, y: 132, width: pillWidth("Drink"), height: 28)
+        let settings = NSRect(x: drink.maxX + 8, y: 132, width: pillWidth("Settings"), height: 28)
+        let prev = NSRect(x: 8, y: 132, width: 28, height: 28)
+        let next = NSRect(x: 604, y: 132, width: 28, height: 28)
+        return (toggle, drink, settings, prev, next)
+    }
+
+    private func drawWaterHeader() {
+        // Title: "Water" white + "Reminder" blue, 20pt bold, left.
+        let titleFont = NSFont.boldSystemFont(ofSize: 20)
+        drawText("Water", font: titleFont, color: .white, at: NSPoint(x: 48, y: 10))
+        let waterW = ("Water " as NSString).size(withAttributes: [.font: titleFont]).width
+        drawText("Reminder", font: titleFont, color: .systemBlue, at: NSPoint(x: 48 + waterW, y: 10))
+        let titleEnd = 48 + waterW + ("Reminder" as NSString).size(withAttributes: [.font: titleFont]).width
+        // Status ring: green while reminders are on, dim when off.
+        let ringCenter = CGPoint(x: titleEnd + 20, y: 22)
+        (waterStore.notificationsEnabled ? NSColor.systemGreen : NSColor.white.withAlphaComponent(0.3)).setStroke()
+        let ringPath = NSBezierPath(ovalIn: NSRect(x: ringCenter.x - 8, y: ringCenter.y - 8, width: 16, height: 16))
+        ringPath.lineWidth = 2
+        ringPath.stroke()
+        // Date (viewed day) + time (now, the clock), 13pt.
+        let dateFont = NSFont.systemFont(ofSize: 13, weight: .medium)
+        let timeFont = NSFont.systemFont(ofSize: 13, weight: .bold)
+        let dateStr = Self.waterDateFormatter.string(from: waterViewDate)
+        let timeStr = Self.clockFormatter.string(from: Date())
+        let dateX = ringCenter.x + 20
+        drawText(dateStr, font: dateFont, color: .white, at: NSPoint(x: dateX, y: 14))
+        let dateW = (dateStr as NSString).size(withAttributes: [.font: dateFont]).width
+        drawText(timeStr, font: timeFont, color: .white, at: NSPoint(x: dateX + dateW + 6, y: 14))
+        drawWaveform(in: NSRect(x: 640 - 68, y: 14, width: 48, height: 16))
+    }
+
+    private func drawWaterChart() {
+        // Right column: hourly bars for the viewed day (bars
+        // x390-592, baseline y150, top y50), y labels on the left,
+        // x labels 00/06/12/18 below. Scale is at least 400 ml (like
+        // the reference) so bars never clip.
+        let hourly = waterHourly(forKey: waterViewKey)
+        let maxHour = hourly.values.max() ?? 0
+        let scale = max(400, maxHour)
+        let barsLeft: CGFloat = 390
+        let barsWidth: CGFloat = 202
+        let baseline: CGFloat = 150
+        let chartHeight: CGFloat = 100
+        let slotW = barsWidth / 24
+        // Y labels (right-aligned at x385) + dotted gridlines.
+        let yFont = NSFont.systemFont(ofSize: 10, weight: .medium)
+        let yColor = NSColor.white.withAlphaComponent(0.5)
+        func yLabel(_ text: String, y: CGFloat) {
+            let w = (text as NSString).size(withAttributes: [.font: yFont]).width
+            drawText(text, font: yFont, color: yColor, at: NSPoint(x: 385 - w, y: y - 5))
+        }
+        yLabel("\(scale)", y: baseline - chartHeight)
+        yLabel("\(scale / 2)", y: baseline - chartHeight / 2)
+        yLabel("0 ml", y: baseline)
+        for gy in [baseline - chartHeight, baseline - chartHeight / 2] {
+            let grid = NSBezierPath()
+            grid.move(to: NSPoint(x: barsLeft, y: gy))
+            grid.line(to: NSPoint(x: barsLeft + barsWidth, y: gy))
+            grid.setLineDash([1, 3], count: 2, phase: 0)
+            NSColor.white.withAlphaComponent(0.15).setStroke()
+            grid.stroke()
+        }
+        NSColor.white.withAlphaComponent(0.25).setStroke()
+        let axis = NSBezierPath()
+        axis.move(to: NSPoint(x: barsLeft, y: baseline))
+        axis.line(to: NSPoint(x: barsLeft + barsWidth, y: baseline))
+        axis.stroke()
+        // Bars (vertical gradient, light base -> dark tip).
+        let lightBlue = NSColor(red: 0.5, green: 0.8, blue: 1.0, alpha: 1.0)
+        for (hour, ml) in hourly where ml > 0 {
+            let slotX = barsLeft + CGFloat(hour) * slotW
+            let barW: CGFloat = 6
+            let barX = slotX + (slotW - barW) / 2
+            let height = CGFloat(ml) / CGFloat(scale) * chartHeight
+            let barRect = NSRect(x: barX, y: baseline - height, width: barW, height: height)
+            NSGraphicsContext.saveGraphicsState()
+            NSBezierPath(roundedRect: barRect, xRadius: min(3, height / 2), yRadius: min(3, height / 2)).addClip()
+            NSGradient(starting: lightBlue, ending: NSColor.systemBlue)?.draw(in: barRect, angle: 90)
+            NSGraphicsContext.restoreGraphicsState()
+        }
+        // X labels (centered on their hour slots).
+        let xFont = NSFont.systemFont(ofSize: 10, weight: .medium)
+        for hour in [0, 6, 12, 18] {
+            let label = String(format: "%02d", hour)
+            let w = (label as NSString).size(withAttributes: [.font: xFont]).width
+            let cx = barsLeft + (CGFloat(hour) + 0.5) * slotW
+            drawText(label, font: xFont, color: yColor, at: NSPoint(x: cx - w / 2, y: 155))
+        }
     }
 
     private func drawWater() {
-        drawCardHeader(width: 640)
-        drawText("Minum", font: NSFont.boldSystemFont(ofSize: 20), color: .white, at: NSPoint(x: 28, y: 10))
-        // Progress ring (left): remaining arc (blue) + tinted
-        // interior + drop icon, like pomodoro's ring + stopwatch.
-        let ringCenter = CGPoint(x: 130, y: 100)
-        let ringRadius: CGFloat = 42
-        let ringWidth: CGFloat = 8
-        let remaining = waterRemainingNow()
-        let fraction = waterInterval > 0 ? max(0, min(1, remaining / waterInterval)) : 0
-        drawProgressRing(center: ringCenter, radius: ringRadius, width: ringWidth,
-                         fraction: fraction, color: .systemBlue)
-        NSColor.systemBlue.withAlphaComponent(0.15).setFill()
-        NSBezierPath(ovalIn: NSRect(x: ringCenter.x - 33, y: ringCenter.y - 33, width: 66, height: 66)).fill()
-        drawSymbol("drop.fill", size: 36, center: ringCenter, fallback: "●")
-        // Countdown (right) + label.
-        let minutes = Int(remaining) / 60
-        let seconds = Int(remaining) % 60
-        let countdown = String(format: "%02d:%02d", minutes, seconds)
-        drawText(countdown, font: NSFont.boldSystemFont(ofSize: 44), color: .white,
-                 at: NSPoint(x: 220, y: 48))
-        let due = remaining <= 0
-        drawText(due ? "Waktunya minum!" : "minum berikutnya",
-                 font: due ? NSFont.systemFont(ofSize: 16, weight: .semibold) : NSFont.systemFont(ofSize: 16),
-                 color: due ? .systemBlue : NSColor.white.withAlphaComponent(0.6),
-                 at: NSPoint(x: 220, y: 106))
-        // Pills: Sudah minum (blue action) + interval pills.
+        loadWaterStoreIfNeeded()
+        drawWaterHeader()
+        let total = waterTotal(forKey: waterViewKey)
+        let goal = waterStore.goalMl
+        // Big number + goal (left column, x48).
+        let totalFont = NSFont.boldSystemFont(ofSize: 44)
+        let totalStr = formatLiters(total)
+        drawText(totalStr, font: totalFont, color: .white, at: NSPoint(x: 48, y: 48))
+        let totalW = (totalStr as NSString).size(withAttributes: [.font: totalFont]).width
+        drawText("/ \(formatLiters(goal)) L", font: NSFont.systemFont(ofSize: 18, weight: .medium),
+                 color: NSColor.white.withAlphaComponent(0.5), at: NSPoint(x: 48 + totalW + 8, y: 61))
+        // Day label + percent + goal reached (y100).
+        let dayLabel = waterIsViewingToday ? "Today" : Self.waterDayLabelFormatter.string(from: waterViewDate)
+        let percent = goal > 0 ? Int((Double(total) / Double(goal) * 100).rounded()) : 0
+        let labelFont = NSFont.systemFont(ofSize: 14, weight: .medium)
+        let percentFont = NSFont.systemFont(ofSize: 14, weight: .semibold)
+        var lx: CGFloat = 48
+        func segment(_ text: String, font: NSFont, color: NSColor) {
+            drawText(text, font: font, color: color, at: NSPoint(x: lx, y: 100))
+            lx += (text as NSString).size(withAttributes: [.font: font]).width
+        }
+        segment(dayLabel, font: labelFont, color: NSColor.white.withAlphaComponent(0.6))
+        segment(" · ", font: labelFont, color: NSColor.white.withAlphaComponent(0.6))
+        segment("\(percent)%", font: percentFont, color: .systemBlue)
+        if percent >= 100 {
+            segment(" · Goal reached", font: labelFont, color: NSColor.white.withAlphaComponent(0.6))
+        }
+        // Progress bar (x48-340, y118, h8): track + gradient fill.
+        let trackRect = NSRect(x: 48, y: 118, width: 292, height: 8)
+        NSColor.white.withAlphaComponent(0.15).setFill()
+        NSBezierPath(roundedRect: trackRect, xRadius: 4, yRadius: 4).fill()
+        let fraction = goal > 0 ? min(1, Double(total) / Double(goal)) : 0
+        if fraction > 0 {
+            let fillW = 292 * fraction
+            let fillRect = NSRect(x: 48, y: 118, width: fillW, height: 8)
+            NSGraphicsContext.saveGraphicsState()
+            NSBezierPath(roundedRect: fillRect, xRadius: min(4, fillW / 2), yRadius: 4).addClip()
+            NSGradient(starting: NSColor(red: 0.5, green: 0.8, blue: 1.0, alpha: 1.0),
+                       ending: NSColor.systemBlue)?.draw(in: fillRect, angle: 0)
+            NSGraphicsContext.restoreGraphicsState()
+        }
+        // Toggle (top-right of the left column).
         let buttons = waterButtonRects()
-        func textPill(_ rect: NSRect, _ label: String, fill: NSColor, textColor: NSColor) {
+        let on = waterStore.notificationsEnabled
+        (on ? NSColor.systemBlue : NSColor.white.withAlphaComponent(0.20)).setFill()
+        NSBezierPath(roundedRect: buttons.toggle, xRadius: 16, yRadius: 16).fill()
+        let knobX = on ? buttons.toggle.maxX - 4 - 24 : buttons.toggle.minX + 4
+        let knobRect = NSRect(x: knobX, y: buttons.toggle.minY + 4, width: 24, height: 24)
+        NSColor.white.setFill()
+        NSBezierPath(ovalIn: knobRect).fill()
+        drawSymbol("bell.fill", size: 13, center: CGPoint(x: knobRect.midX, y: knobRect.midY),
+                   fallback: "●", color: on ? .systemBlue : NSColor.white.withAlphaComponent(0.5))
+        // Drink (blue) + Settings (dark) pills, with icons.
+        func iconPill(_ rect: NSRect, _ symbol: String, _ label: String, fill: NSColor,
+                      iconColor: NSColor, textColor: NSColor) {
             fill.setFill()
             NSBezierPath(roundedRect: rect, xRadius: 14, yRadius: 14).fill()
             let font = NSFont.systemFont(ofSize: 14, weight: .medium)
-            let w = (label as NSString).size(withAttributes: [.font: font]).width
+            drawSymbol(symbol, size: 14, center: CGPoint(x: rect.minX + 12 + 7, y: rect.midY),
+                       fallback: "●", color: iconColor)
             drawText(label, font: font, color: textColor,
-                     at: NSPoint(x: rect.midX - w / 2, y: rect.minY + 5))
+                     at: NSPoint(x: rect.minX + 12 + 14 + 6, y: rect.minY + 5))
         }
-        textPill(buttons.drank, "Sudah minum", fill: .systemBlue, textColor: .white)
-        for (rect, label, interval) in [(buttons.min30, "30 mnt", 30 * 60),
-                                        (buttons.min60, "60 mnt", 60 * 60),
-                                        (buttons.min90, "90 mnt", 90 * 60)] {
-            let active = waterInterval == TimeInterval(interval)
-            textPill(rect, label,
-                     fill: NSColor.white.withAlphaComponent(active ? 0.22 : 0.10),
-                     textColor: active ? .white : NSColor.white.withAlphaComponent(0.75))
+        iconPill(buttons.drink, "drop.fill", "Drink", fill: .systemBlue,
+                 iconColor: .white, textColor: .white)
+        iconPill(buttons.settings, "slider.horizontal.3", "Settings",
+                 fill: NSColor.white.withAlphaComponent(0.10),
+                 iconColor: NSColor.white.withAlphaComponent(0.75),
+                 textColor: NSColor.white.withAlphaComponent(0.75))
+        // Chart (right column) + day arrows (bottom corners).
+        drawWaterChart()
+        let atToday = waterIsViewingToday
+        for (rect, symbol, fallback, dimmed) in [(buttons.prev, "chevron.left", "‹", false),
+                                                 (buttons.next, "chevron.right", "›", atToday)] {
+            (dimmed ? NSColor.white.withAlphaComponent(0.05) : NSColor.white.withAlphaComponent(0.10)).setFill()
+            NSBezierPath(ovalIn: rect).fill()
+            drawSymbol(symbol, size: 14, center: CGPoint(x: rect.midX, y: rect.midY),
+                       fallback: fallback,
+                       color: dimmed ? NSColor.white.withAlphaComponent(0.3) : .white)
         }
     }
 }
