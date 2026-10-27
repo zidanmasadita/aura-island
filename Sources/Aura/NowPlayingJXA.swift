@@ -138,21 +138,28 @@ enum NowPlayingJXA {
               var data = rep.representationUsingTypeProperties(4, $.NSDictionary.dictionary);
               return data.base64EncodedStringWithOptions(0).js;
             }
+            function tiffBase64(cgImage) {
+              var img = $.NSImage.alloc.initWithCGImageSize(cgImage, { width: 600, height: 600 });
+              var tiff = img.TIFFRepresentation;
+              return tiff.base64EncodedStringWithOptions(0).js;
+            }
             var b64 = null;
             var artPresent = false;
             try {
               var art = info.valueForKey('kMRMediaRemoteNowPlayingInfoArtwork');
-              // Three shapes, in order: NSData (native players),
+              // Four shapes, in order: NSData (native players),
               // CGImage (what Chrome sessions expose — the probe
               // showed a truthy value with no ObjC methods at all:
               // no imageWithSize, no data, even `description` throws,
               // which is exactly a Core Graphics object, not an ObjC
-              // one), MPMediaItemArtwork (imageWithSize). Each step
+              // one) via bitmap-to-PNG or via NSImage TIFF,
+              // MPMediaItemArtwork (imageWithSize). Each step
               // guarded; failure falls through to the placeholder.
               if (art) {
                 artPresent = true;
                 try { b64 = art.base64EncodedStringWithOptions(0).js; } catch (e) {}
                 if (!b64) { try { b64 = pngBase64(art); } catch (e) {} }
+                if (!b64) { try { b64 = tiffBase64(art); } catch (e) {} }
                 if (!b64) {
                   try {
                     if (typeof art.imageWithSize === 'function') {

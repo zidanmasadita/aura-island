@@ -2,12 +2,12 @@ ObjC.import('Foundation');
 ObjC.import('AppKit');
 // Diagnostic only — NOT shipped in the app. Run while music plays:
 //   osascript -l JavaScript scripts/artwork-probe.jxa
-// The artwork value exists for Chrome sessions (artworkPresent true)
-// but is not NSData, so base64 fails. This probe identifies what it
-// actually is, and attempts the extraction for the likely type
-// (MPMediaItemArtwork, which Chrome exposes via MPNowPlayingInfoCenter:
-// imageWithSize: -> NSBitmapImageRep -> PNG data -> base64). Paste the
-// whole JSON output back; it decides the real fix.
+// The artwork value exists for Chrome sessions but is not NSData and
+// has no ObjC methods (no imageWithSize/data, description throws).
+// This probe reports EVERY extraction attempt separately — an earlier
+// version overwrote one attempt's failure with a later attempt's
+// step, which made the output ambiguous — plus type introspection,
+// so one run shows exactly which route (if any) yields image bytes.
 function run() {
   try {
     var bundle = $.NSBundle.bundleWithPath('/System/Library/PrivateFrameworks/MediaRemote.framework/');
@@ -25,64 +25,59 @@ function run() {
     }
     var art = null;
     try { art = info.valueForKey('kMRMediaRemoteNowPlayingInfoArtwork'); } catch (e) {}
-    var desc = null;
-    try { if (art) desc = String(art.description.js).slice(0, 160); } catch (e) { desc = 'description-error'; }
-    var probes = {};
-    try { probes.hasImageWithSize = typeof art.imageWithSize === 'function'; } catch (e) { probes.hasImageWithSize = 'error'; }
-    try { probes.hasData = typeof art.data !== 'undefined' && art.data !== null; } catch (e) { probes.hasData = 'error'; }
-    try { probes.hasArtworkData = typeof art.artworkData !== 'undefined' && art.artworkData !== null; } catch (e) { probes.hasArtworkData = 'error'; }
+    // Introspection: what IS this value? Missing properties read as
+    // undefined (no throw); each read is guarded anyway.
+    var intro = {};
+    try { intro.typeofArt = typeof art; } catch (e) { intro.typeofArt = 'error'; }
+    try { intro.length = (art && typeof art.length !== 'undefined') ? art.length : null; } catch (e) { intro.length = 'error'; }
+    try { intro.width = (art && typeof art.width !== 'undefined') ? art.width : null; } catch (e) { intro.width = 'error'; }
+    try { intro.height = (art && typeof art.height !== 'undefined') ? art.height : null; } catch (e) { intro.height = 'error'; }
+    try { intro.string = art ? String(art).slice(0, 120) : null; } catch (e) { intro.string = 'error'; }
+    try { intro.unwrapped = art ? String(ObjC.unwrap(art)).slice(0, 120) : null; } catch (e) { intro.unwrapped = 'error'; }
     function pngBase64(cgImage) {
       var rep = $.NSBitmapImageRep.alloc.initWithCGImage(cgImage);
       var data = rep.representationUsingTypeProperties(4, $.NSDictionary.dictionary);
       return data.base64EncodedStringWithOptions(0).js;
     }
-    // Attempt 0: NSData base64 (native players).
-    var extracted = null;
-    var step = 'not-attempted';
+    function tiffBase64(cgImage) {
+      var img = $.NSImage.alloc.initWithCGImageSize(cgImage, { width: 600, height: 600 });
+      var tiff = img.TIFFRepresentation;
+      return tiff.base64EncodedStringWithOptions(0).js;
+    }
+    // Each attempt reports its own outcome; nothing overwrites.
+    var attempts = {};
     try {
-      if (art) { extracted = art.base64EncodedStringWithOptions(0).js; step = 'nsdata-ok'; }
-    } catch (e) { step = 'nsdata-failed'; }
-    // Attempt 1: CGImage direct (the leading hypothesis for Chrome:
-    // truthy, no ObjC methods, description throws = Core Graphics).
-    if (!extracted) {
-      try {
-        step = 'cgimage-bitmap';
-        extracted = pngBase64(art);
-        step = 'cgimage-ok';
-      } catch (e) { step = 'cgimage-failed: ' + String(e); }
-    }
-    // Attempt 2: MPMediaItemArtwork path (imageWithSize -> bitmap -> PNG).
-    if (!extracted) {
-      try {
-        if (art && typeof art.imageWithSize === 'function') {
-          step = 'imageWithSize-call';
-          var cg = art.imageWithSize({ width: 600, height: 600 });
-          step = 'bitmap-init';
-          extracted = pngBase64(cg);
-          step = 'imageWithSize-ok';
-        } else {
-          step = 'no-imageWithSize';
-        }
-      } catch (e) { step = 'failed-at-' + step + ': ' + String(e); }
-    }
-    // Attempt 3: a data-ish property holding NSData.
-    if (!extracted) {
-      try {
-        var cand = null;
-        try { cand = art.data; } catch (e) {}
-        if (!cand) { try { cand = art.artworkData; } catch (e) {} }
-        if (!cand) { try { cand = art.imageData; } catch (e) {} }
-        if (cand) extracted = cand.base64EncodedStringWithOptions(0).js;
-      } catch (e) {}
-    }
+      if (art) { var b = art.base64EncodedStringWithOptions(0).js; attempts.nsdata = b ? ('ok len ' + b.length) : 'null'; }
+      else attempts.nsdata = 'no-art';
+    } catch (e) { attempts.nsdata = 'failed: ' + String(e); }
+    try {
+      if (art) { var b2 = pngBase64(art); attempts.cgimageBitmap = b2 ? ('ok len ' + b2.length) : 'null'; }
+      else attempts.cgimageBitmap = 'no-art';
+    } catch (e) { attempts.cgimageBitmap = 'failed: ' + String(e); }
+    try {
+      if (art) { var b3 = tiffBase64(art); attempts.cgimageNSImage = b3 ? ('ok len ' + b3.length) : 'null'; }
+      else attempts.cgimageNSImage = 'no-art';
+    } catch (e) { attempts.cgimageNSImage = 'failed: ' + String(e); }
+    try {
+      if (art && typeof art.imageWithSize === 'function') {
+        var b4 = pngBase64(art.imageWithSize({ width: 600, height: 600 }));
+        attempts.imageWithSize = b4 ? ('ok len ' + b4.length) : 'null';
+      } else attempts.imageWithSize = 'absent';
+    } catch (e) { attempts.imageWithSize = 'failed: ' + String(e); }
+    try {
+      var cand = null;
+      try { cand = art.data; } catch (e) {}
+      if (!cand) { try { cand = art.artworkData; } catch (e) {} }
+      if (!cand) { try { cand = art.imageData; } catch (e) {} }
+      if (cand) { var b5 = cand.base64EncodedStringWithOptions(0).js; attempts.dataProps = b5 ? ('ok len ' + b5.length) : 'null'; }
+      else attempts.dataProps = 'absent';
+    } catch (e) { attempts.dataProps = 'failed: ' + String(e); }
     return JSON.stringify({
       title: str('kMRMediaRemoteNowPlayingInfoTitle'),
       artist: str('kMRMediaRemoteNowPlayingInfoArtist'),
       artworkPresent: !!art,
-      artworkDescription: desc,
-      probes: probes,
-      extractedLength: extracted ? extracted.length : 0,
-      extractStep: step
+      intro: intro,
+      attempts: attempts
     });
   } catch (e) {
     return JSON.stringify({ error: String(e) });
