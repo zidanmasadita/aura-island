@@ -64,9 +64,11 @@ final class IslandView: NSView, NSDraggingSource {
             if oldValue == .expanded && state != .expanded {
                 lyricsMode = (cardPage == .lyrics)
             }
-            // Leaving the expanded card always returns to the music
-            // page, so reopening never lands on a stale lyrics/pomodoro/todo/water/sources page.
-            if state != .expanded { cardPage = .music }
+            // The page is NOT reset on close: reopening lands back on
+            // the last page that was open (tray, todo, water, ...),
+            // not back on music. A stale sources page is already
+            // handled by currentPage (it falls back to music when
+            // sessions drop to one).
             needsDisplay = true
         }
     }
