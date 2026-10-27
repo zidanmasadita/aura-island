@@ -1479,13 +1479,13 @@ final class IslandView: NSView {
                      color: active ? .white : NSColor.white.withAlphaComponent(0.75),
                      at: NSPoint(x: rect.minX + 34, y: rect.minY + 6))
         }
-        modePill(buttons.shortBreak, "cup.and.saucer", "●", "Short Break", pomodoroMode == .shortBreak)
+        modePill(buttons.shortBreak, icon: "cup.and.saucer", iconFallback: "●", label: "Short Break", active: pomodoroMode == .shortBreak)
         pomodoroColor.setFill()
         NSBezierPath(roundedRect: buttons.play, xRadius: buttons.play.height / 2, yRadius: buttons.play.height / 2).fill()
         drawSymbol(pomodoroIsRunning ? "pause.fill" : "play.fill", size: 16,
                    center: CGPoint(x: buttons.play.midX, y: buttons.play.midY),
                    fallback: pomodoroIsRunning ? "❚❚" : "▶")
-        modePill(buttons.focus, "target", "◎", "Focus Time", pomodoroMode == .focus)
+        modePill(buttons.focus, icon: "target", iconFallback: "◎", label: "Focus Time", active: pomodoroMode == .focus)
     }
 
     /// Section arrows: circled chevrons at the card's left/right edges,
@@ -1498,9 +1498,9 @@ final class IslandView: NSView {
             NSBezierPath(ovalIn: rect).fill()
             drawSymbol(symbol, size: 16, center: CGPoint(x: rect.midX, y: rect.midY), fallback: fallback)
         }
-        arrow(leftArrowRect, "chevron.left", fallback: "‹")
+        arrow(leftArrowRect, "chevron.left", "‹")
         if currentPage != .lyrics {
-            arrow(rightArrowRect, "chevron.right", fallback: "›")
+            arrow(rightArrowRect, "chevron.right", "›")
         }
     }
 }
