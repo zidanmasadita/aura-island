@@ -114,8 +114,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func handleHover(_ hovering: Bool) {
         if hovering {
+            // Hover opens the card directly, no click needed — but
+            // only when there is something to show. Idle (no session)
+            // keeps the old hover-to-compact behaviour, so hovering
+            // an idle pill never opens an empty card.
             if islandView.state != .expanded {
-                setState(.compact)
+                if sessions.current != nil {
+                    setState(.expanded)
+                } else {
+                    setState(.compact)
+                }
             }
         } else {
             // Leaving the island always closes it — including an expanded
