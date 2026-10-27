@@ -33,7 +33,7 @@ import UserNotifications
 /// livePosition), so the bar moves smoothly at the 10x/second redraw
 /// while playing, and only re-anchors on track/state change, a seek,
 /// or when the sensor runs ahead of the display.
-final class IslandView: NSView {
+final class IslandView: NSView, NSDraggingSource {
     var state: IslandState = .zen {
         didSet {
             // Remember whether the card was on lyrics when it closed:
@@ -357,7 +357,7 @@ final class IslandView: NSView {
     /// 640x180 (ring + timer + mode pills, like the reference); todo
     /// is 640x220 (task rows + add row, like sources); water is
     /// 640x180 (intake + progress + hourly chart, like Nusa's
-    /// Water Reminder).
+    /// Water Reminder). tray is 640x220 (file rows + share, like todo).
     var expandedSize: NSSize {
         switch currentPage {
         case .music: return NSSize(width: 520, height: 180)
@@ -365,6 +365,7 @@ final class IslandView: NSView {
         case .pomodoro: return NSSize(width: 640, height: 180)
         case .todo: return NSSize(width: 640, height: 220)
         case .water: return NSSize(width: 640, height: 180)
+        case .tray: return NSSize(width: 640, height: 220)
         case .sources: return NSSize(width: 640, height: 220)
         }
     }
@@ -384,16 +385,16 @@ final class IslandView: NSView {
         return lyricsMode ? NSSize(width: 360, height: 32) : NSSize(width: 180, height: 32)
     }
 
-    private enum CardPage { case music, lyrics, pomodoro, todo, water, sources }
+    private enum CardPage { case music, lyrics, pomodoro, todo, water, tray, sources }
 
     /// Sections the dots and three-finger swipe offer: music +
-    /// pomodoro + todo + water always, sources only when there is more than
+    /// pomodoro + todo + water + tray always, sources only when there is more than
     /// one session to choose from. Lyrics is NOT a section — it is a
     /// panel of the music section (via the bubble), so swipe and dots
     /// never land on it; that was the old chevron's mistake (it
     /// jumped to lyrics).
     private var availableSections: [CardPage] {
-        sessionsForPicker.count > 1 ? [.music, .pomodoro, .todo, .water, .sources] : [.music, .pomodoro, .todo, .water]
+        sessionsForPicker.count > 1 ? [.music, .pomodoro, .todo, .water, .tray, .sources] : [.music, .pomodoro, .todo, .water, .tray]
     }
 
     /// The page actually drawn (lyrics included). Sources falls back
@@ -527,6 +528,8 @@ final class IslandView: NSView {
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
+        // Drag-and-drop file tray: the island accepts file URLs.
+        registerForDraggedTypes([.fileURL])
         // Waveform animation: redraw ~10x/second while something plays.
         // The bars are decorative (like Nusa's: no real audio analysis),
         // driven by a sine phase, flat when paused.
@@ -667,12 +670,136 @@ final class IslandView: NSView {
                     return
                 }
             }
+        case .tray:
+            if trayShareFile != nil {
+                // Share mode: back cancels (and aborts a send).
+                if trayShareBackRect().contains(point) {
+                    onTrayShareCancel?()
+                    clearTrayShare()
+                    return
+                }
+                if traySharePeer == nil {
+                    if trayShareMethod == nil {
+                        let methods = trayShareMethodRects()
+                        if methods.airDrop.contains(point) {
+                            if let file = trayShareFile { onTrayShareAirDrop?(file) }
+                            clearTrayShare()
+                            return
+                        }
+                        if methods.lan.contains(point) {
+                            trayShareMethod = .lan
+                            needsDisplay = true
+                            return
+                        }
+                    } else if trayShareMethod == .lan {
+                        for row in traySharePeerRects() {
+                            if row.rect.contains(point) {
+                                if let file = trayShareFile {
+                                    traySharePeer = row.peer
+                                    trayShareStatus = "Menunggu persetujuan..."
+                                    trayShareProgress = nil
+                                    needsDisplay = true
+                                    onTrayShareLANPeer?(file, row.peer)
+                                }
+                                return
+                            }
+                        }
+                    }
+                }
+                // Status view or unhandled share-mode click: fall
+                // through to collapse (the send keeps running).
+            } else {
+                // List mode: delete, share, or pending drag-out.
+                for row in trayVisibleRows() {
+                    if row.deleteRect.contains(point) {
+                        deleteTrayFile(id: row.file.id)
+                        return
+                    }
+                    if row.exists, row.shareRect.contains(point) {
+                        trayShareFile = row.file
+                        trayShareMethod = nil
+                        traySharePeer = nil
+                        trayShareStatus = nil
+                        trayShareProgress = nil
+                        needsDisplay = true
+                        return
+                    }
+                    if row.mainRect.contains(point) {
+                        if row.exists {
+                            trayPendingDrag = (file: row.file, point: point)
+                        }
+                        return
+                    }
+                }
+                // Unhandled list-mode click: fall through to collapse.
+            }
         }
         // Any other click on the expanded card collapses it. Without this
         // fallthrough there was no way to close the card by clicking: only
         // the controls, picker rows, pomodoro buttons, and todo rows responded, the
         // rest did nothing.
         onClicked?()
+    }
+
+    // MARK: - Tray drag and drop
+
+    /// Drag-out: a press on a tray row's main area arms a pending
+    /// drag; moving past 3px starts the session (so a plain press
+    /// still clicks, and only tray rows drag — other sections are
+    /// untouched). The file stays in the tray (copy, not move).
+    override func mouseDragged(with event: NSEvent) {
+        guard let pending = trayPendingDrag else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        guard abs(point.x - pending.point.x) > 3 || abs(point.y - pending.point.y) > 3 else { return }
+        trayPendingDrag = nil
+        guard trayFileExists(pending.file) else { return }
+        let item = NSDraggingItem(pasteboardWriter: pending.file.url as NSURL)
+        beginDraggingSession(with: [item], event: event, source: self)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        trayPendingDrag = nil
+    }
+
+    func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
+        [.copy]
+    }
+
+    /// Drag-in: file URLs only. Entering expands the card to the
+    /// tray (so dropping onto the closed pill works, like
+    /// DynamicNotch); the drop lands in the tray, share mode clears
+    /// so the new files are visible.
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard sender.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: [NSPasteboard.ReadingOptionKey.urlReadingFileURLsOnly: true]) else {
+            return []
+        }
+        trayDropHighlight = true
+        onDragEnteredTray?()
+        return .copy
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        sender.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: [NSPasteboard.ReadingOptionKey.urlReadingFileURLsOnly: true]) ? .copy : []
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        trayDropHighlight = false
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let pasteboard = sender.draggingPasteboard
+        guard let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [NSPasteboard.ReadingOptionKey.urlReadingFileURLsOnly: true]) as? [URL] else {
+            trayDropHighlight = false
+            return false
+        }
+        let added = addTrayFiles(urls)
+        trayDropHighlight = false
+        if trayShareFile != nil { clearTrayShare() }
+        return added > 0
+    }
+
+    override func concludeDragOperation(_ sender: NSDraggingInfo?) {
+        trayDropHighlight = false
     }
 
     /// Three-finger swipe switches sections (the MacBook way):
@@ -735,7 +862,7 @@ final class IslandView: NSView {
     }
 
     /// Move to the previous/next section in dot order (music ->
-    /// pomodoro -> todo -> water -> sources when available -> back to music),
+    /// pomodoro -> todo -> water -> tray -> sources when available -> back to music),
     /// wrapping. Lyrics is not a section (it is a panel of music, via
     /// the bubble), so moving from lyrics uses the music section.
     /// Called by dots and three-finger swipe (the side arrows were
@@ -1186,15 +1313,17 @@ final class IslandView: NSView {
     // MARK: - Expanded card
 
     private func drawExpanded() {
-        // Pomodoro, todo, and water work without music (their own
-        // timer, list, and reminder), so they bypass the no-media
-        // guard every other page sits behind.
+        // Pomodoro, todo, water, and tray work without music (their
+        // own timer, list, reminder, and file shelf), so they bypass
+        // the no-media guard every other page sits behind.
         if currentPage == .pomodoro {
             drawPomodoro()
         } else if currentPage == .todo {
             drawTodo()
         } else if currentPage == .water {
             drawWater()
+        } else if currentPage == .tray {
+            drawTray()
         } else {
             guard let session else {
                 drawCentered("Tidak ada media yang diputar",
@@ -1221,7 +1350,7 @@ final class IslandView: NSView {
             case .sources:
                 drawCardHeader()
                 drawPicker(startY: 64)
-            case .pomodoro, .todo, .water:
+            case .pomodoro, .todo, .water, .tray:
                 break // handled above
             }
         }
@@ -1931,6 +2060,302 @@ final class IslandView: NSView {
     private func resyncHoverAfterModal() {
         guard let window else { return }
         onHoverChanged?(window.frame.contains(NSEvent.mouseLocation))
+    }
+
+    // MARK: - File tray (drag and drop + share)
+
+    /// A file held in the tray: a reference, not a copy — the file
+    /// stays where it is, the tray just remembers its path (like a
+    /// shelf). Persisted in UserDefaults (key AuraTrayFiles), so the
+    /// tray survives relaunch. If the original moves or deletes,
+    /// the row goes stale (dimmed, share/drag disabled) until removed.
+    struct TrayFile: Codable, Equatable {
+        let id: UUID
+        let path: String
+        let name: String
+        let isDirectory: Bool
+        let size: Int64
+        let addedAt: Date
+        var url: URL { URL(fileURLWithPath: path) }
+    }
+
+    /// Share method chosen in the tray's share mode. AirDrop opens
+    /// the system picker; LAN lists discovered Aura peers.
+    private enum TrayShareMethod { case airDrop, lan }
+
+    private var trayFiles: [TrayFile] = []
+    private var trayFilesLoaded = false
+    private var trayDropHighlight = false { didSet { needsDisplay = true } }
+    /// Share mode: nil = list mode. Set when a row's share button is
+    /// tapped; cleared on back/cancel, after AirDrop opens, or on drop.
+    private var trayShareFile: TrayFile?
+    /// Method chosen in share mode; nil = method chooser.
+    private var trayShareMethod: TrayShareMethod?
+    /// LAN peer tapped in share mode; non-nil = sending status view.
+    private var traySharePeer: LANPeer?
+    /// Discovered LAN peers (set by AppDelegate); redraws on change.
+    var lanPeers: [LANPeer] = [] { didSet { needsDisplay = true } }
+    /// LAN send status text + progress (set by AppDelegate during a
+    /// send); redraws on change. Nil = no send in progress.
+    var trayShareStatus: String? { didSet { needsDisplay = true } }
+    var trayShareProgress: Double? { didSet { needsDisplay = true } }
+
+    /// Callbacks to AppDelegate (set like onHoverChanged/onClicked).
+    var onDragEnteredTray: (() -> Void)?
+    var onTrayShareAirDrop: ((TrayFile) -> Void)?
+    var onTrayShareLANPeer: ((TrayFile, LANPeer) -> Void)?
+    var onTrayShareCancel: (() -> Void)?
+
+    /// Pending drag-out: set on mouseDown on a tray row's main area
+    /// (not share/delete), so a press-drag starts a drag session and
+    /// a plain press still clicks. Cleared on drag start or mouseUp.
+    private var trayPendingDrag: (file: TrayFile, point: NSPoint)?
+
+    /// Show the tray section (used when a drag enters the island).
+    func showTray() {
+        cardPage = .tray
+        needsDisplay = true
+    }
+
+    private func loadTrayFilesIfNeeded() {
+        guard !trayFilesLoaded else { return }
+        trayFilesLoaded = true
+        if let data = UserDefaults.standard.data(forKey: "AuraTrayFiles"),
+           let decoded = try? JSONDecoder().decode([TrayFile].self, from: data) {
+            trayFiles = decoded
+        }
+    }
+
+    private func saveTrayFiles() {
+        if let data = try? JSONEncoder().encode(trayFiles) {
+            UserDefaults.standard.set(data, forKey: "AuraTrayFiles")
+        }
+    }
+
+    /// Add dropped URLs to the tray (dedupe by path, directories
+    /// allowed). Returns how many were added.
+    @discardableResult
+    private func addTrayFiles(_ urls: [URL]) -> Int {
+        loadTrayFilesIfNeeded()
+        var added = 0
+        for url in urls {
+            let path = url.path
+            guard !trayFiles.contains(where: { $0.path == path }) else { continue }
+            var isDir: ObjCBool = false
+            let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDir)
+            var size: Int64 = 0
+            if exists, !isDir.boolValue {
+                size = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? Int64) ?? 0
+            }
+            trayFiles.append(TrayFile(id: UUID(), path: path, name: url.lastPathComponent,
+                                      isDirectory: isDir.boolValue, size: size, addedAt: Date()))
+            added += 1
+        }
+        if added > 0 { saveTrayFiles(); needsDisplay = true }
+        return added
+    }
+
+    private func deleteTrayFile(id: UUID) {
+        loadTrayFilesIfNeeded()
+        trayFiles.removeAll { $0.id == id }
+        saveTrayFiles()
+        needsDisplay = true
+    }
+
+    private func trayFileExists(_ file: TrayFile) -> Bool {
+        FileManager.default.fileExists(atPath: file.path)
+    }
+
+    private func trayTotalSize() -> Int64 {
+        loadTrayFilesIfNeeded()
+        return trayFiles.reduce(0) { $0 + $1.size }
+    }
+
+    private func formatBytes(_ bytes: Int64) -> String {
+        if bytes < 1024 { return "\(bytes) B" }
+        if bytes < 1024 * 1024 { return String(format: "%.1f KB", Double(bytes) / 1024.0) }
+        if bytes < 1024 * 1024 * 1024 { return String(format: "%.1f MB", Double(bytes) / 1048576.0) }
+        return String(format: "%.1f GB", Double(bytes) / 1073741824.0)
+    }
+
+    /// Visible tray rows (max 4, like todo): pill, main area (drag
+    /// source), share button, delete button. Share is drawn only for
+    /// existing files; missing rows keep only delete.
+    private func trayVisibleRows() -> [(file: TrayFile, pillRect: NSRect, mainRect: NSRect, shareRect: NSRect, deleteRect: NSRect, exists: Bool)] {
+        loadTrayFilesIfNeeded()
+        return trayFiles.prefix(4).enumerated().map { i, file in
+            let y: CGFloat = 52 + CGFloat(i) * 40
+            return (file: file,
+                    pillRect: NSRect(x: 280, y: y, width: 320, height: 32),
+                    mainRect: NSRect(x: 280, y: y, width: 248, height: 32),
+                    shareRect: NSRect(x: 536, y: y, width: 24, height: 32),
+                    deleteRect: NSRect(x: 576, y: y, width: 24, height: 32),
+                    exists: trayFileExists(file))
+        }
+    }
+
+    /// Back pill (top-right) in share mode.
+    private func trayShareBackRect() -> NSRect {
+        NSRect(x: 524, y: 10, width: 88, height: 28)
+    }
+
+    /// Method chooser rows in share mode (full-width pills).
+    private func trayShareMethodRects() -> (airDrop: NSRect, lan: NSRect) {
+        (airDrop: NSRect(x: 28, y: 84, width: 572, height: 32),
+         lan: NSRect(x: 28, y: 124, width: 572, height: 32))
+    }
+
+    /// LAN peer rows in share mode (max 3).
+    private func traySharePeerRects() -> [(peer: LANPeer, rect: NSRect)] {
+        lanPeers.prefix(3).enumerated().map { i, peer in
+            (peer: peer, rect: NSRect(x: 28, y: 84 + CGFloat(i) * 40, width: 572, height: 32))
+        }
+    }
+
+    private func clearTrayShare() {
+        trayShareFile = nil
+        trayShareMethod = nil
+        traySharePeer = nil
+        trayShareStatus = nil
+        trayShareProgress = nil
+        needsDisplay = true
+    }
+
+    private func drawTray() {
+        if trayShareFile != nil {
+            // Share mode draws its own top (title + back pill, no
+            // card header — the header waveform would collide with
+            // the back pill at the top-right).
+            drawTrayShare()
+        } else {
+            drawCardHeader(width: 640)
+            drawText("Tray", font: NSFont.boldSystemFont(ofSize: 20), color: .white, at: NSPoint(x: 28, y: 10))
+            drawTrayList()
+        }
+        // Drop highlight while a drag hovers: translucent blue wash
+        // + stroke, drawn last so it reads over the rows.
+        if trayDropHighlight {
+            NSColor.systemBlue.withAlphaComponent(0.08).setFill()
+            NSBezierPath(roundedRect: NSRect(x: 16, y: 16, width: 608, height: 188), xRadius: 20, yRadius: 20).fill()
+            NSColor.systemBlue.setStroke()
+            NSBezierPath(roundedRect: NSRect(x: 16, y: 16, width: 608, height: 188), xRadius: 20, yRadius: 20).stroke()
+        }
+    }
+
+    private func drawTrayList() {
+        loadTrayFilesIfNeeded()
+        // Left column: counter + total + hint / empty state.
+        if trayFiles.isEmpty {
+            drawText("Seret file ke sini", font: NSFont.systemFont(ofSize: 14), color: NSColor.white.withAlphaComponent(0.6), at: NSPoint(x: 28, y: 60))
+        } else {
+            drawText("\(trayFiles.count)", font: NSFont.boldSystemFont(ofSize: 28), color: .white, at: NSPoint(x: 28, y: 52))
+            drawText("file", font: NSFont.systemFont(ofSize: 12), color: NSColor.white.withAlphaComponent(0.6), at: NSPoint(x: 28, y: 88))
+            drawText(formatBytes(trayTotalSize()), font: NSFont.systemFont(ofSize: 12), color: NSColor.white.withAlphaComponent(0.6), at: NSPoint(x: 28, y: 108))
+            drawText("Seret keluar untuk memindahkan", font: NSFont.systemFont(ofSize: 11), color: NSColor.white.withAlphaComponent(0.4), at: NSPoint(x: 28, y: 138))
+        }
+        // Right column: file rows (like todo's rows).
+        let rows = trayVisibleRows()
+        if trayFiles.count > rows.count {
+            drawText("＋\(trayFiles.count - rows.count) lainnya", font: NSFont.systemFont(ofSize: 11),
+                     color: NSColor.white.withAlphaComponent(0.4), at: NSPoint(x: 28, y: 158))
+        }
+        for row in rows {
+            NSColor.white.withAlphaComponent(0.08).setFill()
+            NSBezierPath(roundedRect: row.pillRect, xRadius: 10, yRadius: 10).fill()
+            let centerY = row.pillRect.midY
+            let alpha: CGFloat = row.exists ? 1.0 : 0.4
+            let symbol = row.file.isDirectory ? "folder.fill" : "doc.fill"
+            drawSymbol(symbol, size: 20, center: CGPoint(x: 302, y: centerY), fallback: row.file.isDirectory ? "F" : "D",
+                       color: NSColor.white.withAlphaComponent(alpha))
+            let nameFont = NSFont.systemFont(ofSize: 14)
+            let name = row.exists ? row.file.name : row.file.name + " (hilang)"
+            drawText(truncated(name, toWidth: 208, font: nameFont),
+                     font: nameFont, color: NSColor.white.withAlphaComponent(alpha),
+                     at: NSPoint(x: 320, y: row.pillRect.minY + 7))
+            if row.exists {
+                drawSymbol("square.and.arrow.up", size: 16, center: CGPoint(x: 548, y: centerY), fallback: "^")
+            }
+            let xLabel = "×"
+            let xFont = NSFont.systemFont(ofSize: 14)
+            let xW = (xLabel as NSString).size(withAttributes: [.font: xFont]).width
+            drawText(xLabel, font: xFont, color: NSColor.white.withAlphaComponent(0.4),
+                     at: NSPoint(x: row.deleteRect.midX - xW / 2, y: centerY - 8))
+        }
+    }
+
+    private func drawTrayShare() {
+        guard let file = trayShareFile else { return }
+        drawText("Bagikan", font: NSFont.boldSystemFont(ofSize: 20), color: .white, at: NSPoint(x: 28, y: 10))
+        // Back pill (top-right).
+        let back = trayShareBackRect()
+        NSColor.white.withAlphaComponent(0.10).setFill()
+        NSBezierPath(roundedRect: back, xRadius: 14, yRadius: 14).fill()
+        let backFont = NSFont.systemFont(ofSize: 14)
+        let backW = ("Batal" as NSString).size(withAttributes: [.font: backFont]).width
+        drawText("Batal", font: backFont, color: .white,
+                 at: NSPoint(x: back.midX - backW / 2, y: back.minY + 5))
+        // Shared file row (32-tall row at minY 44: icon center 60,
+        // name baseline 51, like todo's rows).
+        drawSymbol(file.isDirectory ? "folder.fill" : "doc.fill", size: 20,
+                   center: CGPoint(x: 40, y: 60), fallback: file.isDirectory ? "F" : "D")
+        let nameFont = NSFont.systemFont(ofSize: 14)
+        drawText(truncated(file.name, toWidth: 540, font: nameFont),
+                 font: nameFont, color: .white, at: NSPoint(x: 56, y: 51))
+        if let peer = traySharePeer {
+            // Sending status view.
+            drawText("Ke \(peer.name)", font: NSFont.systemFont(ofSize: 14),
+                     color: NSColor.white.withAlphaComponent(0.6), at: NSPoint(x: 28, y: 96))
+            drawText(trayShareStatus ?? "Mengirim...", font: NSFont.systemFont(ofSize: 14),
+                     color: .white, at: NSPoint(x: 28, y: 120))
+            if let progress = trayShareProgress {
+                let track = NSRect(x: 28, y: 152, width: 572, height: 8)
+                NSColor.white.withAlphaComponent(0.15).setFill()
+                NSBezierPath(roundedRect: track, xRadius: 4, yRadius: 4).fill()
+                let fillW = max(0, min(1, progress)) * track.width
+                if fillW > 0 {
+                    NSColor.white.setFill()
+                    NSBezierPath(roundedRect: NSRect(x: 28, y: 152, width: fillW, height: 8),
+                                 xRadius: min(4, fillW / 2), yRadius: 4).fill()
+                }
+            }
+        } else if trayShareMethod == .lan {
+            // Peer list (the recipient picker).
+            let peers = traySharePeerRects()
+            if peers.isEmpty {
+                drawText("Mencari perangkat Aura...", font: NSFont.systemFont(ofSize: 14),
+                         color: NSColor.white.withAlphaComponent(0.6), at: NSPoint(x: 28, y: 84))
+                drawText("Perangkat lain harus menjalankan Aura di jaringan yang sama.",
+                         font: NSFont.systemFont(ofSize: 12),
+                         color: NSColor.white.withAlphaComponent(0.4), at: NSPoint(x: 28, y: 108))
+            } else {
+                for row in peers {
+                    NSColor.white.withAlphaComponent(0.08).setFill()
+                    NSBezierPath(roundedRect: row.rect, xRadius: 10, yRadius: 10).fill()
+                    drawSymbol("person.fill", size: 20, center: CGPoint(x: 40, y: row.rect.midY), fallback: "O")
+                    let peerFont = NSFont.systemFont(ofSize: 14)
+                    drawText(truncated(row.peer.name, toWidth: 500, font: peerFont),
+                             font: peerFont, color: .white, at: NSPoint(x: 56, y: row.rect.minY + 7))
+                }
+                if lanPeers.count > 3 {
+                    drawText("＋\(lanPeers.count - 3) perangkat lainnya", font: NSFont.systemFont(ofSize: 11),
+                             color: NSColor.white.withAlphaComponent(0.4), at: NSPoint(x: 28, y: 204))
+                }
+            }
+        } else {
+            // Method chooser.
+            let methods = trayShareMethodRects()
+            NSColor.white.withAlphaComponent(0.08).setFill()
+            NSBezierPath(roundedRect: methods.airDrop, xRadius: 10, yRadius: 10).fill()
+            NSBezierPath(roundedRect: methods.lan, xRadius: 10, yRadius: 10).fill()
+            drawSymbol("paperplane.fill", size: 20, center: CGPoint(x: 40, y: methods.airDrop.midY), fallback: "A")
+            drawSymbol("network", size: 20, center: CGPoint(x: 40, y: methods.lan.midY), fallback: "N")
+            let methodFont = NSFont.systemFont(ofSize: 14)
+            drawText("AirDrop", font: methodFont, color: .white, at: NSPoint(x: 56, y: methods.airDrop.minY + 7))
+            drawText("Jaringan Lokal", font: methodFont, color: .white, at: NSPoint(x: 56, y: methods.lan.minY + 7))
+            drawText("AirDrop: perangkat Apple terdekat. Jaringan Lokal: sesama pengguna Aura.",
+                     font: NSFont.systemFont(ofSize: 12),
+                     color: NSColor.white.withAlphaComponent(0.4), at: NSPoint(x: 28, y: 164))
+        }
     }
 
     // MARK: - Water reminder

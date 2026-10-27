@@ -86,6 +86,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return v.majorVersion > 15 || (v.majorVersion == 15 && v.minorVersion >= 4)
     }()
 
+    /// LAN sharing service (discovery + receiver + sender).
+    private var lanShare: LANShare?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         let initial = NSRect(x: 0, y: 0, width: 140, height: 32)
         window = IslandWindow(contentRect: initial)
@@ -111,6 +114,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         islandView.onPrevious = { [weak self] in
             self?.sessions.previousTrack()
+        }
+        islandView.onDragEnteredTray = { [weak self] in
+            // Show tray first (sets the expanded size), then expand.
+            self?.islandView.showTray()
+            self?.setState(.expanded)
+        }
+        islandView.onTrayShareAirDrop = { [weak self] file in
+            self?.shareViaAirDrop(file)
+        }
+        islandView.onTrayShareLANPeer = { [weak self] file, peer in
+            self?.sendViaLAN(file: file, to: peer)
+        }
+        islandView.onTrayShareCancel = { [weak self] in
+            self?.lanShare?.cancelSend()
         }
         islandView.onExpandedSizeChanged = { [weak self] size in
             // Only while expanded: music/sources are the 640 card,
@@ -154,8 +171,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.updatePillAlerts()
         }
         if let alertTimer { RunLoop.main.add(alertTimer, forMode: .common) }
+        // LAN sharing: discover peers, receive shares, announce us.
+        // Started once at launch so shares can arrive anytime, not
+        // just while the tray is open.
+        lanShare = LANShare()
+        lanShare?.onPeersChanged = { [weak self] peers in
+            self?.islandView.lanPeers = peers
+        }
+        lanShare?.start()
         tick()
         updatePillAlerts()
+    }
+
+    // MARK: - Tray sharing
+
+    /// AirDrop one tray file via the system picker (the only public
+    /// AirDrop path — the protocol itself is proprietary). The
+    /// picker is system UI; the tray is already back to list mode.
+    private func shareViaAirDrop(_ file: IslandView.TrayFile) {
+        guard FileManager.default.fileExists(atPath: file.path),
+              let service = NSSharingService(named: .sendViaAirDrop),
+              service.canPerform(withItems: [file.url]) else { return }
+        service.perform(withItems: [file.url])
+    }
+
+    /// LAN send to one peer (Aura-to-Aura). Directories are not
+    /// sent over LAN in v1 (no zip yet); they report back instead
+    /// of failing silently. Status/progress land in the tray's
+    /// share view.
+    private func sendViaLAN(file: IslandView.TrayFile, to peer: LANPeer) {
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: file.path, isDirectory: &isDir), !isDir.boolValue else {
+            islandView.trayShareStatus = "Folder belum didukung via LAN"
+            islandView.trayShareProgress = nil
+            islandView.needsDisplay = true
+            return
+        }
+        lanShare?.sendFile(to: peer, file: file.url,
+            progress: { [weak self] fraction in
+                // LANShare already calls back on main; the dispatch
+                // is defensive (view state must never be set off-main).
+                DispatchQueue.main.async {
+                    self?.islandView.trayShareProgress = fraction
+                    self?.islandView.trayShareStatus = "Mengirim... \(Int(round(fraction * 100)))%"
+                }
+            },
+            completion: { [weak self] error in
+                DispatchQueue.main.async {
+                    self?.islandView.trayShareStatus = error ?? "Terkirim"
+                    self?.islandView.trayShareProgress = nil
+                }
+            })
     }
 
     // MARK: - Interaction
