@@ -1,4 +1,5 @@
 import AppKit
+import UserNotifications
 
 /// Draws the island in Nusa's visual language: solid black card, white
 /// type, green battery ring, live-looking waveform, album art, and
@@ -15,7 +16,8 @@ import AppKit
 ///   (700x180, same height) and compresses the music part, putting
 ///   the lyrics panel on the right, like Nusa; sources is the picker
 ///   on the 640x220 footprint; pomodoro is the timer on 640x180;
-///   todo is the task list on 640x220. The bubble toggles
+///   todo is the task list on 640x220; water is the drink reminder
+///   on 640x180. The bubble toggles
 ///   music/lyrics, three-finger swipe moves to the previous/next
 ///   section, and the dots jump sections.
 /// - closed pill in lyrics mode: once the card was closed from the
@@ -44,7 +46,7 @@ final class IslandView: NSView {
                 lyricsMode = (cardPage == .lyrics)
             }
             // Leaving the expanded card always returns to the music
-            // page, so reopening never lands on a stale lyrics/pomodoro/todo/sources page.
+            // page, so reopening never lands on a stale lyrics/pomodoro/todo/water/sources page.
             if state != .expanded { cardPage = .music }
             needsDisplay = true
         }
@@ -305,13 +307,15 @@ final class IslandView: NSView {
     /// the height does not change, so switching pages never moves
     /// the music part vertically; sources stays 640x220; pomodoro is
     /// 640x180 (ring + timer + mode pills, like the reference); todo
-    /// is 640x220 (task rows + add row, like sources).
+    /// is 640x220 (task rows + add row, like sources); water is
+    /// 640x180 (ring + countdown + interval pills, like pomodoro).
     var expandedSize: NSSize {
         switch currentPage {
         case .music: return NSSize(width: 520, height: 180)
         case .lyrics: return NSSize(width: 700, height: 180)
         case .pomodoro: return NSSize(width: 640, height: 180)
         case .todo: return NSSize(width: 640, height: 220)
+        case .water: return NSSize(width: 640, height: 180)
         case .sources: return NSSize(width: 640, height: 220)
         }
     }
@@ -329,16 +333,16 @@ final class IslandView: NSView {
         return lyricsMode ? NSSize(width: 360, height: 32) : NSSize(width: 160, height: 32)
     }
 
-    private enum CardPage { case music, lyrics, pomodoro, todo, sources }
+    private enum CardPage { case music, lyrics, pomodoro, todo, water, sources }
 
     /// Sections the dots and three-finger swipe offer: music +
-    /// pomodoro + todo always, sources only when there is more than
+    /// pomodoro + todo + water always, sources only when there is more than
     /// one session to choose from. Lyrics is NOT a section — it is a
     /// panel of the music section (via the bubble), so swipe and dots
     /// never land on it; that was the old chevron's mistake (it
     /// jumped to lyrics).
     private var availableSections: [CardPage] {
-        sessionsForPicker.count > 1 ? [.music, .pomodoro, .todo, .sources] : [.music, .pomodoro, .todo]
+        sessionsForPicker.count > 1 ? [.music, .pomodoro, .todo, .water, .sources] : [.music, .pomodoro, .todo, .water]
     }
 
     /// The page actually drawn (lyrics included). Sources falls back
@@ -417,21 +421,25 @@ final class IslandView: NSView {
         return nil
     }
 
-    /// Visual rects of the page dots, now a VERTICAL column on the
-    /// left edge (navigation is vertical scroll, so the indicator
+    /// Visual rects of the page dots, a VERTICAL column on the
+    /// right edge (navigation is vertical scroll, so the indicator
     /// is vertical too): active = tall dash (6x16), rest = dots
     /// (6x6), each centered in an 18pt slot so the column never
-    /// shifts when the active section changes. Drawn at x12-18;
-    /// the hit column is wider (x4-26) than the drawn marks.
+    /// shifts when the active section changes. Drawn 18pt from the
+    /// right edge (x W-24..W-18) so it never hugs the edge; the
+    /// hit column is wider (x W-32..W-10) than the drawn marks.
+    /// Content keeps clear: the lyrics panel ends at W-40 and the
+    /// todo pills at W-40, so neither overlaps the hit column.
     private func dotRects() -> [NSRect] {
         let pages = availableSections
         let active = pages.firstIndex(of: sectionForDots) ?? 0
         let top = dotColumnTop
+        let x = bounds.width - 24
         return pages.indices.map { i in
             let y = top + CGFloat(i) * 18
             return i == active
-                ? NSRect(x: 12, y: y + 1, width: 6, height: 16)
-                : NSRect(x: 12, y: y + 6, width: 6, height: 6)
+                ? NSRect(x: x, y: y + 1, width: 6, height: 16)
+                : NSRect(x: x, y: y + 6, width: 6, height: 6)
         }
     }
 
@@ -441,7 +449,7 @@ final class IslandView: NSView {
     }
 
     private func dotIndex(at point: CGPoint) -> Int? {
-        guard point.x >= 4 && point.x <= 26 else { return nil }
+        guard point.x >= bounds.width - 32 && point.x <= bounds.width - 10 else { return nil }
         let top = dotColumnTop
         guard point.y >= top && point.y <= top + CGFloat(availableSections.count) * 18 else { return nil }
         let index = Int((point.y - top) / 18)
@@ -580,6 +588,24 @@ final class IslandView: NSView {
                 showAddTaskAlert()
                 return
             }
+        case .water:
+            let buttons = waterButtonRects()
+            if buttons.drank.contains(point) {
+                resetWater()
+                return
+            }
+            if buttons.min30.contains(point) {
+                setWaterInterval(30 * 60)
+                return
+            }
+            if buttons.min60.contains(point) {
+                setWaterInterval(60 * 60)
+                return
+            }
+            if buttons.min90.contains(point) {
+                setWaterInterval(90 * 60)
+                return
+            }
         case .sources:
             // Picker rows: header at y 64, rows from y 88, height 22, max 4.
             if point.y >= 88 {
@@ -662,7 +688,7 @@ final class IslandView: NSView {
     }
 
     /// Move to the previous/next section in dot order (music ->
-    /// pomodoro -> todo -> sources when available -> back to music),
+    /// pomodoro -> todo -> water -> sources when available -> back to music),
     /// wrapping. Lyrics is not a section (it is a panel of music, via
     /// the bubble), so moving from lyrics uses the music section.
     /// Called by dots and three-finger swipe (the side arrows were
@@ -1033,13 +1059,15 @@ final class IslandView: NSView {
     // MARK: - Expanded card
 
     private func drawExpanded() {
-        // Pomodoro and todo work without music (their own timer and
-        // list), so they bypass the no-media guard every other page
-        // sits behind.
+        // Pomodoro, todo, and water work without music (their own
+        // timer, list, and reminder), so they bypass the no-media
+        // guard every other page sits behind.
         if currentPage == .pomodoro {
             drawPomodoro()
         } else if currentPage == .todo {
             drawTodo()
+        } else if currentPage == .water {
+            drawWater()
         } else {
             guard let session else {
                 drawCentered("Tidak ada media yang diputar",
@@ -1047,8 +1075,8 @@ final class IslandView: NSView {
                              color: NSColor.white.withAlphaComponent(0.7),
                              y: bounds.height / 2 - 8)
                 // Still draw dots: without music the usable sections
-                // are pomodoro and todo, and the user reaches them
-                // from here (their dots).
+                // are pomodoro, todo, and water, and the user reaches
+                // them from here (their dots).
                 drawPageDots()
                 return
             }
@@ -1066,7 +1094,7 @@ final class IslandView: NSView {
             case .sources:
                 drawCardHeader()
                 drawPicker(startY: 64)
-            case .pomodoro, .todo:
+            case .pomodoro, .todo, .water:
                 break // handled above
             }
         }
@@ -1167,16 +1195,16 @@ final class IslandView: NSView {
     }
 
     /// Lyrics panel for the lyrics page: a divider, then the lyrics
-    /// column on the right of the compressed music part (x 352..688,
-    /// 336 wide), inside the slightly extended 700-wide card. The
+    /// column on the right of the compressed music part (x 352..660,
+    /// 308 wide), inside the slightly extended 700-wide card. The
     /// divider sits beside the song title: the title ends at most at
     /// 328 (116 + 212), and the divider is at 340.
     /// A long lyric line wraps onto a second line instead of being
     /// cut off with "…", so no lyric is ever truncated mid-line.
     private func drawLyricsPanel() {
         // Divider between the compressed music part (left) and the panel.
-        // 28..158: it stops 2pt above the dots (y160) so it never
-        // crosses them.
+        // 28..158: it spans the panel's text area (the dots are now
+        // a vertical column on the right edge, so nothing crosses it).
         NSColor.white.withAlphaComponent(0.12).setFill()
         NSRect(x: 340, y: 28, width: 1, height: 130).fill()
         // Lyrics column: dim previous, bold current, dim next,
@@ -1185,7 +1213,7 @@ final class IslandView: NSView {
         // (see startLyricRoll); the divider above stays fixed — it
         // is the window's frame, not part of the reel.
         let x: CGFloat = 352
-        let width: CGFloat = 336
+        let width: CGFloat = 308
         if isRolling {
             for line in rollLines {
                 let y = line.startTop - rollDistance * rollProgress
@@ -1630,17 +1658,18 @@ final class IslandView: NSView {
     }
 
     /// Visible rows (same rects as drawn, so hit == drawn): the
-    /// right column (x280-612), rows from y52, height 32, pitch 40,
-    /// max 4. pillRect is the drawn pill (full width); rowRect is
-    /// the toggle area (x280-580); deleteRect is the 24px delete
-    /// square at x588-612.
+    /// right column (x280-600), rows from y52, height 32, pitch 40,
+    /// max 4. pillRect is the drawn pill (full width, ending at W-40
+    /// so the right-edge dot column never overlaps it); rowRect is
+    /// the toggle area (x280-568); deleteRect is the 24px delete
+    /// square at x576-600.
     private func todoVisibleRows() -> [(task: TodoTask, pillRect: NSRect, rowRect: NSRect, deleteRect: NSRect)] {
         todoSortedTasks().prefix(4).enumerated().map { i, task in
             let y: CGFloat = 52 + CGFloat(i) * 40
             return (task: task,
-                    pillRect: NSRect(x: 280, y: y, width: 332, height: 32),
-                    rowRect: NSRect(x: 280, y: y, width: 300, height: 32),
-                    deleteRect: NSRect(x: 588, y: y, width: 24, height: 32))
+                    pillRect: NSRect(x: 280, y: y, width: 320, height: 32),
+                    rowRect: NSRect(x: 280, y: y, width: 288, height: 32),
+                    deleteRect: NSRect(x: 576, y: y, width: 24, height: 32))
         }
     }
 
@@ -1712,7 +1741,7 @@ final class IslandView: NSView {
                 circle.stroke()
             }
             let taskFont = NSFont.systemFont(ofSize: 14)
-            let text = truncated(row.task.text, toWidth: 250, font: taskFont)
+            let text = truncated(row.task.text, toWidth: 248, font: taskFont)
             if row.task.done {
                 drawStrikethroughText(text, font: taskFont,
                                       color: NSColor.white.withAlphaComponent(0.5),
@@ -1756,5 +1785,118 @@ final class IslandView: NSView {
         todoTasks.append(TodoTask(id: UUID(), text: text, done: false, createdAt: Date()))
         saveTodoTasks()
         needsDisplay = true
+    }
+
+    // MARK: - Water reminder
+
+    /// Drink reminder: a countdown to the next glass of water,
+    /// always running (wall-clock, like pomodoro, so it keeps
+    /// counting while the card is closed). In-memory only, like
+    /// pomodoro v1 (resets on relaunch; persistence not asked for
+    /// yet). When the countdown hits zero the section shows
+    /// "Waktunya minum!" and a system notification fires (the
+    /// notification is scheduled alongside the timer, so it
+    /// arrives even if the card is closed).
+    private var waterInterval: TimeInterval = 60 * 60
+    private var waterEndDate: Date?
+
+    private func waterRemainingNow() -> TimeInterval {
+        if waterEndDate == nil {
+            waterEndDate = Date().addingTimeInterval(waterInterval)
+            scheduleWaterNotification()
+        }
+        guard let end = waterEndDate else { return waterInterval }
+        return max(0, end.timeIntervalSinceNow)
+    }
+
+    private func resetWater() {
+        waterEndDate = Date().addingTimeInterval(waterInterval)
+        scheduleWaterNotification()
+        needsDisplay = true
+    }
+
+    private func setWaterInterval(_ interval: TimeInterval) {
+        waterInterval = interval
+        resetWater()
+    }
+
+    private func scheduleWaterNotification() {
+        let center = UNUserNotificationCenter.current()
+        center.removePendingNotificationRequests(withIdentifiers: ["water-reminder"])
+        guard let end = waterEndDate else { return }
+        let remaining = max(0, end.timeIntervalSinceNow)
+        guard remaining > 0 else { return }
+        center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+            guard granted else { return }
+            let content = UNMutableNotificationContent()
+            content.title = "Waktunya minum"
+            content.body = "Minum air sekarang."
+            let trigger = UNTimeIntervalNotificationTrigger(timeInterval: remaining, repeats: false)
+            let request = UNNotificationRequest(identifier: "water-reminder", content: content, trigger: trigger)
+            center.add(request)
+        }
+    }
+
+    /// Pills (same layout as drawn): "Sudah minum" (blue action)
+    /// then the interval pills (30/60/90 mnt), y130, h28, gap 8,
+    /// starting at x220. The active interval is brighter.
+    private func waterButtonRects() -> (drank: NSRect, min30: NSRect, min60: NSRect, min90: NSRect) {
+        let font = NSFont.systemFont(ofSize: 14, weight: .medium)
+        func pillWidth(_ label: String) -> CGFloat {
+            let w = (label as NSString).size(withAttributes: [.font: font]).width
+            return 12 + w + 12
+        }
+        let drank = NSRect(x: 220, y: 130, width: pillWidth("Sudah minum"), height: 28)
+        let min30 = NSRect(x: drank.maxX + 8, y: 130, width: pillWidth("30 mnt"), height: 28)
+        let min60 = NSRect(x: min30.maxX + 8, y: 130, width: pillWidth("60 mnt"), height: 28)
+        let min90 = NSRect(x: min60.maxX + 8, y: 130, width: pillWidth("90 mnt"), height: 28)
+        return (drank, min30, min60, min90)
+    }
+
+    private func drawWater() {
+        drawCardHeader(width: 640)
+        drawText("Minum", font: NSFont.boldSystemFont(ofSize: 20), color: .white, at: NSPoint(x: 28, y: 10))
+        // Progress ring (left): remaining arc (blue) + tinted
+        // interior + drop icon, like pomodoro's ring + stopwatch.
+        let ringCenter = CGPoint(x: 130, y: 100)
+        let ringRadius: CGFloat = 42
+        let ringWidth: CGFloat = 8
+        let remaining = waterRemainingNow()
+        let fraction = waterInterval > 0 ? max(0, min(1, remaining / waterInterval)) : 0
+        drawProgressRing(center: ringCenter, radius: ringRadius, width: ringWidth,
+                         fraction: fraction, color: .systemBlue)
+        NSColor.systemBlue.withAlphaComponent(0.15).setFill()
+        NSBezierPath(ovalIn: NSRect(x: ringCenter.x - 33, y: ringCenter.y - 33, width: 66, height: 66)).fill()
+        drawSymbol("drop.fill", size: 36, center: ringCenter, fallback: "●")
+        // Countdown (right) + label.
+        let minutes = Int(remaining) / 60
+        let seconds = Int(remaining) % 60
+        let countdown = String(format: "%02d:%02d", minutes, seconds)
+        drawText(countdown, font: NSFont.boldSystemFont(ofSize: 44), color: .white,
+                 at: NSPoint(x: 220, y: 48))
+        let due = remaining <= 0
+        drawText(due ? "Waktunya minum!" : "minum berikutnya",
+                 font: due ? NSFont.systemFont(ofSize: 16, weight: .semibold) : NSFont.systemFont(ofSize: 16),
+                 color: due ? .systemBlue : NSColor.white.withAlphaComponent(0.6),
+                 at: NSPoint(x: 220, y: 106))
+        // Pills: Sudah minum (blue action) + interval pills.
+        let buttons = waterButtonRects()
+        func textPill(_ rect: NSRect, _ label: String, fill: NSColor, textColor: NSColor) {
+            fill.setFill()
+            NSBezierPath(roundedRect: rect, xRadius: 14, yRadius: 14).fill()
+            let font = NSFont.systemFont(ofSize: 14, weight: .medium)
+            let w = (label as NSString).size(withAttributes: [.font: font]).width
+            drawText(label, font: font, color: textColor,
+                     at: NSPoint(x: rect.midX - w / 2, y: rect.minY + 5))
+        }
+        textPill(buttons.drank, "Sudah minum", fill: .systemBlue, textColor: .white)
+        for (rect, label, interval) in [(buttons.min30, "30 mnt", 30 * 60),
+                                        (buttons.min60, "60 mnt", 60 * 60),
+                                        (buttons.min90, "90 mnt", 90 * 60)] {
+            let active = waterInterval == TimeInterval(interval)
+            textPill(rect, label,
+                     fill: NSColor.white.withAlphaComponent(active ? 0.22 : 0.10),
+                     textColor: active ? .white : NSColor.white.withAlphaComponent(0.75))
+        }
     }
 }
