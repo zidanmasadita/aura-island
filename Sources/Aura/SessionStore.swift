@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import Foundation
 
 /// One playable source shown in the island, no matter where it comes from.
@@ -137,9 +138,24 @@ final class SessionStore {
     /// Sends a system media key through the HID event tap.
     /// This targets the system's active media client. If the pinned
     /// session differs from the active client, the key still goes to
-    /// the active one; that is a documented v1 limitation. If nothing
-    /// happens, grant the app Accessibility permission in System Settings.
+    /// the active one; that is a documented v1 limitation.
+    ///
+    /// Posting to the HID tap needs Accessibility trust: without it
+    /// the events are silently dropped, which is why the card buttons
+    /// did nothing before this prompt existed (the app never asked).
+    /// The prompt is shown once per launch, on the first control
+    /// press; after granting in System Settings, the next press works
+    /// (no restart needed). The log line tells the user (and any
+    /// bug report) whether trust is the blocker or the key itself is.
+    private static var accessibilityPrompted = false
     private func sendMediaKey(_ key: Int32) {
+        let trusted = AXIsProcessTrusted()
+        if !trusted && !Self.accessibilityPrompted {
+            Self.accessibilityPrompted = true
+            _ = AXIsProcessTrustedWithOptions(
+                [kAXTrustedCheckOptionPrompt as String: true] as CFDictionary)
+        }
+        print("[Aura] media key \(key), Accessibility trusted: \(trusted)")
         func post(_ down: Bool) {
             let data1 = (Int(key) << 16) | (down ? 0xa00 : 0xb00)
             if let event = NSEvent.otherEvent(

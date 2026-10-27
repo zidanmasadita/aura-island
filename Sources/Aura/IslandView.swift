@@ -7,8 +7,9 @@ import AppKit
 /// Layouts (flipped coordinates, y grows downward):
 /// - zen (140x32): the idle face — two white eyes.
 /// - compact: the closed notch, boxy with a concave bezel sweep
-///   (12pt tuck) — plain music 140x32 (same as idle, ring + clock +
-///   waveform), lyrics mode 360x32 (note icon + lyric line).
+///   (12pt tuck) — plain music 136x32 (ring + clock + waveform,
+///   tightened so it does not feel wide with whitespace), lyrics
+///   mode 360x32 (note icon + lyric line).
 /// - expanded, wide and short (never tall): music is the dense Nusa
 ///   music card (640x180: header, artwork, title/artist, progress,
 ///   controls, chevron, dots); opening lyrics only widens the card
@@ -137,13 +138,14 @@ final class IslandView: NSView {
     }
 
     /// Size of the closed (compact/split) pill: the plain music pill
-    /// is 160x32 — a bit wider than the idle pill (140x32) so the
-    /// ring + clock + waveform are not crammed; the lyrics-mode
-    /// pill stays wider (360x32) so the lyric line still fits.
-    /// AppDelegate uses this instead of the fixed state size for
-    /// compact/split.
+    /// is 136x32 — narrower than the idle pill (140x32) is wide, and
+    /// down from 160 so it does not feel wide with whitespace; still
+    /// fits ring + clock + waveform with gaps on both sides (see
+    /// drawClosed). The lyrics-mode pill stays wider (360x32) so the
+    /// lyric line still fits. AppDelegate uses this instead of the
+    /// fixed state size for compact/split.
     var closedSize: NSSize {
-        lyricsMode ? NSSize(width: 360, height: 32) : NSSize(width: 160, height: 32)
+        lyricsMode ? NSSize(width: 360, height: 32) : NSSize(width: 136, height: 32)
     }
 
     private enum CardPage { case music, lyrics, sources }
@@ -715,20 +717,20 @@ final class IslandView: NSView {
                          font: font, color: .white, y: midY - 8)
             return
         }
-        // The plain music pill is 160 wide: ring + clock + waveform,
-        // tightened to fit — smaller ring left, clock centered,
-        // narrower waveform at the right edge. All three stay
-        // inside the 12pt tuck (sides at 12 and width-12).
-        // Padding: the ring sits 10pt inside the left edge and the
-        // waveform ends 10pt before the right edge, so the contents
-        // never hug the pill's border (at any width, including
-        // mid-collapse-animation frames).
-        drawBatteryRing(center: CGPoint(x: 30, y: midY), radius: 8)
+        // The plain music pill is 136 wide: ring + clock + waveform,
+        // tightened to fit — ring left, clock centered, waveform at
+        // the right edge. At 136: ring spans 18-34, clock (~46 wide)
+        // centered spans ~45-91, waveform spans 98-126 — gaps on both
+        // sides, no overlap, no cramming. The waveform ends 10pt
+        // before the right edge, so the contents never hug the pill's
+        // border (at any width, including mid-collapse-animation
+        // frames).
+        drawBatteryRing(center: CGPoint(x: 26, y: midY), radius: 8)
         drawCentered(Self.clockFormatter.string(from: Date()),
                      font: NSFont.systemFont(ofSize: 15, weight: .semibold),
                      color: .white, y: midY - 9)
         let waveHeight: CGFloat = bounds.height <= 40 ? 14 : 20
-        drawWaveform(in: NSRect(x: bounds.width - 50, y: midY - waveHeight / 2, width: 28, height: waveHeight))
+        drawWaveform(in: NSRect(x: bounds.width - 38, y: midY - waveHeight / 2, width: 28, height: waveHeight))
     }
 
     // MARK: - Expanded card
