@@ -862,6 +862,10 @@ final class IslandView: NSView, NSDraggingSource {
     /// DynamicNotch) and clears share mode (the drop zone takes
     /// over); the drop lands in the tray.
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        // The source's own drag-out is not a drag-in: without this,
+        // starting a drag-out would highlight the drop zone and
+        // re-expand the card mid-drag.
+        guard !isDraggingOut else { return [] }
         guard sender.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: [NSPasteboard.ReadingOptionKey.urlReadingFileURLsOnly: true]) else {
             return []
         }
@@ -873,6 +877,7 @@ final class IslandView: NSView, NSDraggingSource {
     }
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard !isDraggingOut else { return [] }
         guard sender.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: [NSPasteboard.ReadingOptionKey.urlReadingFileURLsOnly: true]) else {
             return []
         }
@@ -1014,6 +1019,26 @@ final class IslandView: NSView, NSDraggingSource {
         // later one). Clearing to transparent keeps the intended
         // 0.98 translucency (over the desktop, not over old text).
         ctx.clear(rect)
+        // Drop feedback transforms (whole island). No restore is
+        // needed: the context is fresh per draw, and everything
+        // below is meant to be transformed; inner save/restores
+        // nest correctly on top of these.
+        let bulgeScale = trayBulgeScale(now: Date())
+        if bulgeScale != 1.0 {
+            // Bulge: scale around the center. The window is enlarged
+            // by windowSize (same factor, same 0.35s ease), so the
+            // scaled card fills it; base is the unbulged size.
+            let base = unbulgedSize(for: state)
+            ctx.translateBy(x: rect.midX, y: rect.midY)
+            ctx.scaleBy(x: bulgeScale, y: bulgeScale)
+            ctx.translateBy(x: -base.width / 2, y: -base.height / 2)
+        }
+        if let (angle, x) = trayWobbleTransform(now: Date()) {
+            // Wobble: gentle rock + shake around the center, decaying.
+            ctx.translateBy(x: rect.midX + x, y: rect.midY)
+            ctx.rotate(by: angle)
+            ctx.translateBy(x: -rect.midX, y: -rect.midY)
+        }
         ctx.saveGState()
         ctx.addPath(path)
         ctx.setFillColor(NSColor.black.withAlphaComponent(0.98).cgColor)
@@ -2188,7 +2213,74 @@ final class IslandView: NSView, NSDraggingSource {
 
     private var trayFiles: [TrayFile] = []
     private var trayFilesLoaded = false
-    private var trayDropHighlight = false { didSet { needsDisplay = true } }
+    /// While a drag hovers with a valid file URL. Read by
+    /// AppDelegate.windowSize (bulge) — hence internal, not private.
+    var trayDropHighlight = false {
+        didSet {
+            needsDisplay = true
+            // Bulge animation + window resize on change only.
+            if oldValue != trayDropHighlight {
+                let now = Date()
+                trayBulgeFrom = trayBulgeScale(now: now)
+                trayBulgeTo = trayDropHighlight ? Self.dropBulgeFactor : 1.0
+                trayBulgeStart = now
+                onTrayDropHighlightChanged?()
+            }
+        }
+    }
+    /// Drop bulge factor (window + draw scale together).
+    static let dropBulgeFactor: CGFloat = 1.05
+    /// Called when trayDropHighlight flips (bulge on/off) so
+    /// AppDelegate re-applies the window size (animator).
+    var onTrayDropHighlightChanged: (() -> Void)?
+    /// Bulge animation (0.35s, easeOutCubic, matching the window
+    /// animator so draw scale and window size stay in sync).
+    private var trayBulgeFrom: CGFloat = 1.0
+    private var trayBulgeTo: CGFloat = 1.0
+    private var trayBulgeStart: Date?
+    private func trayBulgeScale(now: Date) -> CGFloat {
+        guard let start = trayBulgeStart else { return trayBulgeTo }
+        let t = min(now.timeIntervalSince(start) / 0.35, 1)
+        let u = 1 - CGFloat(t)
+        let ease = 1 - u * u * u  // easeOutCubic
+        return trayBulgeFrom + (trayBulgeTo - trayBulgeFrom) * ease
+    }
+    /// Wobble after a drop (0.5s, 3 oscillations, decaying).
+    private var trayWobbleStart: Date?
+    private var trayWobbleTimer: Timer?
+    private func trayWobbleTransform(now: Date) -> (angle: CGFloat, x: CGFloat)? {
+        guard let start = trayWobbleStart else { return nil }
+        let t = now.timeIntervalSince(start) / 0.5
+        guard t >= 0, t < 1 else { return nil }
+        let decay = 1 - CGFloat(t)
+        let s = sin(CGFloat(t) * 6 * CGFloat.pi) * decay
+        return (angle: 0.0175 * s, x: 3 * s)  // 1° + 3px
+    }
+    private func startTrayWobble() {
+        trayWobbleStart = Date()
+        guard trayWobbleTimer == nil else { return }
+        trayWobbleTimer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            self.needsDisplay = true
+            if self.trayWobbleTransform(now: Date()) == nil {
+                self.trayWobbleTimer?.invalidate()
+                self.trayWobbleTimer = nil
+            }
+        }
+        if let trayWobbleTimer { RunLoop.main.add(trayWobbleTimer, forMode: .common) }
+    }
+    /// The island's size without the drop bulge (single source of
+    /// truth for AppDelegate.windowSize's base).
+    func unbulgedSize(for state: IslandState) -> NSSize {
+        if pillAlert != nil && state != .expanded {
+            return NSSize(width: 360, height: 32)
+        }
+        switch state {
+        case .expanded: return expandedSize
+        case .zen: return state.size
+        case .compact, .split: return closedSize
+        }
+    }
     /// Share mode: nil = list mode. Set when a row's share button is
     /// tapped; cleared on back/cancel, after AirDrop opens, or on drop.
     private var trayShareFile: TrayFile?
@@ -2276,6 +2368,7 @@ final class IslandView: NSView, NSDraggingSource {
         if !addedFiles.isEmpty {
             saveTrayFiles()
             startTrayPops(for: addedFiles)
+            startTrayWobble()
             needsDisplay = true
         }
         return addedFiles.count

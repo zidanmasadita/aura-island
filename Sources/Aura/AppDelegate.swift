@@ -120,6 +120,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.islandView.showTray()
             self?.setState(.expanded)
         }
+        islandView.onTrayDropHighlightChanged = { [weak self] in
+            // Re-apply the current state so windowSize (bulged while
+            // a file drag hovers, normal otherwise) is animated to.
+            guard let self else { return }
+            self.setState(self.islandView.state)
+        }
         islandView.onTrayShareAirDrop = { [weak self] file in
             self?.shareViaAirDrop(file)
         }
@@ -295,14 +301,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// alerts do not fire while one is open, and opening one
     /// cancels a live alert (see setState).
     private func windowSize(for state: IslandState) -> NSSize {
-        if islandView.pillAlert != nil && state != .expanded {
-            return NSSize(width: 360, height: 32)
+        // Base size lives in IslandView (single source of truth);
+        // while a file drag hovers, the island swells slightly
+        // (the draw transform scales content to fill it).
+        let base = islandView.unbulgedSize(for: state)
+        if islandView.trayDropHighlight {
+            return NSSize(width: base.width * IslandView.dropBulgeFactor,
+                          height: base.height * IslandView.dropBulgeFactor)
         }
-        switch state {
-        case .expanded: return islandView.expandedSize
-        case .zen: return state.size
-        case .compact, .split: return islandView.closedSize
-        }
+        return base
     }
 
     // MARK: - Polling
