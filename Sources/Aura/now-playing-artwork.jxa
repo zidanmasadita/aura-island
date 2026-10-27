@@ -18,17 +18,25 @@ function run() {
       return v ? v.js : '';
     }
     var b64 = null;
+    var artPresent = false;
     try {
       var art = info.valueForKey('kMRMediaRemoteNowPlayingInfoArtwork');
       // NSData in the info dict: base64 it so it survives JSON.
       // Any other type (or a missing key) throws or yields nothing,
       // and the caller falls back to the placeholder.
-      if (art) b64 = art.base64EncodedStringWithOptions(0).js;
+      // artworkPresent tells the two apart: false = the system
+      // exposes no artwork for this player at all; true with a
+      // null artwork = a value exists but is not NSData.
+      if (art) {
+        artPresent = true;
+        b64 = art.base64EncodedStringWithOptions(0).js;
+      }
     } catch (e) {}
     return JSON.stringify({
       title: str('kMRMediaRemoteNowPlayingInfoTitle'),
       artist: str('kMRMediaRemoteNowPlayingInfoArtist'),
-      artwork: b64
+      artwork: b64,
+      artworkPresent: artPresent
     });
   } catch (e) {
     return JSON.stringify({ error: String(e) });

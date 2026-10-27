@@ -82,6 +82,11 @@ final class LyricsClient {
     /// literal text. Metadata brackets ([ti:], [ar:], [al:], [by:])
     /// before the first timestamp are skipped; a non-timestamp bracket
     /// after timestamps (e.g. "[Chorus]") stays part of the text.
+    /// Non-vocal markers are dropped: during a melody part (no vocal),
+    /// the file often marks the gap with a blank line, note symbols,
+    /// or "(Instrumental)" — without dropping those, the panel and
+    /// the pill would show the marker instead of keeping the last
+    /// sung line through the gap.
     private static func parseSynced(_ synced: String?) -> [(time: Double, text: String)]? {
         guard let synced, !synced.isEmpty else { return nil }
         var offsetSeconds = 0.0
@@ -122,8 +127,32 @@ final class LyricsClient {
                 out.append((time: time, text: line))
             }
         }
+        // Drop non-vocal markers so the last sung line persists
+        // through melody parts instead of being replaced by a blank
+        // line, note symbols, or "(Instrumental)".
+        out = out.filter { !isNonVocalMarker($0.text) }
         out.sort { $0.time < $1.time }
         return out.isEmpty ? nil : out
+    }
+
+    /// True for lines that mark a non-vocal stretch rather than a sung
+    /// lyric: blank, only note symbols (and wrappers/spaces), or a
+    /// wrapped word marker like "(Instrumental)", "[Interlude]",
+    /// "(Musik)". Word markers must be wrapped — a bare sung word is
+    /// never mistaken for one.
+    private static func isNonVocalMarker(_ text: String) -> Bool {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.isEmpty { return true }
+        // Only note symbols, wrappers, asterisks, and spaces remain.
+        let symbolsOnly = t.filter { !"♪♫♩♬🎵🎶()[]{}* ".contains($0) }
+        if symbolsOnly.isEmpty { return true }
+        let wrappers = CharacterSet(charactersIn: "()[]{}")
+        guard let first = t.unicodeScalars.first, let last = t.unicodeScalars.last,
+              wrappers.contains(first), wrappers.contains(last) else { return false }
+        var inner = t.trimmingCharacters(in: wrappers)
+        inner = inner.filter { !"♪♫♩♬🎵🎶* ".contains($0) }
+        let word = inner.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        return ["instrumental", "music", "musik", "interlude", "intro", "outro"].contains(word)
     }
 
     /// Plain lyrics without timestamps: single block at time 0.

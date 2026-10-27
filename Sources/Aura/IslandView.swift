@@ -58,8 +58,57 @@ final class IslandView: NSView {
         }
     }
     var lyricPrev: String?
-    var lyricCurrent: String?
+    var lyricCurrent: String? {
+        didSet {
+            // Spotify-style rise: when the sung line changes while the
+            // lyrics page is visible, the stack rises smoothly into
+            // place instead of jumping. Only on a real change
+            // (refreshLyricLine sets all three every tick, usually to
+            // the same values) and only when the page is visible —
+            // otherwise the offset just stays at rest.
+            if oldValue != lyricCurrent, state == .expanded, currentPage == .lyrics {
+                startLyricSlide()
+            }
+        }
+    }
     var lyricNext: String?
+
+    // MARK: - Lyrics rise animation (Spotify-style)
+
+    /// Extra Y offset for the lyrics block while it rises into place.
+    /// 0 at rest; set to about one line height when the sung line
+    /// changes, then eased back to 0 at 60fps. Only the text block
+    /// moves — the divider stays fixed.
+    private var lyricSlideOffset: CGFloat = 0
+    private var lyricSlideFrom: CGFloat = 0
+    private var lyricSlideStart: Date = Date()
+    private var lyricSlideTimer: Timer?
+    private let lyricSlideDuration: TimeInterval = 0.45
+    private let lyricSlideDistance: CGFloat = 26
+
+    private func startLyricSlide() {
+        // Restarting mid-flight keeps the current offset instead of
+        // jumping back to full distance (fast lyrics would stutter).
+        lyricSlideFrom = lyricSlideTimer == nil ? lyricSlideDistance : lyricSlideOffset
+        lyricSlideStart = Date()
+        lyricSlideTimer?.invalidate()
+        lyricSlideTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] timer in
+            guard let self else { timer.invalidate(); return }
+            self.stepLyricSlide(timer: timer)
+        }
+    }
+
+    private func stepLyricSlide(timer: Timer) {
+        let p = min(1.0, Date().timeIntervalSince(lyricSlideStart) / lyricSlideDuration)
+        let e = 1.0 - pow(1.0 - p, 3.0) // easeOutCubic, like the window animator
+        lyricSlideOffset = lyricSlideFrom * (1.0 - e)
+        if p >= 1.0 {
+            lyricSlideOffset = 0
+            timer.invalidate()
+            lyricSlideTimer = nil
+        }
+        needsDisplay = true
+    }
     var sessionsForPicker: [DisplaySession] = []
     var pinnedId: String?
     var batteryPercent: Double?
@@ -846,7 +895,10 @@ final class IslandView: NSView {
         let textHeight = entries.reduce(0) { $0 + CGFloat($1.lines.count) * lineHeight($1.font) }
         let gapCount = max(0, entries.count - 1)
         let gap: CGFloat = gapCount > 0 ? min(10, max(0, (130 - textHeight) / CGFloat(gapCount))) : 0
-        var y = 28 + (130 - (textHeight + gap * CGFloat(gapCount))) / 2
+        // The block rises into place while a slide runs (see
+        // lyricSlideOffset): it starts one line low and eases up to
+        // this centered position, Spotify-style.
+        var y = 28 + (130 - (textHeight + gap * CGFloat(gapCount))) / 2 + lyricSlideOffset
         for entry in entries {
             for line in entry.lines {
                 drawText(line, font: entry.font, color: entry.color, at: NSPoint(x: x, y: y))
