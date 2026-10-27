@@ -774,36 +774,115 @@ final class IslandView: NSView {
     /// 276 wide), inside the same 640-wide card. The divider sits
     /// beside the song title: the title ends at most at 320
     /// (108 + 212), and the divider is at 340.
+    /// A long lyric line wraps onto a second line instead of being
+    /// cut off with "…", so no lyric is ever truncated mid-line.
     private func drawLyricsPanel() {
         // Divider between the compressed music part (left) and the panel.
         NSColor.white.withAlphaComponent(0.12).setFill()
         NSRect(x: 340, y: 44, width: 1, height: 132).fill()
         // Lyrics column: dim previous, bold current, dim next,
-        // vertically centered in the panel.
+        // stacked as a block centered in the panel (44..176).
         let x: CGFloat = 352
         let width: CGFloat = 276
+        struct Entry { let lines: [String]; let font: NSFont; let color: NSColor }
+        var entries: [Entry] = []
         if let prev = lyricPrev {
             let font = NSFont.systemFont(ofSize: 16)
-            drawText(truncated(prev, toWidth: width, font: font),
-                     font: font, color: NSColor.white.withAlphaComponent(0.35),
-                     at: NSPoint(x: x, y: 67))
+            entries.append(Entry(lines: wrappedLines(prev, font: font, width: width, maxLines: 2),
+                                 font: font, color: NSColor.white.withAlphaComponent(0.35)))
         }
         if let current = lyricCurrent {
             let font = NSFont.boldSystemFont(ofSize: 21)
-            drawText(truncated(current, toWidth: width, font: font),
-                     font: font, color: .white, at: NSPoint(x: x, y: 97))
-        } else {
+            entries.append(Entry(lines: wrappedLines(current, font: font, width: width, maxLines: 2),
+                                 font: font, color: .white))
+        }
+        if let next = lyricNext {
+            let font = NSFont.systemFont(ofSize: 16)
+            entries.append(Entry(lines: wrappedLines(next, font: font, width: width, maxLines: 2),
+                                 font: font, color: NSColor.white.withAlphaComponent(0.45)))
+        }
+        guard !entries.isEmpty else {
             drawText("Lirik tidak tersedia",
                      font: NSFont.systemFont(ofSize: 14),
                      color: NSColor.white.withAlphaComponent(0.4),
                      at: NSPoint(x: x, y: 97))
+            return
         }
-        if let next = lyricNext {
-            let font = NSFont.systemFont(ofSize: 16)
-            drawText(truncated(next, toWidth: width, font: font),
-                     font: font, color: NSColor.white.withAlphaComponent(0.45),
-                     at: NSPoint(x: x, y: 134))
+        // Stack the entries with a small fixed gap that shrinks to
+        // zero if every entry wraps to two lines (the caps keep the
+        // text itself within the panel height).
+        func lineHeight(_ font: NSFont) -> CGFloat {
+            ceil(font.ascender - font.descender + font.leading)
         }
+        let textHeight = entries.reduce(0) { $0 + CGFloat($1.lines.count) * lineHeight($1.font) }
+        let gapCount = max(0, entries.count - 1)
+        let gap: CGFloat = gapCount > 0 ? min(10, max(0, (132 - textHeight) / CGFloat(gapCount))) : 0
+        var y = 44 + (132 - (textHeight + gap * CGFloat(gapCount))) / 2
+        for entry in entries {
+            for line in entry.lines {
+                drawText(line, font: entry.font, color: entry.color, at: NSPoint(x: x, y: y))
+                y += lineHeight(entry.font)
+            }
+            y += gap
+        }
+    }
+
+    /// Splits a lyric line into visual lines that fit `width`,
+    /// wrapping on word boundaries (a single over-long word is broken
+    /// by character). Capped at `maxLines`; any remainder is folded
+    /// into an ellipsis on the last line, so a very long line still
+    /// never exceeds the panel.
+    private func wrappedLines(_ text: String, font: NSFont, width: CGFloat, maxLines: Int) -> [String] {
+        let maxLines = max(1, maxLines)
+        let normalized = text.split(separator: " ", omittingEmptySubsequences: true).joined(separator: " ")
+        let attrs: [NSAttributedString.Key: Any] = [.font: font]
+        func w(_ s: String) -> CGFloat { (s as NSString).size(withAttributes: attrs).width }
+        guard w(normalized) > width else { return [normalized] }
+        // Split over-long words by character so every piece fits.
+        var pieces: [String] = []
+        for word in normalized.split(separator: " ", omittingEmptySubsequences: true) {
+            var remaining = String(word)
+            while w(remaining) > width {
+                var filled = ""
+                for ch in remaining {
+                    if w(filled + String(ch)) <= width { filled.append(ch) } else { break }
+                }
+                if filled.isEmpty { filled = String(remaining.prefix(1)) }
+                pieces.append(filled)
+                remaining = String(remaining.dropFirst(filled.count))
+            }
+            if !remaining.isEmpty { pieces.append(remaining) }
+        }
+        var lines: [String] = []
+        var current = ""
+        for piece in pieces {
+            if current.isEmpty {
+                current = piece
+            } else if w(current + " " + piece) <= width {
+                current += " " + piece
+            } else {
+                lines.append(current)
+                if lines.count == maxLines {
+                    // No room for more lines: the rest is signalled
+                    // with an ellipsis on this last line.
+                    var last = lines[lines.count - 1]
+                    while !last.isEmpty && w(last + "…") > width { last = String(last.dropLast()) }
+                    lines[lines.count - 1] = last + "…"
+                    return lines
+                }
+                current = piece
+            }
+        }
+        if !current.isEmpty {
+            if lines.count < maxLines {
+                lines.append(current)
+            } else {
+                var last = lines[lines.count - 1]
+                while !last.isEmpty && w(last + "…") > width { last = String(last.dropLast()) }
+                lines[lines.count - 1] = last + "…"
+            }
+        }
+        return lines
     }
 
     private func drawProgress(_ session: DisplaySession, elapsedX: CGFloat, barX: CGFloat,

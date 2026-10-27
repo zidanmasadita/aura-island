@@ -249,11 +249,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let key = "\(current.title)|\(current.artist)"
         if key != currentTrackKey {
             currentTrackKey = key
-            lyrics.fetchLyrics(title: current.title, artist: current.artist, duration: current.duration) { [weak self] lines in
-                self?.lyricsLines = lines
-                self?.refreshLyricLine()
-            }
+            // Drop the old song's lines at once, so the inactive
+            // lyrics pill never keeps showing the previous song's
+            // line for the new song (it falls back to the new title
+            // until the new lyrics land).
             lyricsLines = []
+            islandView.lyricPrev = nil
+            islandView.lyricCurrent = nil
+            islandView.lyricNext = nil
+            lyrics.fetchLyrics(title: current.title, artist: current.artist, duration: current.duration) { [weak self] lines in
+                // A slow fetch for an older track must not overwrite
+                // the current track's lines if the song changed again
+                // while it was in flight.
+                guard let self, self.currentTrackKey == key else { return }
+                self.lyricsLines = lines
+                self.refreshLyricLine()
+                // Redraw immediately: the inactive lyrics pill must
+                // show the new song's line the moment it lands,
+                // without waiting for the next poll or for the pill
+                // to be opened.
+                self.islandView.needsDisplay = true
+            }
         }
         refreshLyricLine()
         islandView.sessionsForPicker = sessions.allSessions
