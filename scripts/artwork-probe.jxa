@@ -31,25 +31,41 @@ function run() {
     try { probes.hasImageWithSize = typeof art.imageWithSize === 'function'; } catch (e) { probes.hasImageWithSize = 'error'; }
     try { probes.hasData = typeof art.data !== 'undefined' && art.data !== null; } catch (e) { probes.hasData = 'error'; }
     try { probes.hasArtworkData = typeof art.artworkData !== 'undefined' && art.artworkData !== null; } catch (e) { probes.hasArtworkData = 'error'; }
-    // Attempt 1: MPMediaItemArtwork path (imageWithSize -> bitmap -> PNG).
+    function pngBase64(cgImage) {
+      var rep = $.NSBitmapImageRep.alloc.initWithCGImage(cgImage);
+      var data = rep.representationUsingTypeProperties(4, $.NSDictionary.dictionary);
+      return data.base64EncodedStringWithOptions(0).js;
+    }
+    // Attempt 0: NSData base64 (native players).
     var extracted = null;
     var step = 'not-attempted';
     try {
-      if (art && typeof art.imageWithSize === 'function') {
-        step = 'imageWithSize-call';
-        var cg = art.imageWithSize({ width: 600, height: 600 });
-        step = 'bitmap-init';
-        var rep = $.NSBitmapImageRep.alloc.initWithCGImage(cg);
-        step = 'png-data';
-        var data = rep.representationUsingTypeProperties(4, $.NSDictionary.dictionary);
-        step = 'base64';
-        extracted = data.base64EncodedStringWithOptions(0).js;
-        step = 'ok';
-      } else {
-        step = 'no-imageWithSize';
-      }
-    } catch (e) { step = 'failed-at-' + step + ': ' + String(e); }
-    // Attempt 2: a data-ish property holding NSData.
+      if (art) { extracted = art.base64EncodedStringWithOptions(0).js; step = 'nsdata-ok'; }
+    } catch (e) { step = 'nsdata-failed'; }
+    // Attempt 1: CGImage direct (the leading hypothesis for Chrome:
+    // truthy, no ObjC methods, description throws = Core Graphics).
+    if (!extracted) {
+      try {
+        step = 'cgimage-bitmap';
+        extracted = pngBase64(art);
+        step = 'cgimage-ok';
+      } catch (e) { step = 'cgimage-failed: ' + String(e); }
+    }
+    // Attempt 2: MPMediaItemArtwork path (imageWithSize -> bitmap -> PNG).
+    if (!extracted) {
+      try {
+        if (art && typeof art.imageWithSize === 'function') {
+          step = 'imageWithSize-call';
+          var cg = art.imageWithSize({ width: 600, height: 600 });
+          step = 'bitmap-init';
+          extracted = pngBase64(cg);
+          step = 'imageWithSize-ok';
+        } else {
+          step = 'no-imageWithSize';
+        }
+      } catch (e) { step = 'failed-at-' + step + ': ' + String(e); }
+    }
+    // Attempt 3: a data-ish property holding NSData.
     if (!extracted) {
       try {
         var cand = null;

@@ -1,4 +1,5 @@
 ObjC.import('Foundation');
+ObjC.import('AppKit');
 function run() {
   try {
     var bundle = $.NSBundle.bundleWithPath('/System/Library/PrivateFrameworks/MediaRemote.framework/');
@@ -17,19 +18,30 @@ function run() {
       var v = info.valueForKey(key);
       return v ? v.js : '';
     }
+    function pngBase64(cgImage) {
+      var rep = $.NSBitmapImageRep.alloc.initWithCGImage(cgImage);
+      var data = rep.representationUsingTypeProperties(4, $.NSDictionary.dictionary);
+      return data.base64EncodedStringWithOptions(0).js;
+    }
     var b64 = null;
     var artPresent = false;
     try {
       var art = info.valueForKey('kMRMediaRemoteNowPlayingInfoArtwork');
-      // NSData in the info dict: base64 it so it survives JSON.
-      // Any other type (or a missing key) throws or yields nothing,
-      // and the caller falls back to the placeholder.
-      // artworkPresent tells the two apart: false = the system
-      // exposes no artwork for this player at all; true with a
-      // null artwork = a value exists but is not NSData.
+      // Three shapes, in order: NSData (native players), CGImage
+      // (what Chrome sessions expose — truthy, no ObjC methods at
+      // all), MPMediaItemArtwork (imageWithSize). Each step guarded;
+      // failure falls through to the placeholder.
       if (art) {
         artPresent = true;
-        b64 = art.base64EncodedStringWithOptions(0).js;
+        try { b64 = art.base64EncodedStringWithOptions(0).js; } catch (e) {}
+        if (!b64) { try { b64 = pngBase64(art); } catch (e) {} }
+        if (!b64) {
+          try {
+            if (typeof art.imageWithSize === 'function') {
+              b64 = pngBase64(art.imageWithSize({ width: 600, height: 600 }));
+            }
+          } catch (e) {}
+        }
       }
     } catch (e) {}
     return JSON.stringify({
