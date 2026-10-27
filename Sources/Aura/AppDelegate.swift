@@ -202,7 +202,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func sendViaLAN(file: IslandView.TrayFile, to peer: LANPeer) {
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: file.path, isDirectory: &isDir), !isDir.boolValue else {
-            islandView.trayShareStatus = "Folder belum didukung via LAN"
+            islandView.trayShareStatus = "Folders aren't supported over LAN yet"
             islandView.trayShareProgress = nil
             islandView.needsDisplay = true
             return
@@ -213,12 +213,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // is defensive (view state must never be set off-main).
                 DispatchQueue.main.async {
                     self?.islandView.trayShareProgress = fraction
-                    self?.islandView.trayShareStatus = "Mengirim... \(Int(round(fraction * 100)))%"
+                    self?.islandView.trayShareStatus = "Sending... \(Int(round(fraction * 100)))%"
                 }
             },
             completion: { [weak self] error in
                 DispatchQueue.main.async {
-                    self?.islandView.trayShareStatus = error ?? "Terkirim"
+                    self?.islandView.trayShareStatus = error ?? "Sent"
                     self?.islandView.trayShareProgress = nil
                 }
             })
@@ -247,6 +247,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // while drawing closed content - the giant-curve pill in
             // the bug report. The card stays open; IslandView re-syncs
             // hover when the modal closes.
+            return
+        } else if islandView.isDraggingOut {
+            // A drag-out is in flight (the file is being carried to
+            // another app): the cursor leaving the card is the drag,
+            // not a hover exit. Collapsing mid-drag would shrink the
+            // source window under the drag session. IslandView
+            // re-syncs hover when the drag ends.
             return
         } else {
             // Leaving the island always closes it — including an expanded
@@ -727,39 +734,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.title = "Aura"
         let menu = NSMenu()
-        let about = NSMenuItem(title: "Tentang Aura Island", action: #selector(showAbout), keyEquivalent: "")
+        let about = NSMenuItem(title: "About Aura Island", action: #selector(showAbout), keyEquivalent: "")
         about.target = self
         menu.addItem(about)
         // One-click diagnostic: shows exactly what the sensors last
         // reported, so a detection problem can be diagnosed from a
         // screenshot without running from Terminal.
-        let diag = NSMenuItem(title: "Status Deteksi", action: #selector(showDiagnostics), keyEquivalent: "")
+        let diag = NSMenuItem(title: "Detection Status", action: #selector(showDiagnostics), keyEquivalent: "")
         diag.target = self
         menu.addItem(diag)
-        let auto = NSMenuItem(title: "Mode: Auto (ikuti yang aktif)", action: #selector(setAuto), keyEquivalent: "")
+        let auto = NSMenuItem(title: "Mode: Auto (follow the active one)", action: #selector(setAuto), keyEquivalent: "")
         auto.target = self
         menu.addItem(auto)
-        let unpin = NSMenuItem(title: "Lepas pin sesi", action: #selector(unpinSession), keyEquivalent: "")
+        let unpin = NSMenuItem(title: "Unpin session", action: #selector(unpinSession), keyEquivalent: "")
         unpin.target = self
         menu.addItem(unpin)
-        let login = NSMenuItem(title: "Jalankan saat login", action: #selector(toggleLoginItem), keyEquivalent: "")
+        let login = NSMenuItem(title: "Launch at login", action: #selector(toggleLoginItem), keyEquivalent: "")
         login.target = self
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
         menu.addItem(login)
         // Manual lyric shift, per track, persisted: when a song's file
         // fits a slightly different recording, its lines sit a constant
         // amount early or late — one tap here moves the whole file.
-        let nudgePlus = NSMenuItem(title: "Lirik +1 detik (lebih lambat)", action: #selector(nudgeLyricPlus), keyEquivalent: "")
+        let nudgePlus = NSMenuItem(title: "Lyrics +1s (slower)", action: #selector(nudgeLyricPlus), keyEquivalent: "")
         nudgePlus.target = self
         menu.addItem(nudgePlus)
-        let nudgeMinus = NSMenuItem(title: "Lirik -1 detik (lebih cepat)", action: #selector(nudgeLyricMinus), keyEquivalent: "")
+        let nudgeMinus = NSMenuItem(title: "Lyrics -1s (faster)", action: #selector(nudgeLyricMinus), keyEquivalent: "")
         nudgeMinus.target = self
         menu.addItem(nudgeMinus)
-        let nudgeReset = NSMenuItem(title: "Reset geseran lirik lagu ini", action: #selector(resetLyricNudge), keyEquivalent: "")
+        let nudgeReset = NSMenuItem(title: "Reset this song's lyric offset", action: #selector(resetLyricNudge), keyEquivalent: "")
         nudgeReset.target = self
         menu.addItem(nudgeReset)
         menu.addItem(.separator())
-        let quit = NSMenuItem(title: "Keluar", action: #selector(quitApp), keyEquivalent: "q")
+        let quit = NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
         statusItem.menu = menu
@@ -768,22 +775,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func showAbout() {
         let alert = NSAlert()
         alert.messageText = "Aura Island"
-        alert.informativeText = "Pulau dinamis untuk Mac. Native, tanpa webview.\nMedia: MediaRemote + bridge ekstensi Chrome.\nLirik: LRCLIB."
+        alert.informativeText = "Dynamic island for Mac. Native, no webview.\nMedia: MediaRemote + Chrome extension bridge.\nLyrics: LRCLIB."
         alert.runModal()
     }
 
     @objc private func showDiagnostics() {
         let alert = NSAlert()
-        alert.messageText = "Status Deteksi"
+        alert.messageText = "Detection Status"
         let session = sessions.current
-        let sessionText = session.map { "\($0.title) — \($0.artist) (\($0.isPlaying ? "playing" : "paused"))" } ?? "tidak ada"
+        let sessionText = session.map { "\($0.title) — \($0.artist) (\($0.isPlaying ? "playing" : "paused"))" } ?? "none"
         let tabText: String
         if let t = lastTabLog, !t.isEmpty {
             tabText = t
         } else {
-            tabText = "tidak ada"
+            tabText = "none"
         }
-        alert.informativeText = "MediaRemote terakhir: \(lastMediaLog ?? "belum ada data")\nChrome tabs: \(tabText)\nSesi aktif: \(sessionText)"
+        alert.informativeText = "Last MediaRemote: \(lastMediaLog ?? "no data yet")\nChrome tabs: \(tabText)\nActive session: \(sessionText)"
         alert.runModal()
     }
 

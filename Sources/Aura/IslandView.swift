@@ -357,7 +357,7 @@ final class IslandView: NSView, NSDraggingSource {
     /// 640x180 (ring + timer + mode pills, like the reference); todo
     /// is 640x220 (task rows + add row, like sources); water is
     /// 640x180 (intake + progress + hourly chart, like Nusa's
-    /// Water Reminder). tray is 640x220 (carousel + share, Shelf-style).
+    /// Water Reminder). tray is 640x280 (grid 4x2 + share, DynamicNotch-style).
     var expandedSize: NSSize {
         switch currentPage {
         case .music: return NSSize(width: 520, height: 180)
@@ -365,7 +365,7 @@ final class IslandView: NSView, NSDraggingSource {
         case .pomodoro: return NSSize(width: 640, height: 180)
         case .todo: return NSSize(width: 640, height: 220)
         case .water: return NSSize(width: 640, height: 180)
-        case .tray: return NSSize(width: 640, height: 220)
+        case .tray: return NSSize(width: 640, height: 280)
         case .sources: return NSSize(width: 640, height: 220)
         }
     }
@@ -696,7 +696,7 @@ final class IslandView: NSView, NSDraggingSource {
                             if row.rect.contains(point) {
                                 if let file = trayShareFile {
                                     traySharePeer = row.peer
-                                    trayShareStatus = "Menunggu persetujuan..."
+                                    trayShareStatus = "Waiting for approval..."
                                     trayShareProgress = nil
                                     needsDisplay = true
                                     onTrayShareLANPeer?(file, row.peer)
@@ -709,51 +709,40 @@ final class IslandView: NSView, NSDraggingSource {
                 // Status view or unhandled share-mode click: fall
                 // through to collapse (the send keeps running).
             } else {
-                // Carousel list mode.
+                // Grid list mode.
                 if !trayFiles.isEmpty {
                     if trayClearPillRect().contains(point) {
                         clearTray()
                         return
                     }
-                    if trayFiles.count > 1 {
-                        let arrows = trayCarouselArrowRects()
+                    if trayGridPageCount() > 1 {
+                        let arrows = trayGridArrowRects()
                         if arrows.left.contains(point) {
-                            moveCarousel(by: -1)
+                            moveGridPage(by: -1)
                             return
                         }
                         if arrows.right.contains(point) {
-                            moveCarousel(by: 1)
+                            moveGridPage(by: 1)
                             return
                         }
-                    }
-                    if trayFiles.count <= 16 {
-                        for (i, rect) in trayCarouselDotRects().enumerated() {
+                        for (i, rect) in trayGridPageDotRects().enumerated() {
                             if rect.contains(point) {
-                                trayCarouselIndex = i
+                                trayGridPage = i
                                 needsDisplay = true
                                 return
                             }
                         }
                     }
-                    if let current = trayCurrentFile() {
-                        let exists = trayFileExists(current)
-                        let pills = trayCarouselPillRects(exists: exists)
-                        if exists, pills.share.contains(point) {
-                            trayShareFile = current
-                            trayShareMethod = nil
-                            traySharePeer = nil
-                            trayShareStatus = nil
-                            trayShareProgress = nil
-                            needsDisplay = true
+                    for tile in trayGridTileRects() {
+                        if tile.deleteRect.contains(point) {
+                            deleteTrayFile(id: tile.file.id)
                             return
                         }
-                        if pills.delete.contains(point) {
-                            deleteTrayFile(id: current.id)
-                            return
-                        }
-                        if trayCarouselFileBlockRect().contains(point) {
-                            if exists {
-                                trayPendingDrag = (file: current, point: point)
+                        if tile.rect.contains(point) {
+                            // Tap = share (on mouseUp); press-drag =
+                            // drag-out. Stale tiles arm nothing.
+                            if tile.exists {
+                                trayPendingDrag = (file: tile.file, point: point)
                             }
                             return
                         }
@@ -771,26 +760,47 @@ final class IslandView: NSView, NSDraggingSource {
 
     // MARK: - Tray drag and drop
 
-    /// Drag-out: a press on the carousel file block arms a pending
-    /// drag; moving past 3px starts the session (so a plain press
-    /// still clicks, and only the tray file block drags — other
-    /// sections are untouched). The file stays in the tray (copy).
+    /// Drag-out: a press on a grid tile arms a pending drag; moving
+    /// past 3px starts the session (so a plain press is a tap, and
+    /// only tray tiles drag — other sections are untouched). The
+    /// file stays in the tray (copy, not move).
     override func mouseDragged(with event: NSEvent) {
         guard let pending = trayPendingDrag else { return }
         let point = convert(event.locationInWindow, from: nil)
         guard abs(point.x - pending.point.x) > 3 || abs(point.y - pending.point.y) > 3 else { return }
         trayPendingDrag = nil
         guard trayFileExists(pending.file) else { return }
+        isDraggingOut = true
         let item = NSDraggingItem(pasteboardWriter: pending.file.url as NSURL)
         beginDraggingSession(with: [item], event: event, source: self)
     }
 
     override func mouseUp(with event: NSEvent) {
-        trayPendingDrag = nil
+        // A press on a grid tile without a drag is a tap = share.
+        // (After a real drag, pending is already nil — the drag
+        // cleared it on start — so this never shares post-drag.)
+        if let pending = trayPendingDrag {
+            trayPendingDrag = nil
+            trayShareFile = pending.file
+            trayShareMethod = nil
+            traySharePeer = nil
+            trayShareStatus = nil
+            trayShareProgress = nil
+            needsDisplay = true
+        }
     }
 
     func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
         [.copy]
+    }
+
+    func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+        isDraggingOut = false
+        // The drag ended outside the card: re-sync hover (the exit
+        // during the drag was suppressed) so the card collapses.
+        if let window, !window.frame.contains(NSEvent.mouseLocation) {
+            onHoverChanged?(false)
+        }
     }
 
     /// Drag-in: file URLs only. Entering expands the card to the
@@ -1365,7 +1375,7 @@ final class IslandView: NSView, NSDraggingSource {
             drawTray()
         } else {
             guard let session else {
-                drawCentered("Tidak ada media yang diputar",
+                drawCentered("No media playing",
                              font: NSFont.systemFont(ofSize: 13),
                              color: NSColor.white.withAlphaComponent(0.7),
                              y: bounds.height / 2 - 8)
@@ -1559,7 +1569,7 @@ final class IslandView: NSView, NSDraggingSource {
                                  font: font, color: NSColor.white.withAlphaComponent(0.45)))
         }
         guard !entries.isEmpty else {
-            drawText("Lirik tidak tersedia",
+            drawText("Lyrics unavailable",
                      font: NSFont.systemFont(ofSize: 14),
                      color: NSColor.white.withAlphaComponent(0.4),
                      at: NSPoint(x: x, y: 81))
@@ -1721,8 +1731,8 @@ final class IslandView: NSView, NSDraggingSource {
 
     private func drawPicker(startY: CGFloat) {
         let header = pinnedId == nil
-            ? "Sumber: Auto (ikuti yang aktif)"
-            : "Sumber: Pin aktif — klik sumber untuk lepas"
+            ? "Source: Auto (follow the active one)"
+            : "Source: Pinned — click a source to unpin"
         drawText(header, font: NSFont.systemFont(ofSize: 11),
                  color: NSColor.white.withAlphaComponent(0.55),
                  at: NSPoint(x: 40, y: startY))
@@ -1972,12 +1982,12 @@ final class IslandView: NSView, NSDraggingSource {
         }
     }
 
-    /// The "+ Tambah tugas" pill (left column, y120-148). Measured
+    /// The "+ Add task" pill (left column, y120-148). Measured
     /// from its text so hit == drawn, like the pomodoro pills.
     private func todoAddPillRect() -> NSRect {
         let font = NSFont.systemFont(ofSize: 14)
         let plusW = ("+" as NSString).size(withAttributes: [.font: font]).width
-        let textW = ("Tambah tugas" as NSString).size(withAttributes: [.font: font]).width
+        let textW = ("Add task" as NSString).size(withAttributes: [.font: font]).width
         return NSRect(x: 28, y: 120, width: 12 + plusW + 6 + textW + 12, height: 28)
     }
 
@@ -2005,9 +2015,9 @@ final class IslandView: NSView, NSDraggingSource {
         let doneCount = todoTasks.filter { $0.done }.count
         if total > 0 {
             drawText("\(doneCount)/\(total)", font: NSFont.boldSystemFont(ofSize: 28), color: .white, at: NSPoint(x: 28, y: 52))
-            drawText("selesai", font: NSFont.systemFont(ofSize: 12), color: NSColor.white.withAlphaComponent(0.6), at: NSPoint(x: 28, y: 88))
+            drawText("done", font: NSFont.systemFont(ofSize: 12), color: NSColor.white.withAlphaComponent(0.6), at: NSPoint(x: 28, y: 88))
         } else {
-            drawText("Belum ada tugas", font: NSFont.systemFont(ofSize: 14), color: NSColor.white.withAlphaComponent(0.6), at: NSPoint(x: 28, y: 60))
+            drawText("No tasks yet", font: NSFont.systemFont(ofSize: 14), color: NSColor.white.withAlphaComponent(0.6), at: NSPoint(x: 28, y: 60))
         }
         let addRect = todoAddPillRect()
         NSColor.white.withAlphaComponent(0.10).setFill()
@@ -2015,11 +2025,11 @@ final class IslandView: NSView, NSDraggingSource {
         let addFont = NSFont.systemFont(ofSize: 14)
         let plusW = ("+" as NSString).size(withAttributes: [.font: addFont]).width
         drawText("+", font: addFont, color: .white, at: NSPoint(x: addRect.minX + 12, y: addRect.minY + 5))
-        drawText("Tambah tugas", font: addFont, color: .white, at: NSPoint(x: addRect.minX + 12 + plusW + 6, y: addRect.minY + 5))
+        drawText("Add task", font: addFont, color: .white, at: NSPoint(x: addRect.minX + 12 + plusW + 6, y: addRect.minY + 5))
         // Overflow count under the add pill.
         let rows = todoVisibleRows()
         if total > rows.count {
-            drawText("＋\(total - rows.count) lainnya", font: NSFont.systemFont(ofSize: 11),
+            drawText("+\(total - rows.count) more", font: NSFont.systemFont(ofSize: 11),
                      color: NSColor.white.withAlphaComponent(0.4), at: NSPoint(x: 28, y: 158))
         }
         // Right column: task rows (subtle dark pills, green check
@@ -2069,13 +2079,13 @@ final class IslandView: NSView, NSDraggingSource {
     /// its own key window, so typing always works).
     private func showAddTaskAlert() {
         let alert = NSAlert()
-        alert.messageText = "Tugas baru"
+        alert.messageText = "New task"
         alert.informativeText = "Tulis tugas yang ingin ditambahkan."
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
-        field.placeholderString = "Tugas baru..."
+        field.placeholderString = "New task..."
         alert.accessoryView = field
-        alert.addButton(withTitle: "Tambah")
-        alert.addButton(withTitle: "Batal")
+        alert.addButton(withTitle: "Add")
+        alert.addButton(withTitle: "Cancel")
         alert.window.initialFirstResponder = field
         isShowingModal = true
         let response = alert.runModal()
@@ -2145,14 +2155,22 @@ final class IslandView: NSView, NSDraggingSource {
     var onTrayShareLANPeer: ((TrayFile, LANPeer) -> Void)?
     var onTrayShareCancel: (() -> Void)?
 
-    /// Pending drag-out: set on mouseDown on the carousel file
-    /// block (not pills/arrows/dots), so a press-drag starts a drag
-    /// session and a plain press still clicks. Cleared on drag start
-    /// or mouseUp.
+    /// Pending drag-out: set on mouseDown on a grid tile (not its
+    /// ×), so a press-drag starts a drag session and a plain press
+    /// is a tap (share, on mouseUp). Cleared on drag start or mouseUp.
     private var trayPendingDrag: (file: TrayFile, point: NSPoint)?
-    /// Carousel page (which file the shelf shows). The accessor
-    /// clamps, so delete/clear never leave it out of range.
-    private var trayCarouselIndex = 0
+    /// Grid page (which page of tiles the shelf shows). 8 tiles per
+    /// page (4x2); page count clamps, so delete/clear never leave
+    /// it out of range.
+    private var trayGridPage = 0
+    /// Pop animation starts (file id -> start time) for tiles that
+    /// just entered the tray. Staggered 0.05s per file in one drop.
+    private var trayPopStarts: [UUID: Date] = [:]
+    private var trayPopTimer: Timer?
+    /// True while a drag-out session is in flight (set on drag
+    /// start, cleared when the session ends). AppDelegate skips
+    /// hover-collapse while this is true.
+    var isDraggingOut = false
     /// Last drag-over point in view coords (for the "+ Copy" badge).
     /// Nil when no drag hovers.
     private var trayDragPoint: NSPoint? { didSet { needsDisplay = true } }
@@ -2183,7 +2201,7 @@ final class IslandView: NSView, NSDraggingSource {
     @discardableResult
     private func addTrayFiles(_ urls: [URL]) -> Int {
         loadTrayFilesIfNeeded()
-        var added = 0
+        var addedFiles: [TrayFile] = []
         for url in urls {
             let path = url.path
             guard !trayFiles.contains(where: { $0.path == path }) else { continue }
@@ -2193,17 +2211,23 @@ final class IslandView: NSView, NSDraggingSource {
             if exists, !isDir.boolValue {
                 size = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? Int64) ?? 0
             }
-            trayFiles.append(TrayFile(id: UUID(), path: path, name: url.lastPathComponent,
-                                      isDirectory: isDir.boolValue, size: size, addedAt: Date()))
-            added += 1
+            let file = TrayFile(id: UUID(), path: path, name: url.lastPathComponent,
+                                isDirectory: isDir.boolValue, size: size, addedAt: Date())
+            trayFiles.append(file)
+            addedFiles.append(file)
         }
-        if added > 0 { saveTrayFiles(); needsDisplay = true }
-        return added
+        if !addedFiles.isEmpty {
+            saveTrayFiles()
+            startTrayPops(for: addedFiles)
+            needsDisplay = true
+        }
+        return addedFiles.count
     }
 
     private func deleteTrayFile(id: UUID) {
         loadTrayFilesIfNeeded()
         trayFiles.removeAll { $0.id == id }
+        trayPopStarts.removeValue(forKey: id)
         saveTrayFiles()
         needsDisplay = true
     }
@@ -2262,21 +2286,32 @@ final class IslandView: NSView, NSDraggingSource {
         } else {
             drawCardHeader(width: 640)
             drawText("Tray", font: NSFont.boldSystemFont(ofSize: 20), color: .white, at: NSPoint(x: 28, y: 10))
-            drawTrayCarousel()
+            drawTrayGrid()
         }
     }
 
-    /// The carousel's current file, clamped (so delete/clear never
-    /// leave the index out of range). Nil when the tray is empty.
-    private func trayCurrentFile() -> TrayFile? {
+    /// Tiles per grid page (4 columns x 2 rows).
+    private let trayGridColumns = 4
+    private let trayGridRows = 2
+    private var trayTilesPerPage: Int { trayGridColumns * trayGridRows }
+
+    private func trayGridPageCount() -> Int {
         loadTrayFilesIfNeeded()
-        guard !trayFiles.isEmpty else { return nil }
-        return trayFiles[min(trayCarouselIndex, trayFiles.count - 1)]
+        return max(1, (trayFiles.count + trayTilesPerPage - 1) / trayTilesPerPage)
     }
 
-    private func moveCarousel(by delta: Int) {
-        guard !trayFiles.isEmpty else { return }
-        trayCarouselIndex = (trayCarouselIndex + delta + trayFiles.count) % trayFiles.count
+    /// Files on the current grid page (clamped page).
+    private func trayGridPageFiles() -> [TrayFile] {
+        loadTrayFilesIfNeeded()
+        let page = min(trayGridPage, trayGridPageCount() - 1)
+        let start = page * trayTilesPerPage
+        return Array(trayFiles.dropFirst(start).prefix(trayTilesPerPage))
+    }
+
+    private func moveGridPage(by delta: Int) {
+        let count = trayGridPageCount()
+        guard count > 1 else { return }
+        trayGridPage = (trayGridPage + delta + count) % count
         needsDisplay = true
     }
 
@@ -2285,7 +2320,8 @@ final class IslandView: NSView, NSDraggingSource {
     private func clearTray() {
         loadTrayFilesIfNeeded()
         trayFiles.removeAll()
-        trayCarouselIndex = 0
+        trayGridPage = 0
+        trayPopStarts.removeAll()
         saveTrayFiles()
         needsDisplay = true
     }
@@ -2301,7 +2337,7 @@ final class IslandView: NSView, NSDraggingSource {
     }
 
     /// Draws the Clear pill (no-op when empty). Shared by the
-    /// carousel and the drop zone so hit == drawn in both.
+    /// grid and the drop zone so hit == drawn in both.
     private func drawTrayClearPill() {
         guard !trayFiles.isEmpty else { return }
         let clear = trayClearPillRect()
@@ -2313,88 +2349,136 @@ final class IslandView: NSView, NSDraggingSource {
                  at: NSPoint(x: clear.midX - clearW / 2, y: clear.minY + 5))
     }
 
-    /// Arrow hit areas (44px, centered on the 36px circles).
-    private func trayCarouselArrowRects() -> (left: NSRect, right: NSRect) {
-        (left: NSRect(x: 26, y: 63, width: 44, height: 44),
-         right: NSRect(x: 570, y: 63, width: 44, height: 44))
+    /// Tiles on the current grid page: rect + delete (×) rect +
+    /// existence. Tile 136x100, gap 12, grid x30..610, y44..256.
+    private func trayGridTileRects() -> [(file: TrayFile, rect: NSRect, deleteRect: NSRect, exists: Bool)] {
+        trayGridPageFiles().enumerated().map { i, file in
+            let col = i % trayGridColumns
+            let row = i / trayGridColumns
+            let rect = NSRect(x: 30 + CGFloat(col) * (136 + 12),
+                              y: 44 + CGFloat(row) * (100 + 12),
+                              width: 136, height: 100)
+            return (file: file, rect: rect,
+                    deleteRect: NSRect(x: rect.maxX - 24, y: rect.minY, width: 24, height: 24),
+                    exists: trayFileExists(file))
+        }
     }
 
-    /// File dot hit slots (18px pitch, 16 tall). Only for <= 16
-    /// files; larger trays show "i / N" text instead (not tappable).
-    private func trayCarouselDotRects() -> [NSRect] {
-        let count = trayFiles.count
-        guard count <= 16 else { return [] }
+    /// Arrow hit areas (44px, centered on the 36px circles at the
+    /// grid's vertical center, y150).
+    private func trayGridArrowRects() -> (left: NSRect, right: NSRect) {
+        (left: NSRect(x: 26, y: 128, width: 44, height: 44),
+         right: NSRect(x: 570, y: 128, width: 44, height: 44))
+    }
+
+    /// Page dot hit slots (18px pitch, 16 tall, y260..276).
+    /// Empty when there is only one page (no dots drawn).
+    private func trayGridPageDotRects() -> [NSRect] {
+        let count = trayGridPageCount()
+        guard count > 1 else { return [] }
         let startX = (640 - CGFloat(count * 18)) / 2
-        return (0..<count).map { i in NSRect(x: startX + CGFloat(i * 18), y: 196, width: 18, height: 16) }
+        return (0..<count).map { i in NSRect(x: startX + CGFloat(i * 18), y: 260, width: 18, height: 16) }
     }
 
-    /// Bagikan/Hapus pills (centered pair below the file). When the
-    /// current file is missing, share is .zero (not drawn, not hit)
-    /// and delete centers alone.
-    private func trayCarouselPillRects(exists: Bool) -> (share: NSRect, delete: NSRect) {
-        let font = NSFont.systemFont(ofSize: 14)
-        let shareW = 12 + ("Bagikan" as NSString).size(withAttributes: [.font: font]).width + 12
-        let deleteW = 12 + ("Hapus" as NSString).size(withAttributes: [.font: font]).width + 12
-        if exists {
-            let total = shareW + 8 + deleteW
-            let startX = (640 - total) / 2
-            return (share: NSRect(x: startX, y: 168, width: shareW, height: 28),
-                    delete: NSRect(x: startX + shareW + 8, y: 168, width: deleteW, height: 28))
-        }
-        return (share: .zero,
-                delete: NSRect(x: (640 - deleteW) / 2, y: 168, width: deleteW, height: 28))
-    }
-
-    /// The file block (icon + name + size) that arms drag-out.
-    /// Wide (80..560) so a long centered name still drags; it does
-    /// not overlap arrows (x26..70, x570..614), pills (y168+), or
-    /// dots (y196+).
-    private func trayCarouselFileBlockRect() -> NSRect {
-        NSRect(x: 80, y: 53, width: 480, height: 111)
-    }
-
-    /// File dots (bottom center, like Shelf): active = dash, rest =
-    /// dots. Larger trays show "i / N" text instead.
-    private func drawTrayDots() {
-        let count = trayFiles.count
-        guard count > 0 else { return }
-        if count > 16 {
-            let label = "\(min(trayCarouselIndex, count - 1) + 1) / \(count)"
-            let font = NSFont.systemFont(ofSize: 12)
-            let w = (label as NSString).size(withAttributes: [.font: font]).width
-            drawText(label, font: font, color: NSColor.white.withAlphaComponent(0.6),
-                     at: NSPoint(x: 320 - w / 2, y: 201))
-            return
-        }
-        for (i, slot) in trayCarouselDotRects().enumerated() {
-            if i == min(trayCarouselIndex, count - 1) {
+    /// Page dots (bottom center, like Shelf): active = dash, rest =
+    /// dots. Hidden when there is only one page.
+    private func drawTrayPageDots() {
+        let count = trayGridPageCount()
+        guard count > 1 else { return }
+        let page = min(trayGridPage, count - 1)
+        for (i, slot) in trayGridPageDotRects().enumerated() {
+            if i == page {
                 NSColor.white.setFill()
-                NSBezierPath(roundedRect: NSRect(x: slot.midX - 6, y: 201, width: 12, height: 6), xRadius: 3, yRadius: 3).fill()
+                NSBezierPath(roundedRect: NSRect(x: slot.midX - 6, y: 265, width: 12, height: 6), xRadius: 3, yRadius: 3).fill()
             } else {
                 NSColor.white.withAlphaComponent(0.4).setFill()
-                NSBezierPath(ovalIn: NSRect(x: slot.midX - 3, y: 201, width: 6, height: 6)).fill()
+                NSBezierPath(ovalIn: NSRect(x: slot.midX - 3, y: 265, width: 6, height: 6)).fill()
             }
         }
     }
 
-    /// Carousel list view (Shelf-style): one large file, arrows,
-    /// dots, Clear, Bagikan/Hapus. The file block drags out.
-    private func drawTrayCarousel() {
+    /// Draw one grid tile (background + icon + name + size + ×).
+    /// The caller wraps this in a scale transform for popping tiles.
+    private func drawTrayTile(file: TrayFile, rect: NSRect, deleteRect: NSRect, exists: Bool) {
+        NSColor.white.withAlphaComponent(0.08).setFill()
+        NSBezierPath(roundedRect: rect, xRadius: 10, yRadius: 10).fill()
+        let alpha: CGFloat = exists ? 1.0 : 0.4
+        let symbol = file.isDirectory ? "folder.fill" : "doc.fill"
+        drawSymbol(symbol, size: 36, center: CGPoint(x: rect.midX, y: rect.minY + 28), fallback: file.isDirectory ? "F" : "D",
+                   color: NSColor.white.withAlphaComponent(alpha))
+        let nameFont = NSFont.systemFont(ofSize: 13)
+        let name = exists ? file.name : file.name + " (missing)"
+        let nameText = truncated(name, toWidth: rect.width - 16, font: nameFont)
+        let nameW = (nameText as NSString).size(withAttributes: [.font: nameFont]).width
+        drawText(nameText, font: nameFont, color: NSColor.white.withAlphaComponent(alpha),
+                 at: NSPoint(x: rect.midX - nameW / 2, y: rect.minY + 62))
+        let sizeFont = NSFont.systemFont(ofSize: 11)
+        let sizeText = file.isDirectory ? "Folder" : formatBytes(file.size)
+        let sizeW = (sizeText as NSString).size(withAttributes: [.font: sizeFont]).width
+        drawText(sizeText, font: sizeFont, color: NSColor.white.withAlphaComponent(0.6),
+                 at: NSPoint(x: rect.midX - sizeW / 2, y: rect.minY + 82))
+        let xLabel = "×"
+        let xFont = NSFont.systemFont(ofSize: 14)
+        let xW = (xLabel as NSString).size(withAttributes: [.font: xFont]).width
+        drawText(xLabel, font: xFont, color: NSColor.white.withAlphaComponent(0.4),
+                 at: NSPoint(x: deleteRect.midX - xW / 2, y: deleteRect.midY - 8))
+    }
+
+    /// Pop scale for a tile (0.6 -> 1.0 with an overshoot, 0.4s).
+    /// Nil when the tile is not popping.
+    private func trayPopScale(for id: UUID, now: Date) -> CGFloat? {
+        guard let start = trayPopStarts[id] else { return nil }
+        let t = now.timeIntervalSince(start) / 0.4
+        guard t >= 0, t < 1 else { return nil }
+        // easeOutBack (c1 = 1.70158): 0 -> ~1.1 -> 1.
+        let c1: CGFloat = 1.70158
+        let c3 = c1 + 1
+        let u = CGFloat(t) - 1
+        let ease = 1 + c3 * u * u * u + c1 * u * u
+        return 0.6 + 0.4 * ease
+    }
+
+    /// Record pops for newly added files (staggered 0.05s) and run
+    /// a 60fps redraw timer while any pop is active.
+    private func startTrayPops(for files: [TrayFile]) {
+        let now = Date()
+        for (i, file) in files.enumerated() {
+            trayPopStarts[file.id] = now.addingTimeInterval(Double(i) * 0.05)
+        }
+        guard trayPopTimer == nil else { return }
+        trayPopTimer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            let now = Date()
+            // Keep future starts (negative interval, staggered) and
+            // active pops; drop finished ones (interval >= 0.4).
+            trayPopStarts = trayPopStarts.filter { now.timeIntervalSince($0.value) < 0.4 }
+            self.needsDisplay = true
+            if self.trayPopStarts.isEmpty {
+                self.trayPopTimer?.invalidate()
+                self.trayPopTimer = nil
+            }
+        }
+        if let trayPopTimer { RunLoop.main.add(trayPopTimer, forMode: .common) }
+    }
+
+    /// Grid list view (DynamicNotch-style): tiles 4x2 per page,
+    /// arrows + page dots when there is another page, Clear.
+    /// Tap a tile = share (on mouseUp); press-drag a tile = drag-out.
+    private func drawTrayGrid() {
         loadTrayFilesIfNeeded()
         drawTrayClearPill()
-        guard let file = trayCurrentFile() else {
+        let tiles = trayGridTileRects()
+        if tiles.isEmpty {
             let emptyFont = NSFont.systemFont(ofSize: 14)
-            let emptyText = "Seret file ke sini"
+            let emptyText = "Drag files here"
             let emptyW = (emptyText as NSString).size(withAttributes: [.font: emptyFont]).width
             drawText(emptyText, font: emptyFont, color: NSColor.white.withAlphaComponent(0.6),
-                     at: NSPoint(x: 320 - emptyW / 2, y: 110))
+                     at: NSPoint(x: 320 - emptyW / 2, y: 140))
             return
         }
-        let exists = trayFileExists(file)
-        let alpha: CGFloat = exists ? 1.0 : 0.4
-        // Arrows (only when there is somewhere to go).
-        if trayFiles.count > 1 {
-            let arrows = trayCarouselArrowRects()
+        // Arrows (only when there is another page).
+        if trayGridPageCount() > 1 {
+            let arrows = trayGridArrowRects()
             for center in [CGPoint(x: arrows.left.midX, y: arrows.left.midY),
                            CGPoint(x: arrows.right.midX, y: arrows.right.midY)] {
                 NSColor.white.withAlphaComponent(0.15).setFill()
@@ -2403,37 +2487,22 @@ final class IslandView: NSView, NSDraggingSource {
             drawSymbol("chevron.left", size: 16, center: CGPoint(x: arrows.left.midX, y: arrows.left.midY), fallback: "<")
             drawSymbol("chevron.right", size: 16, center: CGPoint(x: arrows.right.midX, y: arrows.right.midY), fallback: ">")
         }
-        // File: large icon, centered name + size (Shelf-style).
-        let symbol = file.isDirectory ? "folder.fill" : "doc.fill"
-        drawSymbol(symbol, size: 64, center: CGPoint(x: 320, y: 85), fallback: file.isDirectory ? "F" : "D",
-                   color: NSColor.white.withAlphaComponent(alpha))
-        let nameFont = NSFont.systemFont(ofSize: 16, weight: .semibold)
-        let name = exists ? file.name : file.name + " (hilang)"
-        let nameText = truncated(name, toWidth: 480, font: nameFont)
-        let nameW = (nameText as NSString).size(withAttributes: [.font: nameFont]).width
-        drawText(nameText, font: nameFont, color: NSColor.white.withAlphaComponent(alpha),
-                 at: NSPoint(x: 320 - nameW / 2, y: 132))
-        let sizeFont = NSFont.systemFont(ofSize: 12)
-        let sizeText = file.isDirectory ? "Folder" : formatBytes(file.size)
-        let sizeW = (sizeText as NSString).size(withAttributes: [.font: sizeFont]).width
-        drawText(sizeText, font: sizeFont, color: NSColor.white.withAlphaComponent(0.6),
-                 at: NSPoint(x: 320 - sizeW / 2, y: 152))
-        // Bagikan/Hapus pills (share hidden for missing files).
-        let pills = trayCarouselPillRects(exists: exists)
-        let pillFont = NSFont.systemFont(ofSize: 14)
-        if exists {
-            NSColor.white.withAlphaComponent(0.10).setFill()
-            NSBezierPath(roundedRect: pills.share, xRadius: 14, yRadius: 14).fill()
-            let shareW = ("Bagikan" as NSString).size(withAttributes: [.font: pillFont]).width
-            drawText("Bagikan", font: pillFont, color: .white,
-                     at: NSPoint(x: pills.share.midX - shareW / 2, y: pills.share.minY + 5))
+        // Tiles (popping tiles scale around their center).
+        let now = Date()
+        for tile in tiles {
+            if let scale = trayPopScale(for: tile.file.id, now: now),
+               let ctx = NSGraphicsContext.current?.cgContext {
+                ctx.saveGState()
+                ctx.translateBy(x: tile.rect.midX, y: tile.rect.midY)
+                ctx.scaleBy(x: scale, y: scale)
+                ctx.translateBy(x: -tile.rect.midX, y: -tile.rect.midY)
+                drawTrayTile(file: tile.file, rect: tile.rect, deleteRect: tile.deleteRect, exists: tile.exists)
+                ctx.restoreGState()
+            } else {
+                drawTrayTile(file: tile.file, rect: tile.rect, deleteRect: tile.deleteRect, exists: tile.exists)
+            }
         }
-        NSColor.white.withAlphaComponent(0.10).setFill()
-        NSBezierPath(roundedRect: pills.delete, xRadius: 14, yRadius: 14).fill()
-        let deleteW = ("Hapus" as NSString).size(withAttributes: [.font: pillFont]).width
-        drawText("Hapus", font: pillFont, color: .white,
-                 at: NSPoint(x: pills.delete.midX - deleteW / 2, y: pills.delete.minY + 5))
-        drawTrayDots()
+        drawTrayPageDots()
     }
 
     /// Drop zone while a drag hovers (Shelf's drag state): dashed
@@ -2443,7 +2512,7 @@ final class IslandView: NSView, NSDraggingSource {
         drawCardHeader(width: 640)
         drawText("Tray", font: NSFont.boldSystemFont(ofSize: 20), color: .white, at: NSPoint(x: 28, y: 10))
         drawTrayClearPill()
-        let zone = NSRect(x: 28, y: 44, width: 584, height: 140)
+        let zone = NSRect(x: 28, y: 44, width: 584, height: 212)
         let dashed = NSBezierPath(roundedRect: zone, xRadius: 20, yRadius: 20)
         dashed.setLineDash([8, 6], count: 2, phase: 0)
         dashed.lineWidth = 1.5
@@ -2454,7 +2523,7 @@ final class IslandView: NSView, NSDraggingSource {
         let labelW = (label as NSString).size(withAttributes: [.font: labelFont]).width
         drawText(label, font: labelFont, color: NSColor.white.withAlphaComponent(0.7),
                  at: NSPoint(x: zone.midX - labelW / 2, y: zone.midY - 7))
-        drawTrayDots()
+        drawTrayPageDots()
         // "+ Copy" badge below-right of the cursor (clamped to the card).
         if let point = trayDragPoint {
             let badgeFont = NSFont.systemFont(ofSize: 12, weight: .semibold)
@@ -2471,14 +2540,14 @@ final class IslandView: NSView, NSDraggingSource {
 
     private func drawTrayShare() {
         guard let file = trayShareFile else { return }
-        drawText("Bagikan", font: NSFont.boldSystemFont(ofSize: 20), color: .white, at: NSPoint(x: 28, y: 10))
+        drawText("Share", font: NSFont.boldSystemFont(ofSize: 20), color: .white, at: NSPoint(x: 28, y: 10))
         // Back pill (top-right).
         let back = trayShareBackRect()
         NSColor.white.withAlphaComponent(0.10).setFill()
         NSBezierPath(roundedRect: back, xRadius: 14, yRadius: 14).fill()
         let backFont = NSFont.systemFont(ofSize: 14)
-        let backW = ("Batal" as NSString).size(withAttributes: [.font: backFont]).width
-        drawText("Batal", font: backFont, color: .white,
+        let backW = ("Cancel" as NSString).size(withAttributes: [.font: backFont]).width
+        drawText("Cancel", font: backFont, color: .white,
                  at: NSPoint(x: back.midX - backW / 2, y: back.minY + 5))
         // Shared file row (32-tall row at minY 44: icon center 60,
         // name baseline 51, like todo's rows).
@@ -2489,9 +2558,9 @@ final class IslandView: NSView, NSDraggingSource {
                  font: nameFont, color: .white, at: NSPoint(x: 56, y: 51))
         if let peer = traySharePeer {
             // Sending status view.
-            drawText("Ke \(peer.name)", font: NSFont.systemFont(ofSize: 14),
+            drawText("To \(peer.name)", font: NSFont.systemFont(ofSize: 14),
                      color: NSColor.white.withAlphaComponent(0.6), at: NSPoint(x: 28, y: 96))
-            drawText(trayShareStatus ?? "Mengirim...", font: NSFont.systemFont(ofSize: 14),
+            drawText(trayShareStatus ?? "Sending...", font: NSFont.systemFont(ofSize: 14),
                      color: .white, at: NSPoint(x: 28, y: 120))
             if let progress = trayShareProgress {
                 let track = NSRect(x: 28, y: 152, width: 572, height: 8)
@@ -2508,9 +2577,9 @@ final class IslandView: NSView, NSDraggingSource {
             // Peer list (the recipient picker).
             let peers = traySharePeerRects()
             if peers.isEmpty {
-                drawText("Mencari perangkat Aura...", font: NSFont.systemFont(ofSize: 14),
+                drawText("Looking for Aura devices...", font: NSFont.systemFont(ofSize: 14),
                          color: NSColor.white.withAlphaComponent(0.6), at: NSPoint(x: 28, y: 84))
-                drawText("Perangkat lain harus menjalankan Aura di jaringan yang sama.",
+                drawText("Other devices must run Aura on the same network.",
                          font: NSFont.systemFont(ofSize: 12),
                          color: NSColor.white.withAlphaComponent(0.4), at: NSPoint(x: 28, y: 108))
             } else {
@@ -2523,7 +2592,7 @@ final class IslandView: NSView, NSDraggingSource {
                              font: peerFont, color: .white, at: NSPoint(x: 56, y: row.rect.minY + 7))
                 }
                 if lanPeers.count > 3 {
-                    drawText("＋\(lanPeers.count - 3) perangkat lainnya", font: NSFont.systemFont(ofSize: 11),
+                    drawText("+\(lanPeers.count - 3) more devices", font: NSFont.systemFont(ofSize: 11),
                              color: NSColor.white.withAlphaComponent(0.4), at: NSPoint(x: 28, y: 204))
                 }
             }
@@ -2537,8 +2606,8 @@ final class IslandView: NSView, NSDraggingSource {
             drawSymbol("network", size: 20, center: CGPoint(x: 40, y: methods.lan.midY), fallback: "N")
             let methodFont = NSFont.systemFont(ofSize: 14)
             drawText("AirDrop", font: methodFont, color: .white, at: NSPoint(x: 56, y: methods.airDrop.minY + 7))
-            drawText("Jaringan Lokal", font: methodFont, color: .white, at: NSPoint(x: 56, y: methods.lan.minY + 7))
-            drawText("AirDrop: perangkat Apple terdekat. Jaringan Lokal: sesama pengguna Aura.",
+            drawText("Local Network", font: methodFont, color: .white, at: NSPoint(x: 56, y: methods.lan.minY + 7))
+            drawText("AirDrop: nearby Apple devices. Local Network: fellow Aura users.",
                      font: NSFont.systemFont(ofSize: 12),
                      color: NSColor.white.withAlphaComponent(0.4), at: NSPoint(x: 28, y: 164))
         }
@@ -2671,10 +2740,10 @@ final class IslandView: NSView, NSDraggingSource {
     private func showWaterSettingsAlert() {
         loadWaterStoreIfNeeded()
         let alert = NSAlert()
-        alert.messageText = "Pengaturan Minum"
-        alert.informativeText = "Ubah goal harian, ukuran gelas, dan interval pengingat."
-        alert.addButton(withTitle: "Simpan")
-        alert.addButton(withTitle: "Batal")
+        alert.messageText = "Water Settings"
+        alert.informativeText = "Change the daily goal, glass size, and reminder interval."
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
         let accessory = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 90))
         func row(_ label: String, value: String, y: CGFloat) -> NSTextField {
             let labelField = NSTextField(labelWithString: label)
@@ -2685,9 +2754,9 @@ final class IslandView: NSView, NSDraggingSource {
             accessory.addSubview(field)
             return field
         }
-        let goalField = row("Goal harian (ml)", value: "\(waterStore.goalMl)", y: 68)
-        let glassField = row("Gelas (ml)", value: "\(waterStore.glassMl)", y: 38)
-        let intervalField = row("Interval (menit)", value: "\(waterStore.intervalMinutes)", y: 8)
+        let goalField = row("Daily goal (ml)", value: "\(waterStore.goalMl)", y: 68)
+        let glassField = row("Glass (ml)", value: "\(waterStore.glassMl)", y: 38)
+        let intervalField = row("Interval (min)", value: "\(waterStore.intervalMinutes)", y: 8)
         alert.accessoryView = accessory
         alert.window.initialFirstResponder = goalField
         isShowingModal = true
@@ -2753,8 +2822,8 @@ final class IslandView: NSView, NSDraggingSource {
         let remaining = max(0, end.timeIntervalSinceNow)
         guard remaining > 0 else { return }
         let content = UNMutableNotificationContent()
-        content.title = "Waktunya minum"
-        content.body = "Minum air sekarang."
+        content.title = "Time to drink"
+        content.body = "Drink water now."
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: remaining, repeats: false)
         center.add(UNNotificationRequest(identifier: "water-reminder", content: content, trigger: trigger))
     }

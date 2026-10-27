@@ -339,10 +339,10 @@ final class LANShare {
         // unaffected (each has its own thread).
         let accepted = DispatchQueue.main.sync {
             let alert = NSAlert()
-            alert.messageText = "Permintaan Berbagi"
-            alert.informativeText = "\(req.senderName) ingin mengirim '\(req.fileName)' (\(formatSize(req.fileSize))). Terima file ini?"
-            alert.addButton(withTitle: "Terima")
-            alert.addButton(withTitle: "Tolak")
+            alert.messageText = "Share Request"
+            alert.informativeText = "\(req.senderName) wants to send '\(req.fileName)' (\(formatSize(req.fileSize))). Accept this file?"
+            alert.addButton(withTitle: "Accept")
+            alert.addButton(withTitle: "Decline")
             return alert.runModal() == .alertFirstButtonReturn
         }
         guard accepted else {
@@ -443,19 +443,19 @@ final class LANShare {
                 guard let self, gen == self.sendGeneration else { return }
                 self.currentSendTasks = []
                 if let error = error as? URLError, error.code == .timedOut {
-                    completion("Waktu habis (tidak ada jawaban)")
+                    completion("Timed out (no answer)")
                     return
                 }
                 guard error == nil,
                       let data,
                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                       (json["ok"] as? Bool) == true else {
-                    completion("Gagal terhubung")
+                    completion("Connection failed")
                     return
                 }
                 guard (json["accepted"] as? Bool) == true,
                       let token = json["token"] as? String else {
-                    completion("Ditolak")
+                    completion("Declined")
                     return
                 }
                 self.uploadFile(to: peer, file: file, token: token, gen: gen, progress: progress, completion: completion)
@@ -535,15 +535,15 @@ final class LANShare {
         func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
             if let error {
                 if (error as? URLError)?.code == .cancelled {
-                    completion("Dibatalkan")
+                    completion("Cancelled")
                 } else {
-                    completion("Gagal mengirim")
+                    completion("Send failed")
                 }
                 return
             }
             let ok = httpStatus == 200
                 && ((try? JSONSerialization.jsonObject(with: responseData) as? [String: Any])?["ok"] as? Bool) == true
-            completion(ok ? nil : "Gagal mengirim")
+            completion(ok ? nil : "Send failed")
         }
     }
 }
