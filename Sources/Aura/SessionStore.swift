@@ -152,8 +152,11 @@ final class SessionStore {
         let trusted = AXIsProcessTrusted()
         if !trusted && !Self.accessibilityPrompted {
             Self.accessibilityPrompted = true
-            _ = AXIsProcessTrustedWithOptions(
-                [kAXTrustedCheckOptionPrompt as String: true] as CFDictionary)
+            // kAXTrustedCheckOptionPrompt is imported as
+            // Unmanaged<CFString>, not CFString, so a direct
+            // `as String` coercion fails to compile; unwrap it first.
+            let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+            _ = AXIsProcessTrustedWithOptions([promptKey: true] as CFDictionary)
         }
         print("[Aura] media key \(key), Accessibility trusted: \(trusted)")
         func post(_ down: Bool) {
