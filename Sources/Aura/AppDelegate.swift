@@ -798,13 +798,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                  y: normalY, width: size.width, height: size.height)
         let overlap = OverlapDetector.check(pillFrame: normalFrame)
         if overlap.windowFrame != nil {
-            let decision = "\(overlap.ownerName)|covered=\(overlap.covered)|varied=\(overlap.variedPixels == nil ? "nocap" : "cap")"
+            let decision = "\(overlap.ownerName)|covered=\(overlap.covered)|trusted=\(overlap.axTrusted)"
             if decision != lastOverlapDecision {
                 lastOverlapDecision = decision
-                if let varied = overlap.variedPixels {
-                    print("[Aura] Overlap decision: foreground=\(overlap.ownerName) covered=\(overlap.covered) varied=\(varied) (hide at >= 20)")
+                if !overlap.axTrusted {
+                    print("[Aura] Overlap decision: foreground=\(overlap.ownerName) NO AX — Accessibility permission missing, pill will not hide. Enable Aura in System Settings > Privacy & Security > Accessibility, then restart Aura.")
+                } else if let role = overlap.elementRole {
+                    print("[Aura] Overlap decision: foreground=\(overlap.ownerName) covered=\(overlap.covered) element=\(role) title=\(overlap.elementTitle ?? "")")
                 } else {
-                    print("[Aura] Overlap decision: foreground=\(overlap.ownerName) covered=\(overlap.covered) NO CAPTURE — Screen Recording permission missing, pill will not hide")
+                    print("[Aura] Overlap decision: foreground=\(overlap.ownerName) covered=\(overlap.covered) element=window-only/none (no content under pill)")
                 }
             }
         }
@@ -813,12 +815,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if !pillHiddenForOverlap || abs(window.frame.height - 6) > 0.5 {
                 pillHiddenForOverlap = true
                 islandView.isOverlapHidden = true
-                print("[Aura] Overlap hide: foreground=\(overlap.ownerName) window=\(String(describing: overlap.windowFrame)) pill=\(normalFrame) windowNow=\(window.frame)")
-                if let varied = overlap.variedPixels {
-                    print("[Aura] Overlap pixels: varied=\(varied) (hide at >= 20)")
-                } else {
-                    print("[Aura] Overlap pixels: no capture — Screen Recording permission missing? Pill will NOT hide until Aura is allowed in System Settings > Privacy & Security > Screen Recording")
-                }
+                print("[Aura] Overlap hide: foreground=\(overlap.ownerName) window=\(String(describing: overlap.windowFrame)) pill=\(normalFrame) windowNow=\(window.frame) element=\(overlap.elementRole ?? "-") title=\(overlap.elementTitle ?? "")")
                 animator.cancel()
                 window.setFrame(NSRect(x: window.frame.midX - size.width / 2,
                                        y: IslandWindow.topY(forHeight: 6, on: screen),
