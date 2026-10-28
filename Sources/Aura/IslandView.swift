@@ -1841,7 +1841,12 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     /// pages; the lyrics page has no header at all — no
     /// clock, no waveform. No battery icon here — the reference card
     /// has none; the icon lives in the closed state.
-    private func drawCardHeader(width: CGFloat = 640) {
+    /// showWaveform defaults to true (music, pomodoro, tray,
+    /// sources keep it). Tool sections (Remove BG, Convert) pass
+    /// false: a decorative audio waveform does not belong on a
+    /// non-audio tool, and on Remove BG it would sit behind the
+    /// model pill at the top-right.
+    private func drawCardHeader(width: CGFloat = 640, showWaveform: Bool = true) {
         let dateStr = Self.headerDateFormatter.string(from: Date())
         let dateFont = NSFont.systemFont(ofSize: 13, weight: .medium)
         let dateWidth = (dateStr as NSString).size(withAttributes: [.font: dateFont]).width
@@ -1850,7 +1855,9 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         NSColor.systemGreen.setFill()
         NSBezierPath(ovalIn: NSRect(x: groupX, y: 17, width: 8, height: 8)).fill()
         drawText(dateStr, font: dateFont, color: .white, at: NSPoint(x: groupX + 16, y: 14))
-        drawWaveform(in: NSRect(x: width - 68, y: 14, width: 48, height: 16))
+        if showWaveform {
+            drawWaveform(in: NSRect(x: width - 68, y: 14, width: 48, height: 16))
+        }
     }
 
     /// Music card, modelled on Nusa's music card: header, artwork,
@@ -3057,7 +3064,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     }
 
     private func drawRemoveBg() {
-        drawCardHeader(width: 640)
+        drawCardHeader(width: 640, showWaveform: false)
         drawText("Remove BG", font: NSFont.boldSystemFont(ofSize: 20), color: .white,
                  at: NSPoint(x: 28, y: 10))
         let modelPill = removeBgModelPillRect()
@@ -3526,7 +3533,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     }
 
     private func drawConvert() {
-        drawCardHeader(width: 640)
+        drawCardHeader(width: 640, showWaveform: false)
         drawText("Convert", font: NSFont.boldSystemFont(ofSize: 20), color: .white,
                  at: NSPoint(x: 28, y: 10))
         // Tool pills: active = solid white + black text (Save
