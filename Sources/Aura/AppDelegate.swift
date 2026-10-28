@@ -36,6 +36,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pollTimer: Timer?
     private var lyricTimer: Timer?
     private var eyeTimer: Timer?
+    private var nextEyeBlink = Date(timeIntervalSinceNow: 3)
+    private var eyeBlinkUntil = Date.distantPast
     private var currentTrackKey: String?
     private var lastMediaLog: String?
     private var lastTabLog: String?
@@ -221,8 +223,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let old = self.islandView.eyeLook
             let next = CGPoint(x: old.x + (targetX - old.x) * 0.25,
                                y: old.y + (targetY - old.y) * 0.25)
-            guard abs(next.x - old.x) > 0.005 || abs(next.y - old.y) > 0.005 else { return }
+            // Blink: every 2.5-5s, closed for 0.2s (two 0.1s ticks).
+            let now = Date()
+            if now >= self.nextEyeBlink {
+                self.eyeBlinkUntil = now.addingTimeInterval(0.2)
+                self.nextEyeBlink = now.addingTimeInterval(Double.random(in: 2.5...5.0))
+            }
+            let closed = now < self.eyeBlinkUntil
+            guard abs(next.x - old.x) > 0.005 || abs(next.y - old.y) > 0.005
+                    || closed != self.islandView.eyesClosed else { return }
             self.islandView.eyeLook = next
+            self.islandView.eyesClosed = closed
             self.islandView.needsDisplay = true
         }
         if let eyeTimer { RunLoop.main.add(eyeTimer, forMode: .common) }
