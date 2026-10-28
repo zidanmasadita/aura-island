@@ -35,6 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let lyrics = LyricsClient()
     private var pollTimer: Timer?
     private var lyricTimer: Timer?
+    private var eyeTimer: Timer?
     private var currentTrackKey: String?
     private var lastMediaLog: String?
     private var lastTabLog: String?
@@ -200,6 +201,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.refreshLyricLine()
         }
         if let lyricTimer { RunLoop.main.add(lyricTimer, forMode: .common) }
+        // Idle-eyes cursor tracking: 0.1s, global mouse location,
+        // only while the pill is zen (the eyes are only drawn
+        // there). The look is smoothed toward the cursor direction
+        // so pupils glide instead of snapping, and the view only
+        // redraws when the look actually moved. Direction is
+        // normalized over 300px horizontal / 200px vertical from
+        // the pill center, so the pupils saturate at the edge of
+        // their travel well before the cursor is far away. Screen
+        // coords grow upward, view coords grow downward, so the
+        // vertical sign flips: cursor below the pill = look down.
+        eyeTimer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
+            guard let self, self.islandView.state == .zen,
+                  let window = self.islandView.window else { return }
+            let center = CGPoint(x: window.frame.midX, y: window.frame.midY)
+            let mouse = NSEvent.mouseLocation
+            let targetX = max(-1, min(1, (mouse.x - center.x) / 300))
+            let targetY = max(-1, min(1, (center.y - mouse.y) / 200))
+            let old = self.islandView.eyeLook
+            let next = CGPoint(x: old.x + (targetX - old.x) * 0.25,
+                               y: old.y + (targetY - old.y) * 0.25)
+            guard abs(next.x - old.x) > 0.005 || abs(next.y - old.y) > 0.005 else { return }
+            self.islandView.eyeLook = next
+            self.islandView.needsDisplay = true
+        }
+        if let eyeTimer { RunLoop.main.add(eyeTimer, forMode: .common) }
         // LAN sharing: discover peers, receive shares, announce us.
         // Started once at launch so shares can arrive anytime, not
         // just while the tray is open.

@@ -1271,12 +1271,33 @@ final class IslandView: NSView, NSDraggingSource {
 
     // MARK: - Shared pieces
 
-    /// Two white eyes, the idle face from Nusa's "Istirahat" state.
+    /// Cursor-tracking look for the idle eyes: -1...1 in each axis
+    /// (view coords: +x right, +y down, because the view is flipped).
+    /// Updated by AppDelegate's eye timer from NSEvent.mouseLocation;
+    /// smoothed there, so drawEyes just places the pupils.
+    var eyeLook = CGPoint.zero
+
+    /// Two white eyes, the idle face from Nusa's "Istirahat" state,
+    /// with black pupils that track the cursor. The white ovals stay
+    /// fixed (11x14 at x 51/78, y 9); only the 6px pupils move, at
+    /// most 2px horizontally and 3px vertically from center, so a
+    /// pupil never leaves its white. The view is flipped, so a
+    /// positive eyeLook.y (cursor below the pill) moves pupils down.
     private func drawEyes() {
         NSColor.white.setFill()
         for x in [51.0, 78.0] {
             let eye = NSBezierPath(ovalIn: NSRect(x: x, y: 9, width: 11, height: 14))
             eye.fill()
+        }
+        NSColor.black.setFill()
+        for x in [51.0, 78.0] {
+            let center = CGPoint(x: x + 5.5, y: 9 + 7)
+            let pupilCenter = CGPoint(x: center.x + eyeLook.x * 2,
+                                      y: center.y + eyeLook.y * 3)
+            let pupil = NSBezierPath(ovalIn: NSRect(x: pupilCenter.x - 3,
+                                                   y: pupilCenter.y - 3,
+                                                   width: 6, height: 6))
+            pupil.fill()
         }
     }
 
