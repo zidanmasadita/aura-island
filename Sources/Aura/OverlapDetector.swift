@@ -8,8 +8,10 @@ import ApplicationServices
 /// - Nusa only looks at the FOREGROUND window (WinEventHook on
 ///   foreground change + move/size end), ignoring its own window,
 ///   invisible/minimized windows, and system windows
-///   (taskbar/desktop classes). Aura does the same: only the
-///   frontmost app's windows count, not any background window.
+///   (taskbar/desktop classes). Aura instead checks any window on
+///   the pill's screen, because the pill can sit on monitor 1
+///   while the active app is on monitor 2 — the tree search below
+///   is what identifies the element, regardless of frontmost.
 /// - Nusa then checks whether that window overlaps the notch area,
 ///   and samples the pixels underneath, hiding only when they vary.
 ///   Aura does NOT copy the pixel step: on macOS that needs Screen
@@ -33,8 +35,11 @@ import ApplicationServices
 /// the pill — any window on the pill's screen, not just the
 /// frontmost app's, because the pill can sit on monitor 1 while
 /// the active app is on monitor 2):
-/// - Sample 5 points across the pill's width at its centre height.
-/// - Hide ONLY when a point lands on a specific element: a tab
+/// - Search the underlying app's accessibility tree for an
+///   element whose frame intersects the pill (system-wide hit-
+///   testing cannot work: Aura's own pill is topmost at those
+///   points, so it would always win).
+/// - Hide ONLY when such an element is a specific element: a tab
 ///   button, a search button/field, text, a link, an image, a
 ///   cell, and so on (whitelist below). Containers do NOT count:
 ///   AXScrollArea, AXWebArea, AXGroup, AXToolbar, AXWindow, and
@@ -77,6 +82,16 @@ enum OverlapDetector {
     /// areas, groups, toolbars, split groups, windows — is a
     /// container or background, and must NOT hide the pill on
     /// its own.
+    /// Height of the primary display (frame origin (0,0)) in
+    /// AppKit points. Quartz coordinates are relative to the
+    /// primary display's top-left, so this — not NSScreen.main,
+    /// which follows the key window across monitors — is the
+    /// correct flip constant for every screen.
+    static var primaryHeight: CGFloat {
+        NSScreen.screens.first(where: { $0.frame.origin == .zero })?.frame.height
+            ?? NSScreen.main?.frame.height ?? 0
+    }
+
     static let contentRoles: Set<String> = [
         "AXButton", "AXRadioButton", "AXCheckBox", "AXPopUpButton",
         "AXMenuButton", "AXStaticText", "AXTextField", "AXTextArea",
@@ -96,9 +111,11 @@ enum OverlapDetector {
         var sizeValue: AnyObject?
         guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &posValue) == .success,
               AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeValue) == .success,
-              let posAX = posValue as? AXValue, let sizeAX = sizeValue as? AXValue else {
+              let posValue, let sizeValue else {
             return nil
         }
+        let posAX = posValue as! AXValue
+        let sizeAX = sizeValue as! AXValue
         var point = CGPoint.zero
         var size = CGSize.zero
         guard AXValueGetValue(posAX, .cgPoint, &point),
