@@ -850,12 +850,11 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             } else if removeBgPickRect().contains(point) {
                 pickRemoveBgImage()
                 return
-            } else if removeBgOriginal != nil, removeBgResult != nil, removeBgCompareRect().contains(point) {
-                // Clicking the comparison jumps the divider here
-                // and starts a drag, like a before/after slider.
-                removeBgDividerDragging = true
-                updateRemoveBgDivider(from: point)
-                needsDisplay = true
+            } else if removeBgResult != nil, removeBgResultRect().contains(point) {
+                // Pressing the result arms a drag-out (tray-tile
+                // pattern); a plain tap without a drag does nothing
+                // and leaves the card open.
+                removeBgPendingDragPoint = point
                 return
             }
         }
@@ -873,9 +872,34 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     /// only tray tiles drag — other sections are untouched). The
     /// file stays in the tray (copy, not move).
     override func mouseDragged(with event: NSEvent) {
-        if removeBgDividerDragging {
+        if let startPoint = removeBgPendingDragPoint {
             let point = convert(event.locationInWindow, from: nil)
-            updateRemoveBgDivider(from: point)
+            guard abs(point.x - startPoint.x) > 3 || abs(point.y - startPoint.y) > 3 else { return }
+            removeBgPendingDragPoint = nil
+            guard let result = removeBgResult, removeBgResultData != nil else { return }
+            guard let fileURL = ensureRemoveBgFile() else {
+                removeBgStatusText = "Could not save the result to drag it."
+                removeBgStatusIsError = true
+                needsDisplay = true
+                return
+            }
+            // Drag image: the result itself, fitted to 96pt (the
+            // tray uses a 48pt icon; a photo reads better larger,
+            // and 96 still fits under the cursor without covering
+            // the drop target).
+            let thumbSize = removeBgFitRect(for: result, in: NSRect(x: 0, y: 0, width: 96, height: 96)).size
+            let thumb = NSImage(size: thumbSize)
+            thumb.lockFocus()
+            result.draw(in: NSRect(origin: .zero, size: thumbSize), from: .zero,
+                        operation: .sourceOver, fraction: 1.0)
+            thumb.unlockFocus()
+            isDraggingOut = true
+            let item = NSDraggingItem(pasteboardWriter: AuraTrayPasteboardWriter(url: fileURL))
+            let dragFrame = NSRect(x: point.x - thumbSize.width / 2,
+                                   y: point.y - thumbSize.height / 2,
+                                   width: thumbSize.width, height: thumbSize.height)
+            item.setDraggingFrame(dragFrame, contents: thumb)
+            beginDraggingSession(with: [item], event: event, source: self)
             return
         }
         guard let pending = trayPendingDrag else { return }
@@ -902,9 +926,11 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     }
 
     override func mouseUp(with event: NSEvent) {
-        if removeBgDividerDragging {
-            removeBgDividerDragging = false
-            needsDisplay = true
+        if removeBgPendingDragPoint != nil {
+            // Tap on the result without a drag: nothing, and the
+            // card stays open (unlike an unhandled click, which
+            // collapses it — the press already returned early).
+            removeBgPendingDragPoint = nil
         }
         // A press on a grid tile without a drag is a tap = share.
         // (After a real drag, pending is already nil — the drag
@@ -2794,11 +2820,11 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     /// 640x280, header + title, dots column on the right edge
     /// (content ends at x 600, clear of the dot hit column
     /// W-32..W-10). Left panel = drop/pick + original preview;
-    /// right panel = before/after comparison with a draggable
-    /// divider (original left of it, result right of it). The
-    /// divider default is the middle; the user chose "gas" without
-    /// picking draggable vs fixed, so this build uses the
-    /// draggable slider (the recommendation in the plan).
+    /// right panel = the result alone, on a checkerboard (no
+    /// before/after slider: the user removed it, the result
+    /// panel is drag-out instead). Pressing the result arms a
+    /// drag, like a tray tile; the result file is written once
+    /// to Downloads/Aura and reused for later drags and Save.
     /// Rects follow the tray convention: base coords, used
     /// directly from mouseDown (at rest they equal view coords).
     private var removeBgOriginal: NSImage?
@@ -2806,8 +2832,8 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     private var removeBgResultData: Data?
     private var removeBgProcessing = false
     private var removeBgTask: URLSessionDataTask?
-    private var removeBgDivider: CGFloat = 0.5
-    private var removeBgDividerDragging = false
+    private var removeBgPendingDragPoint: CGPoint?
+    private var removeBgSavedURL: URL?
     private var removeBgDropHighlight = false { didSet { needsDisplay = true } }
     private var removeBgStatusText = "Drop an image, or click to pick one."
     private var removeBgStatusIsError = false
@@ -2818,9 +2844,10 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         NSRect(x: 28, y: 48, width: 180, height: 180)
     }
 
-    /// Right panel: before/after comparison. Ends at x 600 so it
+    /// Right panel: the result alone. Ends at x 600 so it
     /// never overlaps the vertical dot column on the right edge.
-    private func removeBgCompareRect() -> NSRect {
+    /// Also the drag source: pressing it arms a drag-out.
+    private func removeBgResultRect() -> NSRect {
         NSRect(x: 224, y: 48, width: 376, height: 180)
     }
 
@@ -2831,19 +2858,6 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         let font = NSFont.systemFont(ofSize: 14, weight: .medium)
         let width = ("Save" as NSString).size(withAttributes: [.font: font]).width + 24
         return NSRect(x: 600 - width, y: 236, width: width, height: 28)
-    }
-
-    private func removeBgDividerX() -> CGFloat {
-        let compare = removeBgCompareRect()
-        return compare.minX + removeBgDivider * compare.width
-    }
-
-    private func updateRemoveBgDivider(from point: CGPoint) {
-        let compare = removeBgCompareRect()
-        guard compare.width > 0 else { return }
-        let fraction = (point.x - compare.minX) / compare.width
-        removeBgDivider = min(0.95, max(0.05, fraction))
-        needsDisplay = true
     }
 
     /// Aspect-fit rect for an image inside a rect, centered.
@@ -2969,9 +2983,9 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             drawText(label, font: pickerFont, color: .white,
                      at: NSPoint(x: picker.midX - pickerWidth / 2, y: picker.minY + 5))
         }
-        // Right panel: checkerboard + before/after, clipped to a
-        // rounded rect so neither image spills past the corners.
-        let compare = removeBgCompareRect()
+        // Right panel: result alone on a checkerboard, clipped
+        // to a rounded rect so it never spills past the corners.
+        let compare = removeBgResultRect()
         let comparePath = NSBezierPath(roundedRect: compare, xRadius: 12, yRadius: 12)
         NSGraphicsContext.saveGraphicsState()
         comparePath.addClip()
@@ -2991,27 +3005,11 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             row += 1
             y += square
         }
-        if let original = removeBgOriginal {
-            let fit = removeBgFitRect(for: original, in: compare.insetBy(dx: 8, dy: 8))
-            // Original, left of the divider only — even while
-            // processing, so the right side stays visibly "result
-            // comes here" (checker) instead of a second original.
-            NSGraphicsContext.saveGraphicsState()
-            NSBezierPath(rect: NSRect(x: compare.minX, y: compare.minY,
-                                      width: removeBgDividerX() - compare.minX,
-                                      height: compare.height)).addClip()
-            drawImageUpright(original, in: fit)
-            NSGraphicsContext.restoreGraphicsState()
-            if let result = removeBgResult {
-                NSGraphicsContext.saveGraphicsState()
-                NSBezierPath(rect: NSRect(x: removeBgDividerX(), y: compare.minY,
-                                          width: compare.maxX - removeBgDividerX(),
-                                          height: compare.height)).addClip()
-                drawImageUpright(result, in: fit)
-                NSGraphicsContext.restoreGraphicsState()
-            }
+        if let result = removeBgResult {
+            let fit = removeBgFitRect(for: result, in: compare.insetBy(dx: 8, dy: 8))
+            drawImageUpright(result, in: fit)
         } else {
-            let placeholder = "Drop an image to compare"
+            let placeholder = "Result appears here"
             let font = NSFont.systemFont(ofSize: 13)
             let width = (placeholder as NSString).size(withAttributes: [.font: font]).width
             drawText(placeholder, font: font, color: NSColor.white.withAlphaComponent(0.5),
@@ -3021,23 +3019,6 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         NSColor.white.withAlphaComponent(0.3).setStroke()
         comparePath.lineWidth = 1
         comparePath.stroke()
-        if removeBgOriginal != nil, removeBgResult != nil {
-            // Divider line + handle, on top of both images.
-            let dividerX = removeBgDividerX()
-            let line = NSBezierPath()
-            line.move(to: NSPoint(x: dividerX, y: compare.minY))
-            line.line(to: NSPoint(x: dividerX, y: compare.maxY))
-            line.lineWidth = 2
-            NSColor.white.withAlphaComponent(0.9).setStroke()
-            line.stroke()
-            let handle = NSBezierPath(ovalIn: NSRect(x: dividerX - 11, y: compare.midY - 11,
-                                                     width: 22, height: 22))
-            NSColor.white.setFill()
-            handle.fill()
-            NSColor.black.withAlphaComponent(0.3).setStroke()
-            handle.lineWidth = 1
-            handle.stroke()
-        }
         // Status row, bottom-left. Errors read red; everything else
         // is dim white, like the tray's dim labels.
         let statusFont = NSFont.systemFont(ofSize: 13)
@@ -3099,7 +3080,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         removeBgProcessing = true
         removeBgResult = nil
         removeBgResultData = nil
-        removeBgDivider = 0.5
+        removeBgSavedURL = nil
         removeBgStatusText = "Processing…"
         removeBgStatusIsError = false
         needsDisplay = true
@@ -3135,7 +3116,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
                     if let resultImage = NSImage(data: pngData) {
                         self.removeBgResult = resultImage
                         self.removeBgResultData = pngData
-                        self.removeBgStatusText = "Done — drag the divider to compare."
+                        self.removeBgStatusText = "Done — drag the result out to use it."
                         self.removeBgStatusIsError = false
                     } else {
                         self.removeBgStatusText = "Server returned an image Aura could not read."
@@ -3157,23 +3138,37 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         removeBgTask = task
     }
 
+    /// The result's file on disk, written once and reused: Save
+    /// and drag-out share it, so dragging the same result three
+    /// times does not create three numbered files, and Save after
+    /// a drag does not duplicate it. Reset when a new image
+    /// starts (see startRemoveBg), and re-written if the file was
+    /// deleted externally.
+    private func ensureRemoveBgFile() -> URL? {
+        guard let data = removeBgResultData else { return nil }
+        if let saved = removeBgSavedURL, FileManager.default.fileExists(atPath: saved.path) {
+            return saved
+        }
+        guard let url = RimufuRemoveBgClient.uniqueDownloadURL(fileName: "Remove BG.png") else { return nil }
+        do {
+            try data.write(to: url, options: .atomic)
+            removeBgSavedURL = url
+            return url
+        } catch {
+            return nil
+        }
+    }
+
     private func saveRemoveBgResult() {
-        guard let data = removeBgResultData else { return }
-        guard let url = RimufuRemoveBgClient.uniqueDownloadURL(fileName: "Remove BG.png") else {
-            removeBgStatusText = "Could not find the Downloads folder."
+        guard let url = ensureRemoveBgFile() else {
+            removeBgStatusText = "Could not save the result."
             removeBgStatusIsError = true
             needsDisplay = true
             return
         }
-        do {
-            try data.write(to: url, options: .atomic)
-            let nameFont = NSFont.systemFont(ofSize: 13)
-            removeBgStatusText = "Saved: \(truncated(url.lastPathComponent, toWidth: 400, font: nameFont))"
-            removeBgStatusIsError = false
-        } catch {
-            removeBgStatusText = "Could not save: \(error.localizedDescription)"
-            removeBgStatusIsError = true
-        }
+        let nameFont = NSFont.systemFont(ofSize: 13)
+        removeBgStatusText = "Saved: \(truncated(url.lastPathComponent, toWidth: 400, font: nameFont))"
+        removeBgStatusIsError = false
         needsDisplay = true
     }
 
