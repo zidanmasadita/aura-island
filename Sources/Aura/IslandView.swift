@@ -1135,12 +1135,16 @@ final class IslandView: NSView, NSDraggingSource {
         ctx.addPath(path)
         ctx.setFillColor(NSColor.black.withAlphaComponent(0.98).cgColor)
         ctx.fillPath()
-        // Artwork gradient, lyrics card only: the pill background
+        // Artwork gradient, lyrics only: the pill background
         // follows the cover's dominant color (black at the top down
         // to the darkened dominant color at the bottom) when the
-        // lyrics page is the active card. Every other card stays
-        // plain black (0.98), including the tray card.
-        if state == .expanded, currentPage == .lyrics, let bottomColor = gradientBottomColor() {
+        // lyrics page is the active card AND when the inactive pill
+        // is in lyrics mode (closed from the lyrics page, showing the
+        // lyric line). Every other card and pill stays plain black
+        // (0.98), including the tray card and the music card.
+        let lyricsGradientActive = (state == .expanded && currentPage == .lyrics)
+            || (state != .expanded && lyricsMode)
+        if lyricsGradientActive, let bottomColor = gradientBottomColor() {
             ctx.saveGState()
             ctx.addPath(path)
             ctx.clip()
