@@ -762,12 +762,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// "no overlap" and restore in a flicker loop. Hide when the
     /// frontmost app's window covers >25% of the normal pill;
     /// restore only after 2 consecutive ticks with no overlap.
-    /// Hiding shrinks the window to a 6px strip at the top
-    /// (animator places it via topY, just below the menu bar),
-    /// instead of sliding the full pill up: the menu bar is
-    /// TRANSLUCENT, so a full pill slid under it stays visible
-    /// through it — that is why the slide-up version looked like
-    /// it never hid at all. A 6px strip below the menu bar is a
+    /// Hiding shrinks the window to a 6px strip at the top,
+    /// via the same IslandAnimator as every other pill resize
+    /// (0.35s easeOutCubic, top edge anchored at the menu bar, so
+    /// the bottom edge slides up and down smoothly with no jump).
+    /// A direct setFrame was used briefly as a diagnostic step and
+    /// is what made hide/restore look abrupt (patah); the animator
+    /// interpolates from the current frame, so a hover or alert
+    /// mid-animation also transitions smoothly instead of jumping.
+    /// Shrinking (not sliding the full pill up) matters because
+    /// the menu bar is TRANSLUCENT: a full pill slid under it stays
+    /// visible through it. A 6px strip below the menu bar is a
     /// true tip, and it still receives hover, so hovering it runs
     /// the normal hover path (expanded card, or compact when
     /// idle); leaving the pill lets the next tick hide it again
@@ -783,11 +788,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 pillHiddenForOverlap = false
                 overlapClearTicks = 0
                 islandView.isOverlapHidden = false
-                animator.cancel()
-                let s = windowSize(for: islandView.state)
-                window.setFrame(NSRect(x: window.frame.midX - s.width / 2,
-                                       y: IslandWindow.topY(forHeight: s.height, on: screen),
-                                       width: s.width, height: s.height), display: true)
+                animator.animate(to: windowSize(for: islandView.state))
             }
             return
         }
@@ -816,11 +817,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 pillHiddenForOverlap = true
                 islandView.isOverlapHidden = true
                 print("[Aura] Overlap hide: foreground=\(overlap.ownerName) window=\(String(describing: overlap.windowFrame)) pill=\(normalFrame) windowNow=\(window.frame) element=\(overlap.elementRole ?? "-") title=\(overlap.elementTitle ?? "")")
-                animator.cancel()
-                window.setFrame(NSRect(x: window.frame.midX - size.width / 2,
-                                       y: IslandWindow.topY(forHeight: 6, on: screen),
-                                       width: size.width, height: 6), display: true)
-                islandView.needsDisplay = true
+                animator.animate(to: NSSize(width: size.width, height: 6))
             }
         } else if pillHiddenForOverlap {
             overlapClearTicks += 1
@@ -829,11 +826,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 overlapClearTicks = 0
                 islandView.isOverlapHidden = false
                 print("[Aura] Overlap restore: foreground=\(overlap.ownerName) no longer covers pill")
-                animator.cancel()
-                let s = windowSize(for: islandView.state)
-                window.setFrame(NSRect(x: window.frame.midX - s.width / 2,
-                                       y: IslandWindow.topY(forHeight: s.height, on: screen),
-                                       width: s.width, height: s.height), display: true)
+                animator.animate(to: windowSize(for: islandView.state))
             }
         }
     }
