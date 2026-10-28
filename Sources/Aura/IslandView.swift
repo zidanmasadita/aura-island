@@ -874,6 +874,9 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
                 convertActiveTool = picked
                 needsDisplay = true
                 return
+            } else if !convertTrayFiles(for: tool).isEmpty, convertFromTrayPillRect().contains(point) {
+                showConvertFromTrayMenu(at: point)
+                return
             } else if convertLeftRect().contains(point) {
                 pickConvertFile()
                 return
@@ -3360,8 +3363,8 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         return ext == "pdf"
     }
 
-    /// Left panel: drop zone and pick target (format pill for
-    /// photo sits inside it, see convertFormatPillRect).
+    /// Left panel: drop zone and pick target (the From Tray pill
+    /// sits inside it, see convertFromTrayPillRect).
     private func convertLeftRect() -> NSRect {
         NSRect(x: 28, y: 72, width: 180, height: 156)
     }
@@ -3387,25 +3390,31 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         return out
     }
 
-    /// Format pill, bottom of the left panel, photo tool only
-    /// (other tools have no format choice). It sits inside the
-    /// pick rect, so mouseDown checks it BEFORE the general
-    /// left-panel pick — same pattern as the From Tray pill.
+    /// Format pill, in the tool row after the tool pills, photo
+    /// tool only (it is a setting, not a tool, so it uses the
+    /// translucent From Tray pill style, not the solid active
+    /// tool style). It moved here from the left-panel footer so
+    /// the footer can hold the From Tray pill for every tool
+    /// without crowding the photo preview.
     private func convertFormatPillRect() -> NSRect {
-        let left = convertLeftRect()
-        return NSRect(x: left.minX + 8, y: left.maxY - 36, width: left.width - 16, height: 28)
+        let last = convertToolPillRects().last?.rect ?? NSRect(x: 28, y: 36, width: 0, height: 28)
+        let label = "Format: \(convertPhotoFormat.displayName) \u{25be}"
+        let font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        let width = (label as NSString).size(withAttributes: [.font: font]).width + 24
+        return NSRect(x: last.maxX + 16, y: 36, width: width, height: 28)
     }
 
     /// Content area inside the left panel: shrunk above the
-    /// format pill for photo, full inset for the PDF tools
-    /// (which have no footer pill).
+    /// From Tray footer pill only when that pill is actually
+    /// drawn (tray has a usable file for the active tool);
+    /// otherwise the full inset is used.
     private func convertLeftContentRect() -> NSRect {
         let left = convertLeftRect()
-        if convertActiveTool == .photo {
-            return NSRect(x: left.minX + 8, y: left.minY + 8,
-                          width: left.width - 16, height: left.height - 16 - 36)
+        if convertTrayFiles(for: convertActiveTool).isEmpty {
+            return left.insetBy(dx: 8, dy: 8)
         }
-        return left.insetBy(dx: 8, dy: 8)
+        return NSRect(x: left.minX + 8, y: left.minY + 8,
+                      width: left.width - 16, height: left.height - 16 - 36)
     }
 
     private func drawConvert() {
@@ -3432,6 +3441,18 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             drawText(tool.displayName, font: font, color: active ? .black : .white,
                      at: NSPoint(x: rect.midX - width / 2, y: rect.minY + 5))
         }
+        if convertActiveTool == .photo {
+            let format = convertFormatPillRect()
+            NSColor.white.withAlphaComponent(0.15).setFill()
+            NSBezierPath(roundedRect: format, xRadius: 14, yRadius: 14).fill()
+            NSColor.white.withAlphaComponent(0.3).setStroke()
+            NSBezierPath(roundedRect: format, xRadius: 14, yRadius: 14).stroke()
+            let label = "Format: \(convertPhotoFormat.displayName) \u{25be}"
+            let formatFont = NSFont.systemFont(ofSize: 13, weight: .medium)
+            let formatWidth = (label as NSString).size(withAttributes: [.font: formatFont]).width
+            drawText(label, font: formatFont, color: .white,
+                     at: NSPoint(x: format.midX - formatWidth / 2, y: format.minY + 5))
+        }
         let state = convertState(for: convertActiveTool)
         // Left panel: dashed drop zone (tray drop-zone style).
         let left = convertLeftRect()
@@ -3457,18 +3478,6 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
                 drawText(line2, font: font2, color: NSColor.white.withAlphaComponent(0.5),
                          at: NSPoint(x: content.midX - w2 / 2, y: content.midY + 10))
             }
-            // Format pill, always visible for photo so the format
-            // can be chosen before picking (default WebP).
-            let format = convertFormatPillRect()
-            NSColor.white.withAlphaComponent(0.15).setFill()
-            NSBezierPath(roundedRect: format, xRadius: 14, yRadius: 14).fill()
-            NSColor.white.withAlphaComponent(0.3).setStroke()
-            NSBezierPath(roundedRect: format, xRadius: 14, yRadius: 14).stroke()
-            let label = "Format: \(convertPhotoFormat.displayName) \u{25be}"
-            let formatFont = NSFont.systemFont(ofSize: 13, weight: .medium)
-            let formatWidth = (label as NSString).size(withAttributes: [.font: formatFont]).width
-            drawText(label, font: formatFont, color: .white,
-                     at: NSPoint(x: format.midX - formatWidth / 2, y: format.minY + 5))
         } else {
             if let name = state.inputName {
                 let nameFont = NSFont.systemFont(ofSize: 13)
@@ -3493,6 +3502,18 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
                 drawText(line2, font: font2, color: NSColor.white.withAlphaComponent(0.5),
                          at: NSPoint(x: content.midX - w2 / 2, y: content.midY + 10))
             }
+        }
+        if !convertTrayFiles(for: convertActiveTool).isEmpty {
+            let tray = convertFromTrayPillRect()
+            NSColor.white.withAlphaComponent(0.15).setFill()
+            NSBezierPath(roundedRect: tray, xRadius: 14, yRadius: 14).fill()
+            NSColor.white.withAlphaComponent(0.3).setStroke()
+            NSBezierPath(roundedRect: tray, xRadius: 14, yRadius: 14).stroke()
+            let label = "From Tray \u{25be}"
+            let trayFont = NSFont.systemFont(ofSize: 13, weight: .medium)
+            let trayWidth = (label as NSString).size(withAttributes: [.font: trayFont]).width
+            drawText(label, font: trayFont, color: .white,
+                     at: NSPoint(x: tray.midX - trayWidth / 2, y: tray.minY + 5))
         }
         // Right panel: result. Photo gets a checkerboard (image
         // result, like Remove BG); document tools get plain info
@@ -3624,6 +3645,41 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             drawText(label, font: font, color: NSColor.white.withAlphaComponent(0.9),
                      at: NSPoint(x: zone.midX - width / 2, y: zone.midY - 7))
         }
+    }
+
+    private func convertFromTrayPillRect() -> NSRect {
+        let left = convertLeftRect()
+        return NSRect(x: left.minX + 8, y: left.maxY - 36, width: left.width - 16, height: 28)
+    }
+
+    /// Tray files usable for a tool (same filter as the drop
+    /// filter, plus the file still existing on disk). One file
+    /// only, like Remove BG's picker — merge (Fase 2) will use a
+    /// different, multi-add picker.
+    private func convertTrayFiles(for tool: ConvertTool) -> [TrayFile] {
+        trayFiles.filter { file in
+            !file.isDirectory && trayFileExists(file) && convertAccepts(url: file.url, for: tool)
+        }
+    }
+
+    private func showConvertFromTrayMenu(at point: CGPoint) {
+        let files = convertTrayFiles(for: convertActiveTool)
+        guard !files.isEmpty else { return }
+        let menu = NSMenu()
+        for file in files {
+            let nameFont = NSFont.systemFont(ofSize: 13)
+            let item = NSMenuItem(title: truncated(file.name, toWidth: 300, font: nameFont),
+                                  action: #selector(pickConvertFromTrayMenuFile(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = file
+            menu.addItem(item)
+        }
+        menu.popUp(positioning: nil, at: point, in: self)
+    }
+
+    @objc private func pickConvertFromTrayMenuFile(_ sender: NSMenuItem) {
+        guard let file = sender.representedObject as? TrayFile else { return }
+        startConvert(with: file.url, tool: convertActiveTool)
     }
 
     private func pickConvertFile() {
