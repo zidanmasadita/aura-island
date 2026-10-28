@@ -37,6 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var eyeTimer: Timer?
     private var pillHiddenForOverlap = false
     private var overlapClearTicks = 0
+    private var lastOverlapDecision = ""
     private var nextEyeBlink = Date(timeIntervalSinceNow: 3)
     private var eyeBlinkUntil = Date.distantPast
     private var currentTrackKey: String?
@@ -796,6 +797,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let normalFrame = NSRect(x: window.frame.midX - size.width / 2,
                                  y: normalY, width: size.width, height: size.height)
         let overlap = OverlapDetector.check(pillFrame: normalFrame)
+        if overlap.windowFrame != nil {
+            let decision = "\(overlap.ownerName)|covered=\(overlap.covered)|varied=\(overlap.variedPixels == nil ? "nocap" : "cap")"
+            if decision != lastOverlapDecision {
+                lastOverlapDecision = decision
+                if let varied = overlap.variedPixels {
+                    print("[Aura] Overlap decision: foreground=\(overlap.ownerName) covered=\(overlap.covered) varied=\(varied) (hide at >= 20)")
+                } else {
+                    print("[Aura] Overlap decision: foreground=\(overlap.ownerName) covered=\(overlap.covered) NO CAPTURE — Screen Recording permission missing, pill will not hide")
+                }
+            }
+        }
         if overlap.covered {
             overlapClearTicks = 0
             if !pillHiddenForOverlap || abs(window.frame.height - 6) > 0.5 {
