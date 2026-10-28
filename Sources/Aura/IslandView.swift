@@ -845,6 +845,9 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             } else if removeBgResultData != nil, removeBgSaveRect().contains(point) {
                 saveRemoveBgResult()
                 return
+            } else if removeBgModelPillRect().contains(point) {
+                showRemoveBgModelMenu(at: point)
+                return
             } else if removeBgTrayPickerVisible(), removeBgTrayPickerRect().contains(point) {
                 showRemoveBgTrayMenu(at: point)
                 return
@@ -2945,6 +2948,10 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     private var removeBgDropHighlight = false { didSet { needsDisplay = true } }
     private var removeBgStatusText = "Drop an image, or click to pick one."
     private var removeBgStatusIsError = false
+    private var removeBgModel: RemoveBgModel = .fast
+    private var removeBgInputImage: NSImage?
+    private var removeBgInputData: Data?
+    private var removeBgInputName: String?
 
     /// Left panel: drop zone and pick target, also shows the
     /// original once one is loaded (clicking it re-picks).
@@ -3053,6 +3060,16 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         drawCardHeader(width: 640)
         drawText("Remove BG", font: NSFont.boldSystemFont(ofSize: 20), color: .white,
                  at: NSPoint(x: 28, y: 10))
+        let modelPill = removeBgModelPillRect()
+        NSColor.white.withAlphaComponent(0.15).setFill()
+        NSBezierPath(roundedRect: modelPill, xRadius: 14, yRadius: 14).fill()
+        NSColor.white.withAlphaComponent(0.3).setStroke()
+        NSBezierPath(roundedRect: modelPill, xRadius: 14, yRadius: 14).stroke()
+        let modelLabel = "Model: \(removeBgModel.displayName) \u{25be}"
+        let modelFont = NSFont.systemFont(ofSize: 13, weight: .medium)
+        let modelWidth = (modelLabel as NSString).size(withAttributes: [.font: modelFont]).width
+        drawText(modelLabel, font: modelFont, color: .white,
+                 at: NSPoint(x: modelPill.midX - modelWidth / 2, y: modelPill.minY + 5))
         // Left panel: dashed drop zone (tray drop-zone style).
         let left = removeBgPickRect()
         let leftPath = NSBezierPath(roundedRect: left, xRadius: 16, yRadius: 16)
@@ -3179,6 +3196,47 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         startRemoveBg(with: url)
     }
 
+    /// Model pill, top-right of the Remove BG header (ends at
+    /// x 600, clear of the dot column at x 608+; panels start
+    /// at y 48, so the 28-tall pill at y 10 fits with room).
+    /// Style is the translucent setting-pill style (like Convert's
+    /// format pill), not a tool pill.
+    private func removeBgModelPillRect() -> NSRect {
+        let label = "Model: \(removeBgModel.displayName) \u{25be}"
+        let font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        let width = (label as NSString).size(withAttributes: [.font: font]).width + 24
+        return NSRect(x: 600 - width, y: 10, width: width, height: 28)
+    }
+
+    private func showRemoveBgModelMenu(at point: CGPoint) {
+        let menu = NSMenu()
+        for model in RemoveBgModel.allCases {
+            let item = NSMenuItem(title: model.displayName,
+                                  action: #selector(pickRemoveBgModel(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = model.apiValue
+            item.state = (model == removeBgModel) ? .on : .off
+            menu.addItem(item)
+        }
+        menu.popUp(positioning: nil, at: point, in: self)
+    }
+
+    @objc private func pickRemoveBgModel(_ sender: NSMenuItem) {
+        guard let value = sender.representedObject as? String,
+              let model = RemoveBgModel(rawValue: value) else { return }
+        removeBgModel = model
+        needsDisplay = true
+        // Re-run with the stored input when one exists, so the
+        // user can compare models without re-picking (same as
+        // Convert's format change). Blocked while a run is in
+        // flight — mouseDown already blocks the menu then.
+        guard !removeBgProcessing,
+              let image = removeBgInputImage,
+              let data = removeBgInputData,
+              let name = removeBgInputName else { return }
+        startRemoveBgData(image: image, originalData: data, originalName: name)
+    }
+
     private func startRemoveBg(with url: URL) {
         // A new image cancels the old run, so a stale result can
         // never overwrite the new one (see the Cancelled guard in
@@ -3208,10 +3266,13 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             needsDisplay = true
             return
         }
+        removeBgInputImage = image
+        removeBgInputData = fileData
+        removeBgInputName = url.lastPathComponent
         let prepared = RimufuRemoveBgClient.preparedUploadData(
             image: image, originalData: fileData, originalName: url.lastPathComponent)
         let task = RimufuRemoveBgClient.removeBackground(
-            data: prepared.data, fileName: prepared.fileName, mimeType: prepared.mimeType
+            data: prepared.data, fileName: prepared.fileName, mimeType: prepared.mimeType, model: removeBgModel
         ) { [weak self] result in
             // URLSession calls back off the main thread; every UI
             // touch below must happen on main.
@@ -3234,6 +3295,53 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
                     // Cancelled means a newer image already reset
                     // the status; showing an error here would
                     // overwrite the new run's "Processing…".
+                    if case .uploadFailed(let detail) = error, detail == "Cancelled." {
+                        return
+                    }
+                    self.removeBgStatusText = error.message
+                    self.removeBgStatusIsError = true
+                }
+                self.needsDisplay = true
+            }
+        }
+        removeBgTask = task
+    }
+
+    /// Run Remove BG from already-loaded input (used by model
+    /// changes, which re-run with the stored image instead of
+    /// making the user re-pick it). Completion mirrors
+    /// startRemoveBg(with:) — if that logic changes, update both.
+    private func startRemoveBgData(image: NSImage, originalData: Data, originalName: String) {
+        removeBgTask?.cancel()
+        removeBgTask = nil
+        removeBgProcessing = true
+        removeBgResult = nil
+        removeBgResultData = nil
+        removeBgSavedURL = nil
+        removeBgStatusText = "Processing…"
+        removeBgStatusIsError = false
+        needsDisplay = true
+        let prepared = RimufuRemoveBgClient.preparedUploadData(
+            image: image, originalData: originalData, originalName: originalName)
+        let task = RimufuRemoveBgClient.removeBackground(
+            data: prepared.data, fileName: prepared.fileName, mimeType: prepared.mimeType, model: removeBgModel
+        ) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.removeBgTask = nil
+                self.removeBgProcessing = false
+                switch result {
+                case .success(let pngData):
+                    if let resultImage = NSImage(data: pngData) {
+                        self.removeBgResult = resultImage
+                        self.removeBgResultData = pngData
+                        self.removeBgStatusText = "Done — drag the result out to use it."
+                        self.removeBgStatusIsError = false
+                    } else {
+                        self.removeBgStatusText = "Server returned an image Aura could not read."
+                        self.removeBgStatusIsError = true
+                    }
+                case .failure(let error):
                     if case .uploadFailed(let detail) = error, detail == "Cancelled." {
                         return
                     }

@@ -10,6 +10,27 @@ import AppKit
 /// backend moves, change `baseURL` below and nothing else — the
 /// section, the divider, and Save all go through this one constant.
 /// The API has no auth, so anyone who knows the URL can use it.
+/// Model options for Remove BG, using the web UI's labels
+/// (Quality/Balanced/Fast) with the API values behind them.
+/// Default is Fast (u2netp): the current behavior, and the only
+/// model the 1 GB VPS deploy is known to run (see the comment
+/// on removeBackground).
+enum RemoveBgModel: String, CaseIterable {
+    case quality = "birefnet-general"
+    case balanced = "u2net"
+    case fast = "u2netp"
+
+    var apiValue: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .quality: return "Quality"
+        case .balanced: return "Balanced"
+        case .fast: return "Fast"
+        }
+    }
+}
+
 enum RimufuRemoveBgError: Error {
     case invalidImage
     case uploadFailed(String)
@@ -96,18 +117,21 @@ final class RimufuRemoveBgClient {
         }
     }
 
-    /// POST /api/remove-bg?model=u2netp. The server forces u2netp
-    /// regardless of the parameter (VPS deploy patch), so this
-    /// sends u2netp explicitly to be honest about the quality.
+    /// POST /api/remove-bg?model=<model>. The deployed VPS
+    /// server currently forces u2netp regardless of the parameter
+    /// (deploy-only patch, after u2net OOMed on 1 GB), so on that
+    /// server every model choice still returns a u2netp result
+    /// until the patch is removed — the parameter is sent honestly
+    /// so the picker works as soon as the server allows it.
     /// Completion runs on the URLSession queue, not the main
     /// thread — the caller must hop to main before touching UI.
     /// The returned task can be cancelled when the user picks
     /// another image mid-upload, so a stale result never overwrites
     /// the new one.
     @discardableResult
-    static func removeBackground(data: Data, fileName: String, mimeType: String,
+    static func removeBackground(data: Data, fileName: String, mimeType: String, model: RemoveBgModel,
                                  completion: @escaping (Result<Data, RimufuRemoveBgError>) -> Void) -> URLSessionDataTask? {
-        let urlString = baseURL + "/api/remove-bg?model=u2netp&alpha_matting=false"
+        let urlString = baseURL + "/api/remove-bg?model=\(model.apiValue)&alpha_matting=false"
         guard let url = URL(string: urlString) else {
             completion(.failure(.serverError("Remove BG backend URL is invalid.")))
             return nil
