@@ -8,8 +8,22 @@ swift build -c release
 
 APP="Aura.app"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp ".build/release/Aura" "$APP/Contents/MacOS/Aura"
+cp "Assets/AuraLogo.png" "$APP/Contents/Resources/AuraLogo.png"
+
+# App icon (.icns) from the same logo, via the standard macOS tools.
+ICONSET="$APP/Contents/Resources/Aura.iconset"
+mkdir -p "$ICONSET"
+for size in 16 32 64 128 256 512 1024; do
+    sips -z $size $size "Assets/AuraLogo.png" --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
+    if [ "$size" != "1024" ]; then
+        double=$((size * 2))
+        sips -z $double $double "Assets/AuraLogo.png" --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
+    fi
+done
+iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/Aura.icns"
+rm -rf "$ICONSET"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -28,6 +42,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <string>1.0</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
+    <key>CFBundleIconFile</key>
+    <string>Aura</string>
     <key>LSUIElement</key>
     <true/>
     <key>NSHighResolutionCapable</key>
