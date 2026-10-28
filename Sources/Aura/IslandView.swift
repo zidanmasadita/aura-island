@@ -756,6 +756,13 @@ final class IslandView: NSView, NSDraggingSource {
                             needsDisplay = true
                             return
                         }
+                        if methods.open.contains(point) {
+                            if let file = trayShareFile, trayFileExists(file) {
+                                NSWorkspace.shared.open(file.url)
+                                clearTrayShare()
+                            }
+                            return
+                        }
                     } else if trayShareMethod == .lan {
                         for row in traySharePeerRects() {
                             if row.rect.contains(point) {
@@ -1913,11 +1920,31 @@ final class IslandView: NSView, NSDraggingSource {
     /// Draws a white SF Symbol centered at a point, tinted from the
     /// symbol's alpha (SF Symbols rasterize black by default). Falls
     /// back to a text glyph if the symbol is unavailable.
+    /// Draws an image upright in this flipped view. NSImage
+    /// drawing in a flipped context flips the image vertically —
+    /// the cover code already counter-flips for that reason, but
+    /// drawSymbol never did, so every SF Symbol was upside down.
+    /// Most symbols hide it (symmetric shapes), but the bell is
+    /// asymmetric (dome on top, clapper below), so the water
+    /// toggle's bell read as clearly inverted. Counter-flipping
+    /// here fixes all symbols at once, bell included.
+    private func drawImageUpright(_ img: NSImage, in rect: NSRect) {
+        guard let ctx = NSGraphicsContext.current?.cgContext else {
+            img.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1.0)
+            return
+        }
+        ctx.saveGState()
+        ctx.translateBy(x: 0, y: rect.minY + rect.maxY)
+        ctx.scaleBy(x: 1, y: -1)
+        img.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1.0)
+        ctx.restoreGState()
+    }
+
     private func drawSymbol(_ name: String, size: CGFloat, center: CGPoint, fallback: String, color: NSColor = .white) {
         let key = "\(name)-\(Int(size))"
         let rect = NSRect(x: center.x - size / 2, y: center.y - size / 2, width: size, height: size)
         if color == .white, let cached = Self.symbolCache[key] {
-            cached.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1.0)
+            drawImageUpright(cached, in: rect)
             return
         }
         guard let base = NSImage(systemSymbolName: name, accessibilityDescription: nil) else {
@@ -1942,7 +1969,7 @@ final class IslandView: NSView, NSDraggingSource {
         if color == .white {
             Self.symbolCache[key] = img
         }
-        img.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1.0)
+        drawImageUpright(img, in: rect)
     }
 
     private func drawCenteredText(_ text: String, font: NSFont, color: NSColor, center: CGPoint) {
@@ -2562,9 +2589,13 @@ final class IslandView: NSView, NSDraggingSource {
     }
 
     /// Method chooser rows in share mode (full-width pills).
-    private func trayShareMethodRects() -> (airDrop: NSRect, lan: NSRect) {
+    /// Open sits directly below Local Network, so a tray file can
+    /// be opened from share mode without leaving it for the
+    /// right-click menu.
+    private func trayShareMethodRects() -> (airDrop: NSRect, lan: NSRect, open: NSRect) {
         (airDrop: NSRect(x: 28, y: 84, width: 572, height: 32),
-         lan: NSRect(x: 28, y: 124, width: 572, height: 32))
+         lan: NSRect(x: 28, y: 124, width: 572, height: 32),
+         open: NSRect(x: 28, y: 164, width: 572, height: 32))
     }
 
     /// LAN peer rows in share mode (max 3).
@@ -2902,14 +2933,17 @@ final class IslandView: NSView, NSDraggingSource {
             NSColor.white.withAlphaComponent(0.08).setFill()
             NSBezierPath(roundedRect: methods.airDrop, xRadius: 10, yRadius: 10).fill()
             NSBezierPath(roundedRect: methods.lan, xRadius: 10, yRadius: 10).fill()
+            NSBezierPath(roundedRect: methods.open, xRadius: 10, yRadius: 10).fill()
             drawSymbol("paperplane.fill", size: 20, center: CGPoint(x: 40, y: methods.airDrop.midY), fallback: "A")
             drawSymbol("network", size: 20, center: CGPoint(x: 40, y: methods.lan.midY), fallback: "N")
+            drawSymbol("arrow.up.forward", size: 20, center: CGPoint(x: 40, y: methods.open.midY), fallback: "O")
             let methodFont = NSFont.systemFont(ofSize: 14)
             drawText("AirDrop", font: methodFont, color: .white, at: NSPoint(x: 56, y: methods.airDrop.minY + 7))
             drawText("Local Network", font: methodFont, color: .white, at: NSPoint(x: 56, y: methods.lan.minY + 7))
+            drawText("Open", font: methodFont, color: .white, at: NSPoint(x: 56, y: methods.open.minY + 7))
             drawText("AirDrop: nearby Apple devices. Local Network: fellow Aura users.",
                      font: NSFont.systemFont(ofSize: 12),
-                     color: NSColor.white.withAlphaComponent(0.4), at: NSPoint(x: 28, y: 164))
+                     color: NSColor.white.withAlphaComponent(0.4), at: NSPoint(x: 28, y: 204))
         }
     }
 
