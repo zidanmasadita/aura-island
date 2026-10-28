@@ -56,7 +56,7 @@ enum OverlapDetector {
                                 y: mainHeight - pillFrame.maxY,
                                 width: pillFrame.width,
                                 height: pillFrame.height)
-        guard let image = CGWindowListCreateImageFromArray(quartzRect, [windowID], .bestResolution) else {
+        guard let image = CGWindowListCreateImageFromArray(quartzRect, [windowID as NSNumber] as CFArray, .bestResolution) else {
             return nil
         }
         // NSBitmapImageRep is the reliable AppKit route to raw pixels
