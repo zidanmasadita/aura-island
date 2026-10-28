@@ -504,13 +504,20 @@ final class IslandView: NSView, NSDraggingSource {
     /// right side of the pill looking wider than the left during a
     /// drag, while the left (fixed-coord content) stays correct.
     /// At rest the spring scale is 1.0 and base == bounds.
+    /// True while the window is headroom-sized for the tray (drag
+    /// hover or bounce running) but larger than the base card.
+    private var isTrayHeadroom: Bool {
+        guard state == .expanded, trayDropHighlight || isTrayBouncing else { return false }
+        let base = unbulgedSize(for: state)
+        return bounds.width > base.width + 0.5 || bounds.height > base.height + 0.5
+    }
     private var drawingWidth: CGFloat {
         let s = state == .expanded ? traySpringScale(now: Date()) : 1.0
-        return s != 1.0 ? unbulgedSize(for: state).width : bounds.width
+        return s != 1.0 || isTrayHeadroom ? unbulgedSize(for: state).width : bounds.width
     }
     private var drawingHeight: CGFloat {
         let s = state == .expanded ? traySpringScale(now: Date()) : 1.0
-        return s != 1.0 ? unbulgedSize(for: state).height : bounds.height
+        return s != 1.0 || isTrayHeadroom ? unbulgedSize(for: state).height : bounds.height
     }
     /// Inverse of draw()'s spring transform: a mouse/drag point in
     /// window coords back to base coords, so hit tests and
@@ -518,10 +525,18 @@ final class IslandView: NSView, NSDraggingSource {
     /// coordinates as the fixed-coord content.
     private func basePoint(from windowPoint: NSPoint) -> NSPoint {
         let s = state == .expanded ? traySpringScale(now: Date()) : 1.0
-        guard s != 1.0 else { return windowPoint }
         let base = unbulgedSize(for: state)
-        return NSPoint(x: (windowPoint.x - bounds.midX) / s + base.width / 2,
-                       y: windowPoint.y / s)
+        if s != 1.0 {
+            return NSPoint(x: (windowPoint.x - bounds.midX) / s + base.width / 2,
+                           y: windowPoint.y / s)
+        }
+        // Headroom window with scale 1: draw() centres the base pill
+        // (translate only, no scale), so invert that translate.
+        if isTrayHeadroom {
+            return NSPoint(x: windowPoint.x - (bounds.midX - base.width / 2),
+                           y: windowPoint.y)
+        }
+        return windowPoint
     }
     /// (6x6), each centered in an 18pt slot so the column never
     /// shifts when the active section changes. Drawn 18pt from the
@@ -1075,7 +1090,13 @@ final class IslandView: NSView, NSDraggingSource {
         // follow the window animator (single pill, content inside).
         let springScale = state == .expanded ? traySpringScale(now: Date()) : 1.0
         let base = unbulgedSize(for: state)
-        let pathRect = springScale != 1.0
+        // Headroom window without a spring (e.g. first drag-enter if
+        // the spring was ever cancelled) must still draw the base
+        // pill centred, not fill the whole headroom window: filling
+        // it left-aligns the fixed-coord content and leaves a wide
+        // right margin — the first-entry right expansion.
+        let useBaseRect = springScale != 1.0 || isTrayHeadroom
+        let pathRect = useBaseRect
             ? NSRect(x: 0, y: 0, width: base.width, height: base.height)
             : rect
         let path = notchPath(
@@ -1105,6 +1126,9 @@ final class IslandView: NSView, NSDraggingSource {
         if springScale != 1.0 {
             ctx.translateBy(x: rect.midX, y: rect.minY)
             ctx.scaleBy(x: springScale, y: springScale)
+            ctx.translateBy(x: -base.width / 2, y: 0)
+        } else if isTrayHeadroom {
+            ctx.translateBy(x: rect.midX, y: rect.minY)
             ctx.translateBy(x: -base.width / 2, y: 0)
         }
         ctx.saveGState()

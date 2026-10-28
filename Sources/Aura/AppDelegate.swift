@@ -288,7 +288,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Leaving expanded cancels a running tray spring (drop bounce):
         // otherwise the spring transform runs through the close
         // animation and pushes closed content outside the small pill.
-        if state != .expanded { islandView.cancelTraySpring() }
+        // Only on a REAL leave: onTraySizeChanged calls setState with
+        // the current (already closed) state during a first drag-enter,
+        // and cancelling there killed the hover spring, leaving the
+        // headroom window drawn left-aligned with a wide right margin
+        // on first entry (later entries were already expanded, kept
+        // the spring, and looked normal).
+        if islandView.state == .expanded && state != .expanded { islandView.cancelTraySpring() }
         islandView.state = state
         // Expanded size follows the card's page (music 520x180,
         // lyrics 700x180 — same height, only the width grows —
