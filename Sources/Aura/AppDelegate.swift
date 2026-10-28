@@ -752,10 +752,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let normalFrame = NSRect(x: window.frame.midX - size.width / 2,
                                  y: normalY, width: size.width, height: size.height)
         let hiddenY = normalY + size.height - 6
-        if OverlapDetector.coversContent(pillFrame: normalFrame) {
+        let overlap = OverlapDetector.check(pillFrame: normalFrame)
+        if overlap.covered {
             overlapClearTicks = 0
             if !pillHiddenForOverlap || abs(window.frame.minY - hiddenY) > 0.5 {
                 pillHiddenForOverlap = true
+                print("[Aura] Overlap hide: foreground=\(overlap.ownerName) window=\(String(describing: overlap.windowFrame)) pill=\(normalFrame)")
                 animator.animate(to: size, yOverride: hiddenY)
             }
         } else if pillHiddenForOverlap {
@@ -763,6 +765,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if overlapClearTicks >= 2 {
                 pillHiddenForOverlap = false
                 overlapClearTicks = 0
+                print("[Aura] Overlap restore: foreground=\(overlap.ownerName) no longer covers pill")
                 animator.animate(to: windowSize(for: islandView.state))
             }
         }
