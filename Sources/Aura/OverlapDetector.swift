@@ -9,10 +9,10 @@ import AppKit
 ///   invisible/minimized windows, and system windows
 ///   (taskbar/desktop classes). Aura does the same: only the
 ///   frontmost app's windows count, not any background window.
-/// - Nusa then checks whether that window overlaps the notch area.
-///   Aura does the same against the pill's normal frame, with a
-///   25% area threshold so a window merely grazing the pill's edge
-///   does not trigger a hide.
+/// - Nusa then checks whether that window overlaps the notch area,
+///   and samples the pixels underneath, hiding only when they vary.
+///   Aura does the same: frame overlap (25% threshold) is only the
+///   first gate; the pixel test below is the second.
 ///
 /// Two macOS-specific traps, both fixed here:
 /// - CGWindowList bounds use Quartz coordinates (origin at the
@@ -34,28 +34,81 @@ enum OverlapDetector {
         let covered: Bool
         let ownerName: String
         let windowFrame: NSRect?
+        /// Varied-pixel count under the pill, when a capture was
+        /// available; nil when capture failed (usually Screen
+        /// Recording permission missing).
+        let variedPixels: Int?
+    }
+
+    /// Nusa-style pixel test, adapted to macOS: capture ONLY the
+    /// foreground window (by window ID, so Aura's own pill is never
+    /// in the image) over the pill rect, then count pixels whose
+    /// colour differs from their left neighbour by >= 14 in any
+    /// channel — the same < 0xE flatness test Nusa's BitBlt loop
+    /// uses. A solid colour, a blank header, or a smooth gradient
+    /// has almost no such pixels; text, icons, and tab edges have
+    /// many. Hide only when varied >= 20 (Nusa used 12 over a
+    /// similar strip; 20 gives a little noise margin).
+    /// Returns nil when no capture is available at all.
+    static func variedPixelCount(pillFrame: NSRect, windowID: CGWindowID, mainHeight: CGFloat) -> Int? {
+        // AppKit (bottom-left origin) -> Quartz (top-left origin).
+        let quartzRect = CGRect(x: pillFrame.minX,
+                                y: mainHeight - pillFrame.maxY,
+                                width: pillFrame.width,
+                                height: pillFrame.height)
+        guard let image = CGWindowListCreateImageFromArray(quartzRect, [windowID], .bestResolution) else {
+            return nil
+        }
+        guard let dataProvider = image.dataProvider,
+              let data = dataProvider.data,
+              let ptr = CFDataGetBytePtr(data) else {
+            return nil
+        }
+        let width = image.width
+        let height = image.height
+        let bytesPerRow = image.bytesPerRow
+        let bytesPerPixel = image.bitsPerPixel / 8
+        guard bytesPerPixel >= 3, width > 1, height > 0 else { return nil }
+        var varied = 0
+        for y in 0..<height {
+            let row = ptr + y * bytesPerRow
+            for x in 1..<width {
+                let off = x * bytesPerPixel
+                let prev = off - bytesPerPixel
+                // Ignore fully transparent pixels (window does not
+                // actually cover that point, e.g. rounded corners).
+                if bytesPerPixel >= 4, row[off + 3] == 0 { continue }
+                var maxDiff = 0
+                for c in 0..<3 {
+                    let d = abs(Int(row[off + c]) - Int(row[prev + c]))
+                    if d > maxDiff { maxDiff = d }
+                }
+                if maxDiff >= 14 { varied += 1 }
+            }
+        }
+        return varied
     }
 
     static func check(pillFrame: NSRect) -> Result {
         guard let frontmost = NSWorkspace.shared.frontmostApplication else {
-            return Result(covered: false, ownerName: "", windowFrame: nil)
+            return Result(covered: false, ownerName: "", windowFrame: nil, variedPixels: nil)
         }
         let frontPID = frontmost.processIdentifier
         let ownPID = ProcessInfo.processInfo.processIdentifier
         guard frontPID != ownPID else {
-            return Result(covered: false, ownerName: frontmost.localizedName ?? "", windowFrame: nil)
+            return Result(covered: false, ownerName: frontmost.localizedName ?? "", windowFrame: nil, variedPixels: nil)
         }
         guard let mainHeight = NSScreen.main?.frame.height,
               let list = CGWindowListCopyWindowInfo(
                   [.optionOnScreenOnly, .excludeDesktopElements],
                   kCGNullWindowID
               ) as? [[String: Any]] else {
-            return Result(covered: false, ownerName: frontmost.localizedName ?? "", windowFrame: nil)
+            return Result(covered: false, ownerName: frontmost.localizedName ?? "", windowFrame: nil, variedPixels: nil)
         }
         let ownerName = frontmost.localizedName ?? ""
         let pillArea = pillFrame.width * pillFrame.height
         guard pillArea > 0 else {
-            return Result(covered: false, ownerName: ownerName, windowFrame: nil)
+            return Result(covered: false, ownerName: ownerName, windowFrame: nil, variedPixels: nil)
         }
         for win in list {
             // Foreground app only, like Nusa's GetForegroundWindow.
@@ -79,9 +132,23 @@ enum OverlapDetector {
             let bounds = NSRect(x: x, y: mainHeight - yQ - h, width: w, height: h)
             let inter = pillFrame.intersection(bounds)
             if !inter.isNull, inter.width * inter.height > pillArea * 0.25 {
-                return Result(covered: true, ownerName: ownerName, windowFrame: bounds)
+                // Frame overlap alone is not enough: a blank dark
+                // header or solid background also overlaps, but it
+                // is not content. Only hide when the pixels under
+                // the pill actually vary (Nusa's test).
+                guard let windowID = (win[kCGWindowNumber as String] as? NSNumber)?.uint32Value else {
+                    return Result(covered: true, ownerName: ownerName, windowFrame: bounds, variedPixels: nil)
+                }
+                let varied = variedPixelCount(pillFrame: pillFrame, windowID: windowID, mainHeight: mainHeight)
+                if let varied {
+                    return Result(covered: varied >= 20, ownerName: ownerName, windowFrame: bounds, variedPixels: varied)
+                }
+                // No capture (Screen Recording permission missing):
+                // do NOT hide, and let the log say why, instead of
+                // silently falling back to frame-only hiding.
+                return Result(covered: false, ownerName: ownerName, windowFrame: bounds, variedPixels: nil)
             }
         }
-        return Result(covered: false, ownerName: ownerName, windowFrame: nil)
+        return Result(covered: false, ownerName: ownerName, windowFrame: nil, variedPixels: nil)
     }
 }

@@ -802,6 +802,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 pillHiddenForOverlap = true
                 islandView.isOverlapHidden = true
                 print("[Aura] Overlap hide: foreground=\(overlap.ownerName) window=\(String(describing: overlap.windowFrame)) pill=\(normalFrame) windowNow=\(window.frame)")
+                if let varied = overlap.variedPixels {
+                    print("[Aura] Overlap pixels: varied=\(varied) (hide at >= 20)")
+                } else {
+                    print("[Aura] Overlap pixels: no capture — Screen Recording permission missing? Pill will NOT hide until Aura is allowed in System Settings > Privacy & Security > Screen Recording")
+                }
                 animator.cancel()
                 window.setFrame(NSRect(x: window.frame.midX - size.width / 2,
                                        y: IslandWindow.topY(forHeight: 6, on: screen),
