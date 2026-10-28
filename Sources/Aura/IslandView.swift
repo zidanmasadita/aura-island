@@ -168,7 +168,6 @@ final class IslandView: NSView, NSDraggingSource {
         let next = next?.replacingOccurrences(of: "\r\n", with: " ")
             .replacingOccurrences(of: "\n", with: " ")
             .replacingOccurrences(of: "\r", with: " ")
-        let oldPrev = lyricPrev, oldCurrent = lyricCurrent, oldNext = lyricNext
         lyricPrev = prev
         lyricCurrent = current
         lyricNext = next
@@ -177,8 +176,6 @@ final class IslandView: NSView, NSDraggingSource {
         // drawn as-is, with no slot-machine roll. The roll machinery
         // stays in the file unused, and any in-flight roll is
         // cancelled so a line change never animates again.
-        _ = oldPrev
-        _ = oldNext
         cancelLyricRoll()
         needsDisplay = true
     }
