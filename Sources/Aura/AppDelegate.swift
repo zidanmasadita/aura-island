@@ -345,6 +345,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         } else {
+            // While the todo input is active, leaving the pill
+            // must NOT close it: the user keeps typing with the
+            // cursor outside, and the card only closes after
+            // Enter/Escape ends editing (endTodoEditing re-syncs
+            // hover then). This is the whole point of inline input.
+            if islandView.isTodoEditing {
+                return
+            }
             // Any real exit re-arms hover-open, even when the
             // exit itself is swallowed below (modal, drag-out):
             // the cursor has left, so a later entry is a genuine
@@ -388,6 +396,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func setState(_ state: IslandState) {
+        // Closing the card discards an in-progress todo input
+        // (its field is a subview of the card and must not float
+        // over a closed pill or another page). Opening keeps it.
+        if state != .expanded {
+            islandView.cancelTodoEditing()
+        }
         // A hidden pill must not be restored by a same-state call:
         // hover re-asserting compact and tray size re-applies both
         // call setState with the current state, and clearing the

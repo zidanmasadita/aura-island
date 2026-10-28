@@ -52,7 +52,7 @@ private final class AuraTrayPasteboardWriter: NSObject, NSPasteboardWriting {
     }
 }
 
-final class IslandView: NSView, NSDraggingSource {
+final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     var state: IslandState = .zen {
         didSet {
             // Remember whether the card was on lyrics when it closed:
@@ -75,7 +75,7 @@ final class IslandView: NSView, NSDraggingSource {
     /// True when the card was last closed from the lyrics page: the
     /// inactive pill then shows lyrics, not clock/battery/waveform.
     private var lyricsMode = false
-    /// True while a modal NSAlert (add-task, water settings) is open.
+    /// True while a modal NSAlert (water settings) is open.
     /// AppDelegate skips the leave-the-island collapse while this is
     /// set: moving the mouse down to the dialog is not leaving the
     /// card, and collapsing mid-modal used to freeze the window at
@@ -364,6 +364,7 @@ final class IslandView: NSView, NSDraggingSource {
     /// the dots, three-finger swipe, and bubble icon switch it, nothing else reads it.
     private var cardPage: CardPage = .music {
         didSet {
+            if cardPage != .todo { cancelTodoEditing() }
             if cardPage == .water { ensureWaterStarted() }
             if state == .expanded { onExpandedSizeChanged?(expandedSize) }
             needsDisplay = true
@@ -638,6 +639,14 @@ final class IslandView: NSView, NSDraggingSource {
             onClicked?()
             return
         }
+        // While the todo input is active, the card is captured by
+        // editing: clicks on dots, rows, or the add pill are ignored
+        // (clicks inside the field itself go to the field subview
+        // and never reach here). Editing ends only via Enter,
+        // Escape, or focus loss — never via a stray card click.
+        if todoEditingField != nil {
+            return
+        }
         let point = convert(event.locationInWindow, from: nil)
         // Page dots (every card page has them now).
         if let index = dotIndex(at: point) {
@@ -704,7 +713,7 @@ final class IslandView: NSView, NSDraggingSource {
                 }
             }
             if todoAddPillRect().contains(point) {
-                showAddTaskAlert()
+                startTodoEditing()
                 return
             }
         case .water:
@@ -2275,9 +2284,19 @@ final class IslandView: NSView, NSDraggingSource {
         let plusW = ("+" as NSString).size(withAttributes: [.font: addFont]).width
         drawText("+", font: addFont, color: .white, at: NSPoint(x: addRect.minX + 12, y: addRect.minY + 5))
         drawText("Add task", font: addFont, color: .white, at: NSPoint(x: addRect.minX + 12 + plusW + 6, y: addRect.minY + 5))
+        // While editing, the input row sits below the add pill
+        // (y160-192): its own background plus the Enter/Esc hint.
+        // The overflow line (y158) would collide with it, so it is
+        // hidden until editing ends.
+        if todoEditingField != nil {
+            NSColor.white.withAlphaComponent(0.10).setFill()
+            NSBezierPath(roundedRect: todoInputRect(), xRadius: 10, yRadius: 10).fill()
+            drawText("Enter to add \u{00B7} Esc to cancel", font: NSFont.systemFont(ofSize: 11),
+                     color: NSColor.white.withAlphaComponent(0.4), at: NSPoint(x: 28, y: 196))
+        }
         // Overflow count under the add pill.
         let rows = todoVisibleRows()
-        if total > rows.count {
+        if todoEditingField == nil, total > rows.count {
             drawText("+\(total - rows.count) more", font: NSFont.systemFont(ofSize: 11),
                      color: NSColor.white.withAlphaComponent(0.4), at: NSPoint(x: 28, y: 158))
         }
@@ -2322,31 +2341,123 @@ final class IslandView: NSView, NSDraggingSource {
         NSAttributedString(string: text, attributes: attrs).draw(at: point)
     }
 
-    /// Add a task via a modal alert (not an in-card text field: the
-    /// in-card field fought the borderless notch window's focus
-    /// system and froze the pill when pressed. The alert runs in
-    /// its own key window, so typing always works).
-    private func showAddTaskAlert() {
-        let alert = NSAlert()
-        alert.messageText = "New task"
-        alert.informativeText = "Tulis tugas yang ingin ditambahkan."
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+    // MARK: - Todo inline editing
+
+    /// The live input field while adding a task, nil otherwise.
+    /// AppDelegate reads isTodoEditing to hold the card open.
+    private var todoEditingField: NSTextField?
+    /// App that was frontmost when editing started (Aura itself
+    /// excluded by the caller check in endTodoEditing): focus
+    /// returns there after Enter/Escape, like the old modal did.
+    private var todoEditingPreviousApp: NSRunningApplication?
+    /// True while endTodoEditing is removing the field, so the
+    /// resign it triggers does not re-enter endTodoEditing.
+    private var todoEditingEnding = false
+    var isTodoEditing: Bool { todoEditingField != nil }
+
+    /// Input row: full-width below the add pill, y160-192, inside
+    /// the 640x220 todo card with room for the hint at y196.
+    private func todoInputRect() -> NSRect {
+        NSRect(x: 28, y: 160, width: 584, height: 32)
+    }
+
+    /// Starts inline editing. The window must become key for the
+    /// field to receive keystrokes, so allowKey is opened only
+    /// for the editing session (see IslandWindow). The old modal
+    /// existed because an in-card field once fought this window's
+    /// focus system; the allowKey gate is what makes it work now.
+    private func startTodoEditing() {
+        guard state == .expanded, currentPage == .todo, todoEditingField == nil else { return }
+        todoEditingPreviousApp = NSWorkspace.shared.frontmostApplication
+        let field = NSTextField(frame: todoInputRect())
+        field.delegate = self
         field.placeholderString = "New task..."
-        alert.accessoryView = field
-        alert.addButton(withTitle: "Add")
-        alert.addButton(withTitle: "Cancel")
-        alert.window.initialFirstResponder = field
-        isShowingModal = true
-        let response = alert.runModal()
-        isShowingModal = false
-        resyncHoverAfterModal()
-        guard response == .alertFirstButtonReturn else { return }
-        let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        loadTodoTasksIfNeeded()
-        todoTasks.append(TodoTask(id: UUID(), text: text, done: false, createdAt: Date()))
-        saveTodoTasks()
+        field.font = NSFont.systemFont(ofSize: 14)
+        field.textColor = .white
+        field.isBezeled = false
+        field.isBordered = false
+        field.drawsBackground = false
+        addSubview(field)
+        todoEditingField = field
+        if let win = window as? IslandWindow { win.allowKey = true }
+        window?.makeKey()
+        window?.makeFirstResponder(field)
         needsDisplay = true
+    }
+
+    /// Ends editing after Enter (submit) or Escape (cancel).
+    /// After ending, hover is re-synced from the real cursor
+    /// position: outside closes the card (normal rules resume),
+    /// inside keeps it open. Focus returns to the previous app
+    /// only when Aura is still the key window — if editing ended
+    /// because focus was already lost to another app, restoring
+    /// would yank the user back from the app they switched to.
+    func endTodoEditing(submit: Bool) {
+        guard let field = todoEditingField, !todoEditingEnding else { return }
+        todoEditingEnding = true
+        let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let wasKey = window?.isKeyWindow ?? false
+        field.removeFromSuperview()
+        todoEditingField = nil
+        todoEditingEnding = false
+        if submit, !text.isEmpty {
+            loadTodoTasksIfNeeded()
+            todoTasks.append(TodoTask(id: UUID(), text: text, done: false, createdAt: Date()))
+            saveTodoTasks()
+        }
+        if let win = window as? IslandWindow { win.allowKey = false }
+        if wasKey, let prev = todoEditingPreviousApp,
+           prev.processIdentifier != ProcessInfo.processInfo.processIdentifier,
+           !prev.isTerminated {
+            prev.activate(options: [])
+        }
+        todoEditingPreviousApp = nil
+        needsDisplay = true
+        if let win = window {
+            onHoverChanged?(win.frame.contains(NSEvent.mouseLocation))
+        }
+    }
+
+    /// Silent discard for paths that already own the card state
+    /// (page switch, close): no submit, no focus restore, no
+    /// hover re-sync — the caller decides what happens next.
+    func cancelTodoEditing() {
+        guard let field = todoEditingField else { return }
+        todoEditingEnding = true
+        field.removeFromSuperview()
+        todoEditingField = nil
+        todoEditingEnding = false
+        if let win = window as? IslandWindow { win.allowKey = false }
+        todoEditingPreviousApp = nil
+        needsDisplay = true
+    }
+
+    // MARK: - NSTextFieldDelegate (todo inline input)
+
+    /// Return submits, Escape cancels. Empty Return is a no-op
+    /// (stays in editing) rather than adding a blank task.
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+            if let field = todoEditingField,
+               !field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                endTodoEditing(submit: true)
+            }
+            return true
+        }
+        if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+            endTodoEditing(submit: false)
+            return true
+        }
+        return false
+    }
+
+    /// Focus lost for any other reason (window resigned key, app
+    /// switch): discard the draft and let hover rules resume.
+    /// Guarded by todoEditingEnding so our own removal does not
+    /// re-enter endTodoEditing.
+    func controlTextDidEndEditing(_ obj: Notification) {
+        guard let field = obj.object as? NSTextField, field == todoEditingField, !todoEditingEnding else { return }
+        endTodoEditing(submit: false)
     }
 
     /// After a modal closes, re-derive hover from the real mouse

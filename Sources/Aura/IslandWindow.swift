@@ -3,6 +3,15 @@ import AppKit
 /// Borderless floating window, Nusa-style: top-center, always on top,
 /// transparent, never steals focus.
 final class IslandWindow: NSWindow {
+    /// Gate for becoming key. The island normally never steals
+    /// focus (borderless, non-key), but an inline text field can
+    /// only receive keystrokes in a key window. IslandView sets
+    /// this true only while the todo input is active, and false
+    /// again when editing ends, so ordinary hover/click never
+    /// makes Aura the key app.
+    var allowKey = false
+    override var canBecomeKey: Bool { allowKey }
+
     init(contentRect: NSRect) {
         super.init(
             contentRect: contentRect,
