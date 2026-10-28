@@ -1,5 +1,4 @@
 import AppKit
-import ServiceManagement
 
 /// Island states, mirroring the Nusa-style notch states.
 /// - zen: thin pill, idle.
@@ -803,13 +802,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         islandView.needsDisplay = true
     }
 
-    private func adjustLyricNudge(by delta: Double) {
-        guard let key = currentTrackKey, !lyricsLinesRaw.isEmpty else { return }
-        let current = UserDefaults.standard.double(forKey: "lyricNudge.\(key)")
-        UserDefaults.standard.set(current + delta, forKey: "lyricNudge.\(key)")
-        applyLyricNudge()
-    }
-
     private func refreshLyricLine() {
         guard sessions.current != nil else {
             islandView.clearLyricLines()
@@ -859,35 +851,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let about = NSMenuItem(title: "About Aura Island", action: #selector(showAbout), keyEquivalent: "")
         about.target = self
         menu.addItem(about)
-        // One-click diagnostic: shows exactly what the sensors last
-        // reported, so a detection problem can be diagnosed from a
-        // screenshot without running from Terminal.
-        let diag = NSMenuItem(title: "Detection Status", action: #selector(showDiagnostics), keyEquivalent: "")
-        diag.target = self
-        menu.addItem(diag)
-        let auto = NSMenuItem(title: "Mode: Auto (follow the active one)", action: #selector(setAuto), keyEquivalent: "")
-        auto.target = self
-        menu.addItem(auto)
-        let unpin = NSMenuItem(title: "Unpin session", action: #selector(unpinSession), keyEquivalent: "")
-        unpin.target = self
-        menu.addItem(unpin)
-        let login = NSMenuItem(title: "Launch at login", action: #selector(toggleLoginItem), keyEquivalent: "")
-        login.target = self
-        login.state = SMAppService.mainApp.status == .enabled ? .on : .off
-        menu.addItem(login)
-        // Manual lyric shift, per track, persisted: when a song's file
-        // fits a slightly different recording, its lines sit a constant
-        // amount early or late — one tap here moves the whole file.
-        let nudgePlus = NSMenuItem(title: "Lyrics +1s (slower)", action: #selector(nudgeLyricPlus), keyEquivalent: "")
-        nudgePlus.target = self
-        menu.addItem(nudgePlus)
-        let nudgeMinus = NSMenuItem(title: "Lyrics -1s (faster)", action: #selector(nudgeLyricMinus), keyEquivalent: "")
-        nudgeMinus.target = self
-        menu.addItem(nudgeMinus)
-        let nudgeReset = NSMenuItem(title: "Reset this song's lyric offset", action: #selector(resetLyricNudge), keyEquivalent: "")
-        nudgeReset.target = self
-        menu.addItem(nudgeReset)
-        menu.addItem(.separator())
         let quit = NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
@@ -901,55 +864,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.runModal()
     }
 
-    @objc private func showDiagnostics() {
-        let alert = NSAlert()
-        alert.messageText = "Detection Status"
-        let session = sessions.current
-        let sessionText = session.map { "\($0.title) — \($0.artist) (\($0.isPlaying ? "playing" : "paused"))" } ?? "none"
-        let tabText: String
-        if let t = lastTabLog, !t.isEmpty {
-            tabText = t
-        } else {
-            tabText = "none"
-        }
-        alert.informativeText = "Last MediaRemote: \(lastMediaLog ?? "no data yet")\nChrome tabs: \(tabText)\nActive session: \(sessionText)"
-        alert.runModal()
-    }
 
-    @objc private func setAuto() {
-        sessions.unpin()
-    }
 
-    @objc private func nudgeLyricPlus() {
-        adjustLyricNudge(by: 1)
-    }
 
-    @objc private func nudgeLyricMinus() {
-        adjustLyricNudge(by: -1)
-    }
 
-    @objc private func resetLyricNudge() {
-        guard let key = currentTrackKey else { return }
-        UserDefaults.standard.removeObject(forKey: "lyricNudge.\(key)")
-        applyLyricNudge()
-    }
 
-    @objc private func unpinSession() {
-        sessions.unpin()
-    }
 
-    @objc private func toggleLoginItem() {
-        do {
-            if SMAppService.mainApp.status == .enabled {
-                try SMAppService.mainApp.unregister()
-            } else {
-                try SMAppService.mainApp.register()
-            }
-        } catch {
-            // Best effort; user can manage Login Items manually in System Settings.
-        }
-        setupStatusItem()
-    }
 
     @objc private func quitApp() {
         NSApplication.shared.terminate(nil)
