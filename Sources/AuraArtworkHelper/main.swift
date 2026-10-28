@@ -52,7 +52,7 @@ guard let sym = dlsym(handle, "MRMediaRemoteGetNowPlayingInfo") else {
     log("MRMediaRemoteGetNowPlayingInfo symbol NOT FOUND")
     exit(1)
 }
-let getInfo = unsafeBitCast(sym, to: GetInfoFn.self)
+private let getInfo = unsafeBitCast(sym, to: GetInfoFn.self)
 if let regSym = dlsym(handle, "MRMediaRemoteRegisterForNowPlayingNotifications") {
     let register = unsafeBitCast(regSym, to: RegisterFn.self)
     register(DispatchQueue.main)
