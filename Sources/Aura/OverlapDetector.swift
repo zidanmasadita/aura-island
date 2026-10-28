@@ -64,69 +64,107 @@ enum OverlapDetector {
         let elementTitle: String?
         /// False when Accessibility permission is missing.
         let axTrusted: Bool
-    }
-
-    /// The element at one Quartz point, or nil when there is none
-    /// or it cannot be read.
-    private static func elementAt(quartzPoint: CGPoint) -> (role: String, title: String)? {
-        let systemWide = AXUIElementCreateSystemWide()
-        var element: AXUIElement?
-        let err = AXUIElementCopyElementAtPosition(
-            systemWide, Float(quartzPoint.x), Float(quartzPoint.y), &element)
-        guard err == .success, let element else { return nil }
-        var roleValue: AnyObject?
-        AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleValue)
-        let role = roleValue as? String ?? ""
-        var titleValue: AnyObject?
-        AXUIElementCopyAttributeValue(element, kAXTitleAttribute as CFString, &titleValue)
-        var title = titleValue as? String ?? ""
-        if title.isEmpty {
-            var descValue: AnyObject?
-            AXUIElementCopyAttributeValue(element, kAXDescriptionAttribute as CFString, &descValue)
-            title = descValue as? String ?? ""
-        }
-        return (role: role, title: title)
-    }
-
-    /// Height of the primary display (frame origin (0,0)) in
-    /// AppKit points. Quartz coordinates are relative to the
-    /// primary display's top-left, so this — not NSScreen.main,
-    /// which follows the key window across monitors — is the
-    /// correct flip constant for every screen.
-    static var primaryHeight: CGFloat {
-        NSScreen.screens.first(where: { $0.frame.origin == .zero })?.frame.height
-            ?? NSScreen.main?.frame.height ?? 0
+        /// Roles of elements whose frames intersect the pill,
+        /// whether whitelisted or not — for the log, so a miss
+        /// can be diagnosed from what the app actually exposes.
+        let intersectingRoles: [String]
     }
 
     /// Roles that are actual things under the pill: a browser tab
-    /// (Chrome exposes tabs as radio buttons), a search button or
-    /// field, text, a link, an image, a table cell, a menu item.
-    /// Everything else — scroll areas, web areas, groups, toolbars,
-    /// split groups, windows — is a container or background, and
-    /// must NOT hide the pill on its own.
+    /// (Chrome exposes tabs as radio buttons / tab groups), a
+    /// search button or field, text, a link, an image, a table
+    /// cell, a menu item. Everything else — scroll areas, web
+    /// areas, groups, toolbars, split groups, windows — is a
+    /// container or background, and must NOT hide the pill on
+    /// its own.
     static let contentRoles: Set<String> = [
         "AXButton", "AXRadioButton", "AXCheckBox", "AXPopUpButton",
         "AXMenuButton", "AXStaticText", "AXTextField", "AXTextArea",
         "AXLink", "AXImage", "AXCell", "AXRow", "AXMenuItem",
         "AXSlider", "AXComboBox", "AXDisclosureTriangle",
+        "AXTabGroup",
     ]
 
-    /// True when any sampled point under the pill lands on a
-    /// whitelisted content element.
-    static func contentUnderPill(pillFrame: NSRect) -> (found: Bool, role: String?, title: String?, trusted: Bool) {
-        guard AXIsProcessTrusted() else {
-            return (found: false, role: nil, title: nil, trusted: false)
+    private static func axString(_ element: AXUIElement, _ attribute: CFString) -> String {
+        var value: AnyObject?
+        guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success else { return "" }
+        return value as? String ?? ""
+    }
+
+    private static func axFrame(_ element: AXUIElement, primaryHeight: CGFloat) -> NSRect? {
+        var posValue: AnyObject?
+        var sizeValue: AnyObject?
+        guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &posValue) == .success,
+              AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeValue) == .success,
+              let posAX = posValue as? AXValue, let sizeAX = sizeValue as? AXValue else {
+            return nil
         }
-        let centerYQuartz = primaryHeight - pillFrame.midY
-        for fraction in [0.1, 0.3, 0.5, 0.7, 0.9] {
-            let x = pillFrame.minX + pillFrame.width * fraction
-            let point = CGPoint(x: x, y: centerYQuartz)
-            guard let el = elementAt(quartzPoint: point) else { continue }
-            if contentRoles.contains(el.role) {
-                return (found: true, role: el.role, title: el.title, trusted: true)
+        var point = CGPoint.zero
+        var size = CGSize.zero
+        guard AXValueGetValue(posAX, .cgPoint, &point),
+              AXValueGetValue(sizeAX, .cgSize, &size) else {
+            return nil
+        }
+        // AX positions are Quartz (top-left origin, relative to
+        // the primary display) -> AppKit (bottom-left origin).
+        return NSRect(x: point.x, y: primaryHeight - point.y - size.height,
+                      width: size.width, height: size.height)
+    }
+
+    /// Searches one app's accessibility tree for a whitelisted
+    /// content element whose frame intersects the pill. System-wide
+    /// hit-testing (AXUIElementCopyElementAtPosition) cannot work
+    /// here: Aura's own pill is the topmost window at those points,
+    /// so hit-testing returns Aura itself, never the app underneath.
+    /// Querying the underlying app's tree directly avoids that.
+    /// Traversal is pruned by frame: a subtree whose frame does
+    /// not intersect the pill cannot contain an intersecting child,
+    /// so large trees (a web page below the tab bar) are never
+    /// walked. A node budget guards against pathological trees.
+    static func contentUnderPill(pillFrame: NSRect, windowPID: Int32) -> (found: Bool, role: String?, title: String?, trusted: Bool, intersectingRoles: [String]) {
+        guard AXIsProcessTrusted() else {
+            return (found: false, role: nil, title: nil, trusted: false, intersectingRoles: [])
+        }
+        let primaryHeight = primaryHeight
+        let appElement = AXUIElementCreateApplication(windowPID)
+        var windowsValue: AnyObject?
+        guard AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsValue) == .success,
+              let windows = windowsValue as? [AXUIElement] else {
+            return (found: false, role: nil, title: nil, trusted: true, intersectingRoles: [])
+        }
+        var intersectingRoles = Set<String>()
+        var visited = 0
+        func visit(_ element: AXUIElement, depth: Int) -> (role: String, title: String)? {
+            if visited > 3000 || depth > 16 { return nil }
+            visited += 1
+            let role = axString(element, kAXRoleAttribute as CFString)
+            if let frame = axFrame(element, primaryHeight: primaryHeight) {
+                if frame.intersection(pillFrame).isNull {
+                    return nil
+                }
+                if !role.isEmpty { intersectingRoles.insert(role) }
+                if contentRoles.contains(role) {
+                    return (role: role, title: axString(element, kAXTitleAttribute as CFString))
+                }
+            }
+            var childrenValue: AnyObject?
+            guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenValue) == .success,
+                  let children = childrenValue as? [AXUIElement] else {
+                return nil
+            }
+            for child in children {
+                if let found = visit(child, depth: depth + 1) { return found }
+            }
+            return nil
+        }
+        for window in windows {
+            if let found = visit(window, depth: 0) {
+                return (found: true, role: found.role, title: found.title, trusted: true,
+                        intersectingRoles: Array(intersectingRoles).sorted())
             }
         }
-        return (found: false, role: nil, title: nil, trusted: true)
+        return (found: false, role: nil, title: nil, trusted: true,
+                intersectingRoles: Array(intersectingRoles).sorted())
     }
 
     static func check(pillFrame: NSRect) -> Result {
@@ -137,11 +175,11 @@ enum OverlapDetector {
                   [.optionOnScreenOnly, .excludeDesktopElements],
                   kCGNullWindowID
               ) as? [[String: Any]] else {
-            return Result(covered: false, ownerName: "", windowFrame: nil, elementRole: nil, elementTitle: nil, axTrusted: AXIsProcessTrusted())
+            return Result(covered: false, ownerName: "", windowFrame: nil, elementRole: nil, elementTitle: nil, axTrusted: AXIsProcessTrusted(), intersectingRoles: [])
         }
         let pillArea = pillFrame.width * pillFrame.height
         guard pillArea > 0 else {
-            return Result(covered: false, ownerName: "", windowFrame: nil, elementRole: nil, elementTitle: nil, axTrusted: AXIsProcessTrusted())
+            return Result(covered: false, ownerName: "", windowFrame: nil, elementRole: nil, elementTitle: nil, axTrusted: AXIsProcessTrusted(), intersectingRoles: [])
         }
         for win in list {
             // Any window on the pill's screen, not just the
@@ -174,11 +212,12 @@ enum OverlapDetector {
                 // Frame overlap is only the first gate. The second
                 // gate is what is actually under the pill.
                 let ownerName = (win[kCGWindowOwnerName as String] as? String) ?? ""
-                let ax = contentUnderPill(pillFrame: pillFrame)
+                let ax = contentUnderPill(pillFrame: pillFrame, windowPID: pid)
                 return Result(covered: ax.found, ownerName: ownerName, windowFrame: bounds,
-                              elementRole: ax.role, elementTitle: ax.title, axTrusted: ax.trusted)
+                              elementRole: ax.role, elementTitle: ax.title, axTrusted: ax.trusted,
+                              intersectingRoles: ax.intersectingRoles)
             }
         }
-        return Result(covered: false, ownerName: "", windowFrame: nil, elementRole: nil, elementTitle: nil, axTrusted: AXIsProcessTrusted())
+        return Result(covered: false, ownerName: "", windowFrame: nil, elementRole: nil, elementTitle: nil, axTrusted: AXIsProcessTrusted(), intersectingRoles: [])
     }
 }

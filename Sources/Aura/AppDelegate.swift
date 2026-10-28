@@ -806,7 +806,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 } else if let role = overlap.elementRole {
                     print("[Aura] Overlap decision: foreground=\(overlap.ownerName) covered=\(overlap.covered) element=\(role) title=\(overlap.elementTitle ?? "")")
                 } else {
-                    print("[Aura] Overlap decision: foreground=\(overlap.ownerName) covered=\(overlap.covered) element=window-only/none (no content under pill)")
+                    print("[Aura] Overlap decision: foreground=\(overlap.ownerName) covered=\(overlap.covered) intersectingRoles=\(overlap.intersectingRoles) (no whitelisted content under pill)")
                 }
             }
         }
