@@ -844,6 +844,9 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             } else if removeBgResultData != nil, removeBgSaveRect().contains(point) {
                 saveRemoveBgResult()
                 return
+            } else if removeBgTrayPickerVisible(), removeBgTrayPickerRect().contains(point) {
+                showRemoveBgTrayMenu(at: point)
+                return
             } else if removeBgPickRect().contains(point) {
                 pickRemoveBgImage()
                 return
@@ -2854,6 +2857,76 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
                       width: width, height: height)
     }
 
+    /// Tray images usable for Remove BG: existing files, not
+    /// directories, with an image extension (same set as the drop
+    /// filter). A tray without images means no picker at all.
+    private func removeBgTrayImages() -> [TrayFile] {
+        loadTrayFilesIfNeeded()
+        let imageExts: Set<String> = ["png", "jpg", "jpeg", "heic", "webp", "gif", "bmp", "tiff"]
+        return trayFiles.filter {
+            !$0.isDirectory
+            && imageExts.contains(URL(fileURLWithPath: $0.path).pathExtension.lowercased())
+            && trayFileExists($0)
+        }
+    }
+
+    private func removeBgTrayPickerVisible() -> Bool {
+        !removeBgTrayImages().isEmpty
+    }
+
+    /// Picker pill, bottom of the left panel (8pt margins). It
+    /// sits inside the pick rect, so mouseDown checks it BEFORE
+    /// the general left-panel pick.
+    private func removeBgTrayPickerRect() -> NSRect {
+        let left = removeBgPickRect()
+        return NSRect(x: left.minX + 8, y: left.maxY - 36, width: left.width - 16, height: 28)
+    }
+
+    /// Image area inside the left panel: full inset when no
+    /// picker, shrunk above the picker pill when one is shown, so
+    /// the preview never slides under the pill.
+    private func removeBgLeftImageRect() -> NSRect {
+        let left = removeBgPickRect()
+        if removeBgTrayPickerVisible() {
+            return NSRect(x: left.minX + 8, y: left.minY + 8,
+                          width: left.width - 16, height: left.height - 16 - 36)
+        }
+        return left.insetBy(dx: 8, dy: 8)
+    }
+
+    /// Popup menu of tray images, in tray order. Unlike the
+    /// single-file tray tile menu, each item carries its own file
+    /// in representedObject.
+    private func showRemoveBgTrayMenu(at point: CGPoint) {
+        let images = removeBgTrayImages()
+        guard !images.isEmpty else {
+            removeBgStatusText = "Tray has no images."
+            removeBgStatusIsError = false
+            needsDisplay = true
+            return
+        }
+        let menu = NSMenu()
+        let font = NSFont.systemFont(ofSize: 13)
+        for file in images {
+            let item = NSMenuItem(title: truncated(file.name, toWidth: 300, font: font),
+                                  action: #selector(pickRemoveBgTrayMenuFile(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = file
+            menu.addItem(item)
+        }
+        menu.popUp(positioning: nil, at: point, in: self)
+    }
+
+    @objc private func pickRemoveBgTrayMenuFile(_ sender: NSMenuItem) {
+        guard let file = sender.representedObject as? TrayFile, trayFileExists(file) else {
+            removeBgStatusText = "That tray file is missing."
+            removeBgStatusIsError = true
+            needsDisplay = true
+            return
+        }
+        startRemoveBg(with: file.url)
+    }
+
     private func drawRemoveBg() {
         drawCardHeader(width: 640)
         drawText("Remove BG", font: NSFont.boldSystemFont(ofSize: 20), color: .white,
@@ -2865,20 +2938,36 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         leftPath.lineWidth = 1.5
         NSColor.white.withAlphaComponent(0.5).setStroke()
         leftPath.stroke()
+        let leftImageArea = removeBgLeftImageRect()
         if let original = removeBgOriginal {
-            let fit = removeBgFitRect(for: original, in: left.insetBy(dx: 8, dy: 8))
+            let fit = removeBgFitRect(for: original, in: leftImageArea)
             drawImageUpright(original, in: fit)
         } else {
             let line1 = "Drop image here"
             let font1 = NSFont.systemFont(ofSize: 14)
             let w1 = (line1 as NSString).size(withAttributes: [.font: font1]).width
             drawText(line1, font: font1, color: NSColor.white.withAlphaComponent(0.8),
-                     at: NSPoint(x: left.midX - w1 / 2, y: left.midY - 10))
+                     at: NSPoint(x: leftImageArea.midX - w1 / 2, y: leftImageArea.midY - 10))
             let line2 = "or click to pick"
             let font2 = NSFont.systemFont(ofSize: 12)
             let w2 = (line2 as NSString).size(withAttributes: [.font: font2]).width
             drawText(line2, font: font2, color: NSColor.white.withAlphaComponent(0.5),
-                     at: NSPoint(x: left.midX - w2 / 2, y: left.midY + 10))
+                     at: NSPoint(x: leftImageArea.midX - w2 / 2, y: leftImageArea.midY + 10))
+        }
+        // From Tray picker pill, bottom of the left panel, only
+        // when the tray actually holds a usable image — the pill
+        // is never drawn dead.
+        if removeBgTrayPickerVisible() {
+            let picker = removeBgTrayPickerRect()
+            NSColor.white.withAlphaComponent(0.15).setFill()
+            NSBezierPath(roundedRect: picker, xRadius: 14, yRadius: 14).fill()
+            NSColor.white.withAlphaComponent(0.3).setStroke()
+            NSBezierPath(roundedRect: picker, xRadius: 14, yRadius: 14).stroke()
+            let label = "From Tray \u{25be}"
+            let pickerFont = NSFont.systemFont(ofSize: 13, weight: .medium)
+            let pickerWidth = (label as NSString).size(withAttributes: [.font: pickerFont]).width
+            drawText(label, font: pickerFont, color: .white,
+                     at: NSPoint(x: picker.midX - pickerWidth / 2, y: picker.minY + 5))
         }
         // Right panel: checkerboard + before/after, clipped to a
         // rounded rect so neither image spills past the corners.
