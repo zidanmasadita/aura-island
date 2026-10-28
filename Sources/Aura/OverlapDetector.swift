@@ -29,18 +29,30 @@ import ApplicationServices
 /// - Accessibility coordinates also use the Quartz (top-left)
 ///   origin, so sample points are converted the same way.
 ///
-/// Decision, after the frame gate (a foreground window covering
-/// >25% of the pill):
+/// Decision, after the frame gate (a window covering >25% of
+/// the pill — any window on the pill's screen, not just the
+/// frontmost app's, because the pill can sit on monitor 1 while
+/// the active app is on monitor 2):
 /// - Sample 5 points across the pill's width at its centre height.
-/// - If any point lands on a specific UI element — a tab button,
-///   a toolbar button, text, a link, an image, a cell, and so on
-///   — that is content, and the pill hides.
-/// - If every point lands only on the window itself (role
-///   AXWindow), on the application, or on nothing (desktop, empty
-///   window background), that is NOT content, and the pill stays.
+/// - Hide ONLY when a point lands on a specific element: a tab
+///   button, a search button/field, text, a link, an image, a
+///   cell, and so on (whitelist below). Containers do NOT count:
+///   AXScrollArea, AXWebArea, AXGroup, AXToolbar, AXWindow, and
+///   the like are just the area the content sits in — counting
+///   them made the pill hide over blank web pages and empty
+///   windows, which is the bug the user reported.
 /// - If Accessibility permission is not granted, the API returns
 ///   nothing usable: the pill does NOT hide, and the log says the
 ///   permission is missing, instead of silently guessing.
+///
+/// Multi-monitor trap: NSScreen.main follows the key window, so
+/// it changes when the user activates an app on another monitor.
+/// Using it for coordinate conversion shifted every rect by the
+/// height difference between monitors, and the pill on monitor 1
+/// could never hide while monitor 2 was active. Conversion now
+/// uses the PRIMARY display (frame origin (0,0)), which never
+/// moves, and the pill frame itself comes from the pill window's
+/// own screen (see AppDelegate).
 enum OverlapDetector {
     struct Result {
         let covered: Bool
@@ -76,52 +88,69 @@ enum OverlapDetector {
         return (role: role, title: title)
     }
 
+    /// Height of the primary display (frame origin (0,0)) in
+    /// AppKit points. Quartz coordinates are relative to the
+    /// primary display's top-left, so this — not NSScreen.main,
+    /// which follows the key window across monitors — is the
+    /// correct flip constant for every screen.
+    static var primaryHeight: CGFloat {
+        NSScreen.screens.first(where: { $0.frame.origin == .zero })?.frame.height
+            ?? NSScreen.main?.frame.height ?? 0
+    }
+
+    /// Roles that are actual things under the pill: a browser tab
+    /// (Chrome exposes tabs as radio buttons), a search button or
+    /// field, text, a link, an image, a table cell, a menu item.
+    /// Everything else — scroll areas, web areas, groups, toolbars,
+    /// split groups, windows — is a container or background, and
+    /// must NOT hide the pill on its own.
+    static let contentRoles: Set<String> = [
+        "AXButton", "AXRadioButton", "AXCheckBox", "AXPopUpButton",
+        "AXMenuButton", "AXStaticText", "AXTextField", "AXTextArea",
+        "AXLink", "AXImage", "AXCell", "AXRow", "AXMenuItem",
+        "AXSlider", "AXComboBox", "AXDisclosureTriangle",
+    ]
+
     /// True when any sampled point under the pill lands on a
-    /// specific UI element rather than just the window itself.
-    static func contentUnderPill(pillFrame: NSRect, mainHeight: CGFloat) -> (found: Bool, role: String?, title: String?, trusted: Bool) {
+    /// whitelisted content element.
+    static func contentUnderPill(pillFrame: NSRect) -> (found: Bool, role: String?, title: String?, trusted: Bool) {
         guard AXIsProcessTrusted() else {
             return (found: false, role: nil, title: nil, trusted: false)
         }
-        let centerYAppKit = pillFrame.midY
-        let centerYQuartz = mainHeight - centerYAppKit
+        let centerYQuartz = primaryHeight - pillFrame.midY
         for fraction in [0.1, 0.3, 0.5, 0.7, 0.9] {
             let x = pillFrame.minX + pillFrame.width * fraction
             let point = CGPoint(x: x, y: centerYQuartz)
             guard let el = elementAt(quartzPoint: point) else { continue }
-            // The window itself, the application, and the system-wide
-            // element are background, not content.
-            if el.role == "AXWindow" || el.role == "AXApplication" || el.role.isEmpty {
-                continue
+            if contentRoles.contains(el.role) {
+                return (found: true, role: el.role, title: el.title, trusted: true)
             }
-            return (found: true, role: el.role, title: el.title, trusted: true)
         }
         return (found: false, role: nil, title: nil, trusted: true)
     }
 
     static func check(pillFrame: NSRect) -> Result {
-        guard let frontmost = NSWorkspace.shared.frontmostApplication else {
-            return Result(covered: false, ownerName: "", windowFrame: nil, elementRole: nil, elementTitle: nil, axTrusted: AXIsProcessTrusted())
-        }
-        let frontPID = frontmost.processIdentifier
         let ownPID = ProcessInfo.processInfo.processIdentifier
-        guard frontPID != ownPID else {
-            return Result(covered: false, ownerName: frontmost.localizedName ?? "", windowFrame: nil, elementRole: nil, elementTitle: nil, axTrusted: AXIsProcessTrusted())
-        }
-        guard let mainHeight = NSScreen.main?.frame.height,
+        let mainHeight = primaryHeight
+        guard mainHeight > 0,
               let list = CGWindowListCopyWindowInfo(
                   [.optionOnScreenOnly, .excludeDesktopElements],
                   kCGNullWindowID
               ) as? [[String: Any]] else {
-            return Result(covered: false, ownerName: frontmost.localizedName ?? "", windowFrame: nil, elementRole: nil, elementTitle: nil, axTrusted: AXIsProcessTrusted())
+            return Result(covered: false, ownerName: "", windowFrame: nil, elementRole: nil, elementTitle: nil, axTrusted: AXIsProcessTrusted())
         }
-        let ownerName = frontmost.localizedName ?? ""
         let pillArea = pillFrame.width * pillFrame.height
         guard pillArea > 0 else {
-            return Result(covered: false, ownerName: ownerName, windowFrame: nil, elementRole: nil, elementTitle: nil, axTrusted: AXIsProcessTrusted())
+            return Result(covered: false, ownerName: "", windowFrame: nil, elementRole: nil, elementTitle: nil, axTrusted: AXIsProcessTrusted())
         }
         for win in list {
-            // Foreground app only, like Nusa's GetForegroundWindow.
-            guard let pid = (win[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value, pid == frontPID else {
+            // Any window on the pill's screen, not just the
+            // frontmost app's: the pill on monitor 1 must still
+            // hide when a monitor-1 window covers it, even while
+            // the active app lives on monitor 2. The AX sample
+            // below is what actually identifies the element under
+            // the pill, regardless of which app is frontmost.
+            guard let pid = (win[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value, pid != ownPID else {
                 continue
             }
             if let layer = (win[kCGWindowLayer as String] as? NSNumber)?.intValue, layer != 0 {
@@ -137,17 +166,19 @@ enum OverlapDetector {
                   let h = (boundsDict["Height"] as? NSNumber)?.doubleValue else {
                 continue
             }
-            // Quartz (top-left origin) -> AppKit (bottom-left origin).
+            // Quartz (top-left origin, relative to the primary
+            // display) -> AppKit (bottom-left origin).
             let bounds = NSRect(x: x, y: mainHeight - yQ - h, width: w, height: h)
             let inter = pillFrame.intersection(bounds)
             if !inter.isNull, inter.width * inter.height > pillArea * 0.25 {
                 // Frame overlap is only the first gate. The second
                 // gate is what is actually under the pill.
-                let ax = contentUnderPill(pillFrame: pillFrame, mainHeight: mainHeight)
+                let ownerName = (win[kCGWindowOwnerName as String] as? String) ?? ""
+                let ax = contentUnderPill(pillFrame: pillFrame)
                 return Result(covered: ax.found, ownerName: ownerName, windowFrame: bounds,
                               elementRole: ax.role, elementTitle: ax.title, axTrusted: ax.trusted)
             }
         }
-        return Result(covered: false, ownerName: ownerName, windowFrame: nil, elementRole: nil, elementTitle: nil, axTrusted: AXIsProcessTrusted())
+        return Result(covered: false, ownerName: "", windowFrame: nil, elementRole: nil, elementTitle: nil, axTrusted: AXIsProcessTrusted())
     }
 }
