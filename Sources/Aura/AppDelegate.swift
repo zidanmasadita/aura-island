@@ -752,7 +752,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        statusItem.button?.title = "Aura"
+        // Menu-bar (taskbar) icon: the Aura logo, not the "Aura"
+        // text title. Falls back to the text title if the logo is
+        // missing from the bundle (e.g. an old package script).
+        if let path = Bundle.main.path(forResource: "AuraLogo", ofType: "png"),
+           let logo = NSImage(contentsOfFile: path) {
+            logo.size = NSSize(width: 18, height: 18)
+            statusItem.button?.image = logo
+            statusItem.button?.title = ""
+        } else {
+            statusItem.button?.title = "Aura"
+        }
         let menu = NSMenu()
         let about = NSMenuItem(title: "About Aura Island", action: #selector(showAbout), keyEquivalent: "")
         about.target = self
