@@ -350,6 +350,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func setState(_ state: IslandState) {
+        // Leaving the hidden tip (hover opens it, or a state change
+        // re-asserts a size) must restore content drawing; the
+        // overlap tick re-hides it on the next tick if content is
+        // still underneath.
+        islandView.isOverlapHidden = false
         // Opening a card cancels a live pill alert: the user's
         // action wins, and the alert must not resurrect when the
         // card closes (its timer would otherwise still be running).
@@ -733,15 +738,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// therefore never blocked by hiding, and leaving the pill
     /// lets the next tick hide it again while content is still
     /// underneath. Alerts force the pill visible while live.
+    /// Overlap hiding for closed pills (zen/compact/split only).
+    /// Runs on the 1s tick. The overlap test uses the pill's NORMAL
+    /// frame, not its current frame: once hidden, the current frame
+    /// is a 6px strip, so testing it would immediately report
+    /// "no overlap" and restore in a flicker loop. Hide when the
+    /// frontmost app's window covers >25% of the normal pill;
+    /// restore only after 2 consecutive ticks with no overlap.
+    /// Hiding shrinks the window to a 6px strip at the top
+    /// (animator places it via topY, just below the menu bar),
+    /// instead of sliding the full pill up: the menu bar is
+    /// TRANSLUCENT, so a full pill slid under it stays visible
+    /// through it — that is why the slide-up version looked like
+    /// it never hid at all. A 6px strip below the menu bar is a
+    /// true tip, and it still receives hover, so hovering it runs
+    /// the normal hover path (expanded card, or compact when
+    /// idle); leaving the pill lets the next tick hide it again
+    /// while content is still underneath. Alerts force the pill
+    /// visible while live.
     private func updateOverlapHiding() {
         guard islandView.state != .expanded,
               !islandView.isDraggingOut, !islandView.isShowingModal,
               !islandView.trayDropHighlight, !islandView.isTrayBouncing,
-              let screen = NSScreen.main else { return }
+              let screen = window.screen ?? NSScreen.main else { return }
         if islandView.pillAlert != nil {
             if pillHiddenForOverlap {
                 pillHiddenForOverlap = false
                 overlapClearTicks = 0
+                islandView.isOverlapHidden = false
                 animator.animate(to: windowSize(for: islandView.state))
             }
             return
@@ -751,20 +775,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let normalY = IslandWindow.topY(forHeight: size.height, on: screen)
         let normalFrame = NSRect(x: window.frame.midX - size.width / 2,
                                  y: normalY, width: size.width, height: size.height)
-        let hiddenY = normalY + size.height - 6
         let overlap = OverlapDetector.check(pillFrame: normalFrame)
         if overlap.covered {
             overlapClearTicks = 0
-            if !pillHiddenForOverlap || abs(window.frame.minY - hiddenY) > 0.5 {
+            if !pillHiddenForOverlap || abs(window.frame.height - 6) > 0.5 {
                 pillHiddenForOverlap = true
-                print("[Aura] Overlap hide: foreground=\(overlap.ownerName) window=\(String(describing: overlap.windowFrame)) pill=\(normalFrame)")
-                animator.animate(to: size, yOverride: hiddenY)
+                islandView.isOverlapHidden = true
+                print("[Aura] Overlap hide: foreground=\(overlap.ownerName) window=\(String(describing: overlap.windowFrame)) pill=\(normalFrame) windowNow=\(window.frame)")
+                animator.animate(to: NSSize(width: size.width, height: 6))
             }
         } else if pillHiddenForOverlap {
             overlapClearTicks += 1
             if overlapClearTicks >= 2 {
                 pillHiddenForOverlap = false
                 overlapClearTicks = 0
+                islandView.isOverlapHidden = false
                 print("[Aura] Overlap restore: foreground=\(overlap.ownerName) no longer covers pill")
                 animator.animate(to: windowSize(for: islandView.state))
             }

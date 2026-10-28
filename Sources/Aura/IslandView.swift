@@ -1166,6 +1166,11 @@ final class IslandView: NSView, NSDraggingSource {
         ctx.strokePath()
         ctx.restoreGState()
 
+        // Overlap-hidden tip: shape only, no content. Drawing eyes
+        // or clock text into a 6px window would clip it into a
+        // smeared slice; the strip alone is the marker.
+        if isOverlapHidden { return }
+
         // A live pill alert takes over every closed pill (zen,
         // compact, split) with its widened horizontal layout; it
         // never touches an expanded card (alerts do not fire while
@@ -2475,6 +2480,10 @@ final class IslandView: NSView, NSDraggingSource {
     /// start, cleared when the session ends). AppDelegate skips
     /// hover-collapse while this is true.
     var isDraggingOut = false
+    /// True while the pill is overlap-hidden to a tip strip: draw
+    /// only the pill shape, no eyes/clock/content, so the strip is
+    /// a clean marker instead of a slice of text.
+    var isOverlapHidden = false
     /// Last drag-over point in view coords (for the "+ Copy" badge).
     /// Nil when no drag hovers.
     private var trayDragPoint: NSPoint? { didSet { needsDisplay = true } }
