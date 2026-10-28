@@ -63,6 +63,13 @@ final class IslandAnimator {
     /// Animates to a size at the normal top Y, or to yOverride
     /// when given — the overlap-hide path uses it to slide the pill
     /// up so only its tip remains visible, without changing size.
+    /// Stops any running animation so a direct setFrame is not
+    /// overwritten by a stale animation step.
+    func cancel() {
+        timer?.invalidate()
+        timer = nil
+    }
+
     func animate(to size: NSSize, yOverride: CGFloat? = nil) {
         guard let window else { return }
         timer?.invalidate()

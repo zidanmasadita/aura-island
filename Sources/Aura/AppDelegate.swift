@@ -164,6 +164,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // below-notch symptom is detection failing (hasNotch=false)
         // or the window being placed/constrained elsewhere
         // (hasNotch=true but Y wrong). No behavior change.
+        print("[Aura] Overlap hide v3: direct 6px strip, setState clears flag only on state change")
         if let screen = NSScreen.main {
             let notch = HardwareNotch.forMainScreen()
             print("[Aura] Notch: hasNotch=\(notch.hasNotch) width=\(notch.width) height=\(notch.height) frame=\(screen.frame) visibleFrame=\(screen.visibleFrame) auxLeft=\(String(describing: screen.auxiliaryTopLeftArea)) auxRight=\(String(describing: screen.auxiliaryTopRightArea)) safeTop=\(screen.safeAreaInsets.top)")
@@ -304,6 +305,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func handleHover(_ hovering: Bool) {
         if hovering {
+            // Hovering a hidden tip opens the pill on purpose, even
+            // when the hover target state equals the current state
+            // (e.g. compact while already compact).
+            if pillHiddenForOverlap {
+                pillHiddenForOverlap = false
+                overlapClearTicks = 0
+                islandView.isOverlapHidden = false
+            }
             // Hover opens the card directly, no click needed — but
             // only when there is something to show. Idle (no session)
             // keeps the old hover-to-compact behaviour, so hovering
@@ -350,11 +359,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func setState(_ state: IslandState) {
-        // Leaving the hidden tip (hover opens it, or a state change
-        // re-asserts a size) must restore content drawing; the
-        // overlap tick re-hides it on the next tick if content is
-        // still underneath.
-        islandView.isOverlapHidden = false
+        // A hidden pill must not be restored by a same-state call:
+        // hover re-asserting compact and tray size re-applies both
+        // call setState with the current state, and clearing the
+        // flag + animating to normal there undid every hide on the
+        // next tick. Only a real state change clears the flag.
+        // (Hovering the tip is handled separately in handleHover,
+        // which clears the flag before opening.)
+        if state != islandView.state {
+            islandView.isOverlapHidden = false
+        } else if pillHiddenForOverlap && state != .expanded {
+            return
+        }
         // Opening a card cancels a live pill alert: the user's
         // action wins, and the alert must not resurrect when the
         // card closes (its timer would otherwise still be running).
@@ -766,7 +782,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 pillHiddenForOverlap = false
                 overlapClearTicks = 0
                 islandView.isOverlapHidden = false
-                animator.animate(to: windowSize(for: islandView.state))
+                animator.cancel()
+                let s = windowSize(for: islandView.state)
+                window.setFrame(NSRect(x: window.frame.midX - s.width / 2,
+                                       y: IslandWindow.topY(forHeight: s.height, on: screen),
+                                       width: s.width, height: s.height), display: true)
             }
             return
         }
@@ -782,7 +802,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 pillHiddenForOverlap = true
                 islandView.isOverlapHidden = true
                 print("[Aura] Overlap hide: foreground=\(overlap.ownerName) window=\(String(describing: overlap.windowFrame)) pill=\(normalFrame) windowNow=\(window.frame)")
-                animator.animate(to: NSSize(width: size.width, height: 6))
+                animator.cancel()
+                window.setFrame(NSRect(x: window.frame.midX - size.width / 2,
+                                       y: IslandWindow.topY(forHeight: 6, on: screen),
+                                       width: size.width, height: 6), display: true)
+                islandView.needsDisplay = true
             }
         } else if pillHiddenForOverlap {
             overlapClearTicks += 1
@@ -791,7 +815,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 overlapClearTicks = 0
                 islandView.isOverlapHidden = false
                 print("[Aura] Overlap restore: foreground=\(overlap.ownerName) no longer covers pill")
-                animator.animate(to: windowSize(for: islandView.state))
+                animator.cancel()
+                let s = windowSize(for: islandView.state)
+                window.setFrame(NSRect(x: window.frame.midX - s.width / 2,
+                                       y: IslandWindow.topY(forHeight: s.height, on: screen),
+                                       width: s.width, height: s.height), display: true)
             }
         }
     }
