@@ -125,7 +125,7 @@ enum OverlapDetector {
         guard AXIsProcessTrusted() else {
             return (found: false, role: nil, title: nil, trusted: false, intersectingRoles: [])
         }
-        let primaryHeight = primaryHeight
+        let pHeight = primaryHeight
         let appElement = AXUIElementCreateApplication(windowPID)
         var windowsValue: AnyObject?
         guard AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsValue) == .success,
@@ -138,7 +138,7 @@ enum OverlapDetector {
             if visited > 3000 || depth > 16 { return nil }
             visited += 1
             let role = axString(element, kAXRoleAttribute as CFString)
-            if let frame = axFrame(element, primaryHeight: primaryHeight) {
+            if let frame = axFrame(element, primaryHeight: pHeight) {
                 if frame.intersection(pillFrame).isNull {
                     return nil
                 }
