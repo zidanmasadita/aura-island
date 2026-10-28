@@ -70,24 +70,6 @@ final class IslandAnimator {
         timer = nil
     }
 
-    /// Sets the frame immediately, no interpolation. Used for
-    /// press-to-close: the user asked for no closing animation
-    /// there, so the card must vanish at once, not shrink over
-    /// 0.35s.
-    func setImmediately(to size: NSSize) {
-        guard let window else { return }
-        timer?.invalidate()
-        timer = nil
-        let x = window.frame.midX - size.width / 2
-        let y: CGFloat
-        if let screen = NSScreen.main {
-            y = IslandWindow.topY(forHeight: size.height, on: screen)
-        } else {
-            y = window.frame.minY
-        }
-        window.setFrame(NSRect(x: x, y: y, width: size.width, height: size.height), display: true)
-    }
-
     func animate(to size: NSSize, yOverride: CGFloat? = nil) {
         guard let window else { return }
         timer?.invalidate()

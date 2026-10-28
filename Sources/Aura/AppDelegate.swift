@@ -352,16 +352,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func handleClick() {
         if islandView.state == .expanded {
-            // Press-to-close has no animation by request: instant.
-            // Press-to-open keeps the normal animation.
-            setState(.compact, animated: false)
+            setState(.compact)
         } else {
             setState(.expanded)
         }
         window.ignoresMouseEvents = false
     }
 
-    func setState(_ state: IslandState, animated: Bool = true) {
+    func setState(_ state: IslandState) {
         // A hidden pill must not be restored by a same-state call:
         // hover re-asserting compact and tray size re-applies both
         // call setState with the current state, and clearing the
@@ -396,11 +394,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // wide, pomodoro 160, lyrics mode 360). Setting state first matters: leaving
         // expanded updates lyricsMode in didSet before closedSize is
         // read.
-        if animated {
-            animator.animate(to: windowSize(for: state))
-        } else {
-            animator.setImmediately(to: windowSize(for: state))
-        }
+        animator.animate(to: windowSize(for: state))
     }
 
     /// Window size for a state. A live pill alert widens every
