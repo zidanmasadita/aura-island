@@ -60,13 +60,18 @@ final class IslandAnimator {
         self.window = window
     }
 
-    func animate(to size: NSSize) {
+    /// Animates to a size at the normal top Y, or to yOverride
+    /// when given — the overlap-hide path uses it to slide the pill
+    /// up so only its tip remains visible, without changing size.
+    func animate(to size: NSSize, yOverride: CGFloat? = nil) {
         guard let window else { return }
         timer?.invalidate()
         from = window.frame
         let x = window.frame.midX - size.width / 2
         let y: CGFloat
-        if let screen = NSScreen.main {
+        if let yOverride {
+            y = yOverride
+        } else if let screen = NSScreen.main {
             y = IslandWindow.topY(forHeight: size.height, on: screen)
         } else {
             y = window.frame.minY

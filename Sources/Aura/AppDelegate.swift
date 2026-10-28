@@ -35,6 +35,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pollTimer: Timer?
     private var lyricTimer: Timer?
     private var eyeTimer: Timer?
+    private var pillHiddenForOverlap = false
+    private var overlapClearTicks = 0
     private var nextEyeBlink = Date(timeIntervalSinceNow: 3)
     private var eyeBlinkUntil = Date.distantPast
     private var currentTrackKey: String?
@@ -462,6 +464,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             islandView.batteryPercent = nil
         }
         refresh()
+        updateOverlapHiding()
     }
 
     /// Pill alert edges, checked on the fast alert timer (0.25s):
@@ -715,6 +718,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             detail: .bar(brightness),
             until: Date() + pillAlertDuration,
             priority: 2)
+    }
+
+    /// Overlap hiding for closed pills (zen/compact/split only).
+    /// Runs on the 1s tick. The overlap test uses the pill's NORMAL
+    /// frame, not its current frame: once hidden, the current frame
+    /// is mostly off-screen, so testing it would immediately report
+    /// "no overlap" and restore in a flicker loop. Hide when another
+    /// app's window covers >25% of the normal pill; restore only
+    /// after 2 consecutive ticks with no overlap (hysteresis).
+    /// While hidden, the pill's visible 6px tip still receives
+    /// hover, so hovering it runs the normal hover path
+    /// (expanded card, or compact when idle) — hovering is
+    /// therefore never blocked by hiding, and leaving the pill
+    /// lets the next tick hide it again while content is still
+    /// underneath. Alerts force the pill visible while live.
+    private func updateOverlapHiding() {
+        guard islandView.state != .expanded,
+              !islandView.isDraggingOut, !islandView.isShowingModal,
+              !islandView.trayDropHighlight, !islandView.isTrayBouncing,
+              let screen = NSScreen.main else { return }
+        if islandView.pillAlert != nil {
+            if pillHiddenForOverlap {
+                pillHiddenForOverlap = false
+                overlapClearTicks = 0
+                animator.animate(to: windowSize(for: islandView.state))
+            }
+            return
+        }
+        guard !isHovering else { return }
+        let size = windowSize(for: islandView.state)
+        let normalY = IslandWindow.topY(forHeight: size.height, on: screen)
+        let normalFrame = NSRect(x: window.frame.midX - size.width / 2,
+                                 y: normalY, width: size.width, height: size.height)
+        let hiddenY = normalY + size.height - 6
+        if OverlapDetector.coversContent(pillFrame: normalFrame) {
+            overlapClearTicks = 0
+            if !pillHiddenForOverlap || abs(window.frame.minY - hiddenY) > 0.5 {
+                pillHiddenForOverlap = true
+                animator.animate(to: size, yOverride: hiddenY)
+            }
+        } else if pillHiddenForOverlap {
+            overlapClearTicks += 1
+            if overlapClearTicks >= 2 {
+                pillHiddenForOverlap = false
+                overlapClearTicks = 0
+                animator.animate(to: windowSize(for: islandView.state))
+            }
+        }
     }
 
     private func refresh() {
