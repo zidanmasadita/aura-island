@@ -34,6 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let bridge = ExtensionBridge()
     private let lyrics = LyricsClient()
     private var pollTimer: Timer?
+    private var lyricTimer: Timer?
     private var currentTrackKey: String?
     private var lastMediaLog: String?
     private var lastTabLog: String?
@@ -187,6 +188,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.updatePillAlerts()
         }
         if let alertTimer { RunLoop.main.add(alertTimer, forMode: .common) }
+        // Lyric line refresh, DynamicNotch cadence: the 1s session
+        // poll alone made line changes lag up to a second. 0.35s
+        // keeps the line in step with the vocal without touching
+        // the sensor poll. It only re-evaluates when a session and
+        // fetched lines exist; updateLyricLines is a no-op when the
+        // line is unchanged, so this does not redraw needlessly.
+        // .common modes so it fires during drags/scrolls too.
+        lyricTimer = Timer(timeInterval: 0.35, repeats: true) { [weak self] _ in
+            guard let self, self.sessions.current != nil, !self.lyricsLines.isEmpty else { return }
+            self.refreshLyricLine()
+        }
+        if let lyricTimer { RunLoop.main.add(lyricTimer, forMode: .common) }
         // LAN sharing: discover peers, receive shares, announce us.
         // Started once at launch so shares can arrive anytime, not
         // just while the tray is open.
@@ -756,7 +769,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             islandView.clearLyricLines()
             return
         }
-        let t = islandView.livePosition
+        // DynamicNotch lead-in: a line is shown 0.18s before its
+        // timestamp, so the roll lands on the vocal instead of
+        // after it. The per-track nudge (lyricsLines already
+        // includes it) still applies on top if the user tuned one.
+        let t = islandView.livePosition + 0.18
         var index: Int?
         for (i, entry) in lyricsLines.enumerated() where entry.time <= t {
             index = i

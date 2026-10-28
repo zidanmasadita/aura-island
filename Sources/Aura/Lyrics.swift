@@ -6,82 +6,180 @@ import Foundation
 final class LyricsClient {
     func fetchLyrics(title: String, artist: String, duration: Double,
                      completion: @escaping ([(time: Double, text: String)]) -> Void) {
-        var components = URLComponents(string: "https://lrclib.net/api/search")
-        components?.queryItems = [
-            URLQueryItem(name: "track_name", value: title),
-            URLQueryItem(name: "artist_name", value: artist),
-        ]
-        guard let url = components?.url else {
-            completion([])
-            return
+        // LRCLIB has nothing for this song — fall back to lyrics.ovh
+        // (plain lyrics, no timestamps), parsed through the same
+        // even-spacing path as plain LRCLIB results.
+        let fallbackToOvh: () -> Void = {
+            Self.fetchOvhLyrics(title: title, artist: artist) { ovhText in
+                let ovhLines = Self.parsePlain(ovhText, duration: duration) ?? []
+                DispatchQueue.main.async { completion(ovhLines) }
+            }
         }
-        var request = URLRequest(url: url)
-        request.setValue("Aura-Island/1.0 (macOS)", forHTTPHeaderField: "User-Agent")
-        URLSession.shared.dataTask(with: request) { data, _, _ in
-            // LRCLIB has nothing for this song — fall back to lyrics.ovh
-            // (plain lyrics, no timestamps), parsed through the same
-            // even-spacing path as plain LRCLIB results.
-            let fallbackToOvh: () -> Void = {
-                Self.fetchOvhLyrics(title: title, artist: artist) { ovhText in
-                    let ovhLines = Self.parsePlain(ovhText, duration: duration) ?? []
-                    DispatchQueue.main.async { completion(ovhLines) }
-                }
-            }
-            guard let data,
-                  let array = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]],
-                  !array.isEmpty else {
-                fallbackToOvh()
-                return
-            }
-            // Pick the best version, not just the first hit: LRCLIB
-            // search returns several versions of a song (remix,
-            // extended, live) whose lyric timestamps differ, and the
-            // first hit is often the wrong one — the common "lyrics
-            // out of sync" cause. Prefer a result with synced lyrics
-            // whose title AND artist match the query (either direction,
-            // to tolerate "(Official Video)"-style suffixes on either
-            // side) and whose duration matches the playing track. When
-            // no candidate matches title/artist, fall back to the full
-            // pool rather than showing nothing — the sensor title may
-            // itself carry a suffix the API does not. When durations
-            // are unknown, fall back to the first hit as before.
-            let normalize: (String) -> String = { s in
-                s.lowercased().split(separator: " ", omittingEmptySubsequences: true).joined(separator: " ")
-            }
-            let wantTitle = normalize(title)
-            let wantArtist = normalize(artist)
-            let matchesQuery: ([String: Any]) -> Bool = { result in
-                guard let trackName = result["trackName"] as? String else { return false }
-                let track = normalize(trackName)
-                let titleOK = !wantTitle.isEmpty
-                    && (track == wantTitle || track.contains(wantTitle) || wantTitle.contains(track))
-                guard titleOK else { return false }
-                guard !wantArtist.isEmpty,
-                      let artistName = result["artistName"] as? String else { return true }
-                let trackArtist = normalize(artistName)
-                return trackArtist == wantArtist
-                    || trackArtist.contains(wantArtist) || wantArtist.contains(trackArtist)
-            }
-            let score: ([String: Any]) -> Double = { result in
-                guard duration > 0,
-                      let d = result["duration"] as? Double, d > 0 else {
-                    return .greatestFiniteMagnitude
-                }
-                return abs(d - duration)
-            }
-            let withSynced = array.filter { ($0["syncedLyrics"] as? String)?.isEmpty == false }
-            let pool = withSynced.isEmpty ? array : withSynced
-            let verified = pool.filter(matchesQuery)
-            let selectionPool = verified.isEmpty ? pool : verified
-            let best = selectionPool.min(by: { score($0) < score($1) }) ?? array[0]
-            let lines = Self.parseSynced(best["syncedLyrics"] as? String)
-                ?? Self.parsePlain(best["plainLyrics"] as? String, duration: duration)
-                ?? []
+        let finish: ([(time: Double, text: String)]) -> Void = { lines in
             if lines.isEmpty {
                 fallbackToOvh()
+            } else {
+                DispatchQueue.main.async { completion(lines) }
+            }
+        }
+        // Step 1 — LRCLIB /get, the exact endpoint: one object for
+        // this track/artist/duration, not a search list. This is the
+        // DynamicNotch order, and it is the main fix for "lyrics
+        // rarely sync": the old code only searched, so a remix/live/
+        // extended version with different timestamps could win.
+        // Album is not sent: Aura's session does not carry an album
+        // field (JXA reports it, but NowPlaying drops it), so /get
+        // is narrowed by track + artist + duration only.
+        if let getURL = Self.lrclibURL(endpoint: "get", title: title, artist: artist,
+                                       duration: duration, includeDuration: true) {
+            Self.fetchObject(url: getURL) { result in
+                if let result,
+                   let lines = Self.parseSynced(result["syncedLyrics"] as? String)
+                       ?? Self.parsePlain(result["plainLyrics"] as? String, duration: duration) {
+                    finish(lines)
+                } else {
+                    self.trySearch(title: title, artist: artist, duration: duration,
+                                   attempt: 0, finish: finish, fallbackToOvh: fallbackToOvh)
+                }
+            }
+        } else {
+            trySearch(title: title, artist: artist, duration: duration,
+                      attempt: 0, finish: finish, fallbackToOvh: fallbackToOvh)
+        }
+    }
+
+    /// Sequential LRCLIB /search attempts, DynamicNotch order:
+    /// (0) track + artist + duration, (1) track + artist,
+    /// (2) free-text q = "artist title". Each attempt picks its best
+    /// candidate by weighted score (see score(_:)); a later attempt
+    /// only runs when the earlier one produced no usable lines.
+    private func trySearch(title: String, artist: String, duration: Double,
+                           attempt: Int,
+                           finish: @escaping ([(time: Double, text: String)]) -> Void,
+                           fallbackToOvh: @escaping () -> Void) {
+        let attempts: [(includeDuration: Bool, useQuery: Bool)] = [
+            (true, false), (false, false), (false, true),
+        ]
+        guard attempt < attempts.count else {
+            fallbackToOvh()
+            return
+        }
+        let spec = attempts[attempt]
+        guard let url = Self.lrclibURL(endpoint: "search", title: title, artist: artist,
+                                       duration: duration, includeDuration: spec.includeDuration,
+                                       useQuery: spec.useQuery) else {
+            trySearch(title: title, artist: artist, duration: duration,
+                      attempt: attempt + 1, finish: finish, fallbackToOvh: fallbackToOvh)
+            return
+        }
+        Self.fetchArray(url: url) { array in
+            guard let array, !array.isEmpty else {
+                self.trySearch(title: title, artist: artist, duration: duration,
+                               attempt: attempt + 1, finish: finish, fallbackToOvh: fallbackToOvh)
                 return
             }
-            DispatchQueue.main.async { completion(lines) }
+            // Weighted pick, DynamicNotch scoring: exact title/artist
+            // dominate, synced lyrics and a close duration are bonuses.
+            // Exactness is a bonus, not a filter, so a sensor title
+            // carrying "(Official Video)" still resolves to the best
+            // candidate instead of nothing.
+            let pool = array.filter { result in
+                (result["syncedLyrics"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                    || (result["plainLyrics"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            }
+            var best: [String: Any]? = nil
+            var bestScore = Int.min
+            for result in pool {
+                let s = Self.score(result, title: title, artist: artist, duration: duration)
+                if s > bestScore {
+                    bestScore = s
+                    best = result
+                }
+            }
+            if let best,
+               let lines = Self.parseSynced(best["syncedLyrics"] as? String)
+                   ?? Self.parsePlain(best["plainLyrics"] as? String, duration: duration) {
+                finish(lines)
+            } else {
+                self.trySearch(title: title, artist: artist, duration: duration,
+                               attempt: attempt + 1, finish: finish, fallbackToOvh: fallbackToOvh)
+            }
+        }
+    }
+
+    private static func lrclibURL(endpoint: String, title: String, artist: String,
+                                  duration: Double, includeDuration: Bool,
+                                  useQuery: Bool = false) -> URL? {
+        var components = URLComponents(string: "https://lrclib.net/api/\(endpoint)")
+        if useQuery {
+            let q = [artist, title].filter { !$0.isEmpty }.joined(separator: " ")
+            guard !q.isEmpty else { return nil }
+            components?.queryItems = [URLQueryItem(name: "q", value: q)]
+        } else {
+            var items = [
+                URLQueryItem(name: "track_name", value: title),
+                URLQueryItem(name: "artist_name", value: artist),
+            ]
+            if includeDuration, duration > 0 {
+                items.append(URLQueryItem(name: "duration", value: "\(Int(duration.rounded()))"))
+            }
+            components?.queryItems = items
+        }
+        return components?.url
+    }
+
+    private static func score(_ result: [String: Any], title: String, artist: String,
+                              duration: Double) -> Int {
+        let norm: (String) -> String = { s in
+            s.trimmingCharacters(in: .whitespacesAndNewlines)
+                .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+                .replacingOccurrences(of: "\u{2019}", with: "'")
+        }
+        var s = 0
+        if !title.isEmpty, let track = result["trackName"] as? String, norm(track) == norm(title) {
+            s += 120
+        }
+        if !artist.isEmpty, let name = result["artistName"] as? String, norm(name) == norm(artist) {
+            s += 90
+        }
+        if let synced = result["syncedLyrics"] as? String,
+           !synced.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            s += 20
+        }
+        if duration > 0, let d = result["duration"] as? Double, d > 0 {
+            let delta = abs(Int(d.rounded()) - Int(duration.rounded()))
+            if delta <= 2 { s += 24 } else if delta <= 6 { s += 12 }
+        }
+        return s
+    }
+
+    private static func fetchObject(url: URL, completion: @escaping ([String: Any]?) -> Void) {
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 30
+        request.setValue("Aura-Island/1.0 (macOS)", forHTTPHeaderField: "User-Agent")
+        URLSession.shared.dataTask(with: request) { data, response, _ in
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+                  let data,
+                  let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+                completion(nil)
+                return
+            }
+            completion(obj)
+        }.resume()
+    }
+
+    private static func fetchArray(url: URL, completion: @escaping ([[String: Any]]?) -> Void) {
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 30
+        request.setValue("Aura-Island/1.0 (macOS)", forHTTPHeaderField: "User-Agent")
+        URLSession.shared.dataTask(with: request) { data, response, _ in
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+                  let data,
+                  let array = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else {
+                completion(nil)
+                return
+            }
+            completion(array)
         }.resume()
     }
 
