@@ -392,6 +392,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         case .todo: return NSSize(width: 640, height: 220)
         case .water: return NSSize(width: 640, height: 180)
         case .tray: return NSSize(width: 640, height: 280)
+        case .removeBg: return NSSize(width: 640, height: 280)
         case .sources: return NSSize(width: 640, height: 220)
         }
     }
@@ -411,7 +412,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         return lyricsMode ? NSSize(width: 360, height: 32) : NSSize(width: 180, height: 32)
     }
 
-    private enum CardPage { case music, lyrics, pomodoro, todo, water, tray, sources }
+    private enum CardPage { case music, lyrics, pomodoro, todo, water, tray, removeBg, sources }
 
     /// Sections the dots and three-finger swipe offer: music +
     /// pomodoro + todo + water + tray always, sources only when there is more than
@@ -420,7 +421,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     /// never land on it; that was the old chevron's mistake (it
     /// jumped to lyrics).
     private var availableSections: [CardPage] {
-        sessionsForPicker.count > 1 ? [.music, .pomodoro, .todo, .water, .tray, .sources] : [.music, .pomodoro, .todo, .water, .tray]
+        sessionsForPicker.count > 1 ? [.music, .pomodoro, .todo, .water, .tray, .removeBg, .sources] : [.music, .pomodoro, .todo, .water, .tray, .removeBg]
     }
 
     /// The page actually drawn (lyrics included). Sources falls back
@@ -835,6 +836,25 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
                 }
                 // Empty tray or unhandled click: fall through to collapse.
             }
+        case .removeBg:
+            if removeBgProcessing {
+                // A run already in flight: ignore pick/save
+                // clicks and fall through to collapse (the upload
+                // keeps running in the background).
+            } else if removeBgResultData != nil, removeBgSaveRect().contains(point) {
+                saveRemoveBgResult()
+                return
+            } else if removeBgPickRect().contains(point) {
+                pickRemoveBgImage()
+                return
+            } else if removeBgOriginal != nil, removeBgResult != nil, removeBgCompareRect().contains(point) {
+                // Clicking the comparison jumps the divider here
+                // and starts a drag, like a before/after slider.
+                removeBgDividerDragging = true
+                updateRemoveBgDivider(from: point)
+                needsDisplay = true
+                return
+            }
         }
         // Any other click on the expanded card collapses it. Without this
         // fallthrough there was no way to close the card by clicking: only
@@ -850,6 +870,11 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     /// only tray tiles drag — other sections are untouched). The
     /// file stays in the tray (copy, not move).
     override func mouseDragged(with event: NSEvent) {
+        if removeBgDividerDragging {
+            let point = convert(event.locationInWindow, from: nil)
+            updateRemoveBgDivider(from: point)
+            return
+        }
         guard let pending = trayPendingDrag else { return }
         let point = convert(event.locationInWindow, from: nil)
         guard abs(point.x - pending.point.x) > 3 || abs(point.y - pending.point.y) > 3 else { return }
@@ -874,6 +899,10 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     }
 
     override func mouseUp(with event: NSEvent) {
+        if removeBgDividerDragging {
+            removeBgDividerDragging = false
+            needsDisplay = true
+        }
         // A press on a grid tile without a drag is a tap = share.
         // (After a real drag, pending is already nil — the drag
         // cleared it on start — so this never shares post-drag.)
@@ -967,6 +996,13 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         guard sender.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: [NSPasteboard.ReadingOptionKey.urlReadingFileURLsOnly: true]) else {
             return []
         }
+        if state == .expanded, currentPage == .removeBg {
+            // Dropping onto the open Remove BG card goes to
+            // Remove BG, not the tray: do NOT call
+            // onDragEnteredTray (it would switch to tray).
+            removeBgDropHighlight = true
+            return .copy
+        }
         if trayShareFile != nil { clearTrayShare() }
         trayDragPoint = convert(sender.draggingLocation, from: nil)
         trayDropHighlight = true
@@ -979,6 +1015,9 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         guard sender.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: [NSPasteboard.ReadingOptionKey.urlReadingFileURLsOnly: true]) else {
             return []
         }
+        if state == .expanded, currentPage == .removeBg {
+            return .copy
+        }
         // Track the cursor so the "+ Copy" badge follows it.
         trayDragPoint = convert(sender.draggingLocation, from: nil)
         return .copy
@@ -987,6 +1026,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     override func draggingExited(_ sender: NSDraggingInfo?) {
         trayDragPoint = nil
         trayDropHighlight = false
+        removeBgDropHighlight = false
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
@@ -994,6 +1034,17 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         guard let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [NSPasteboard.ReadingOptionKey.urlReadingFileURLsOnly: true]) as? [URL] else {
             trayDragPoint = nil
             trayDropHighlight = false
+            return false
+        }
+        if state == .expanded, currentPage == .removeBg {
+            trayDragPoint = nil
+            trayDropHighlight = false
+            removeBgDropHighlight = false
+            let imageExts: Set<String> = ["png", "jpg", "jpeg", "heic", "webp", "gif", "bmp", "tiff"]
+            if let url = urls.first(where: { imageExts.contains($0.pathExtension.lowercased()) }) {
+                startRemoveBg(with: url)
+                return true
+            }
             return false
         }
         let added = addTrayFiles(urls)
@@ -1006,6 +1057,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     override func concludeDragOperation(_ sender: NSDraggingInfo?) {
         trayDragPoint = nil
         trayDropHighlight = false
+        removeBgDropHighlight = false
     }
 
     /// Three-finger swipe switches sections (the MacBook way):
@@ -1609,6 +1661,8 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             drawWater()
         } else if currentPage == .tray {
             drawTray()
+        } else if currentPage == .removeBg {
+            drawRemoveBg()
         } else {
             guard let session else {
                 drawCentered("No media playing",
@@ -1635,7 +1689,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             case .sources:
                 drawCardHeader()
                 drawPicker(startY: 64)
-            case .pomodoro, .todo, .water, .tray:
+            case .pomodoro, .todo, .water, .tray, .removeBg:
                 break // handled above
             }
         }
@@ -2726,6 +2780,311 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         traySharePeer = nil
         trayShareStatus = nil
         trayShareProgress = nil
+        needsDisplay = true
+    }
+
+
+    // MARK: - Remove BG section
+
+    /// Remove-background section (Rimufu API backend, see
+    /// RimufuRemoveBg.swift). Layout mirrors the tray card:
+    /// 640x280, header + title, dots column on the right edge
+    /// (content ends at x 600, clear of the dot hit column
+    /// W-32..W-10). Left panel = drop/pick + original preview;
+    /// right panel = before/after comparison with a draggable
+    /// divider (original left of it, result right of it). The
+    /// divider default is the middle; the user chose "gas" without
+    /// picking draggable vs fixed, so this build uses the
+    /// draggable slider (the recommendation in the plan).
+    /// Rects follow the tray convention: base coords, used
+    /// directly from mouseDown (at rest they equal view coords).
+    private var removeBgOriginal: NSImage?
+    private var removeBgResult: NSImage?
+    private var removeBgResultData: Data?
+    private var removeBgProcessing = false
+    private var removeBgTask: URLSessionDataTask?
+    private var removeBgDivider: CGFloat = 0.5
+    private var removeBgDividerDragging = false
+    private var removeBgDropHighlight = false { didSet { needsDisplay = true } }
+    private var removeBgStatusText = "Drop an image, or click to pick one."
+    private var removeBgStatusIsError = false
+
+    /// Left panel: drop zone and pick target, also shows the
+    /// original once one is loaded (clicking it re-picks).
+    private func removeBgPickRect() -> NSRect {
+        NSRect(x: 28, y: 48, width: 180, height: 180)
+    }
+
+    /// Right panel: before/after comparison. Ends at x 600 so it
+    /// never overlaps the vertical dot column on the right edge.
+    private func removeBgCompareRect() -> NSRect {
+        NSRect(x: 224, y: 48, width: 376, height: 180)
+    }
+
+    /// Save pill, bottom-right of the card (only drawn/hit when a
+    /// result exists). Solid white + black text, like the tray
+    /// "+ Copy" badge, so it reads as tappable on the black card.
+    private func removeBgSaveRect() -> NSRect {
+        let font = NSFont.systemFont(ofSize: 14, weight: .medium)
+        let width = ("Save" as NSString).size(withAttributes: [.font: font]).width + 24
+        return NSRect(x: 600 - width, y: 236, width: width, height: 28)
+    }
+
+    private func removeBgDividerX() -> CGFloat {
+        let compare = removeBgCompareRect()
+        return compare.minX + removeBgDivider * compare.width
+    }
+
+    private func updateRemoveBgDivider(from point: CGPoint) {
+        let compare = removeBgCompareRect()
+        guard compare.width > 0 else { return }
+        let fraction = (point.x - compare.minX) / compare.width
+        removeBgDivider = min(0.95, max(0.05, fraction))
+        needsDisplay = true
+    }
+
+    /// Aspect-fit rect for an image inside a rect, centered.
+    private func removeBgFitRect(for image: NSImage, in rect: NSRect) -> NSRect {
+        let size = image.size
+        guard size.width > 0, size.height > 0 else { return rect }
+        let scale = min(rect.width / size.width, rect.height / size.height)
+        let width = size.width * scale
+        let height = size.height * scale
+        return NSRect(x: rect.midX - width / 2, y: rect.midY - height / 2,
+                      width: width, height: height)
+    }
+
+    private func drawRemoveBg() {
+        drawCardHeader(width: 640)
+        drawText("Remove BG", font: NSFont.boldSystemFont(ofSize: 20), color: .white,
+                 at: NSPoint(x: 28, y: 10))
+        // Left panel: dashed drop zone (tray drop-zone style).
+        let left = removeBgPickRect()
+        let leftPath = NSBezierPath(roundedRect: left, xRadius: 16, yRadius: 16)
+        leftPath.setLineDash([8, 6], count: 2, phase: 0)
+        leftPath.lineWidth = 1.5
+        NSColor.white.withAlphaComponent(0.5).setStroke()
+        leftPath.stroke()
+        if let original = removeBgOriginal {
+            let fit = removeBgFitRect(for: original, in: left.insetBy(dx: 8, dy: 8))
+            drawImageUpright(original, in: fit)
+        } else {
+            let line1 = "Drop image here"
+            let font1 = NSFont.systemFont(ofSize: 14)
+            let w1 = (line1 as NSString).size(withAttributes: [.font: font1]).width
+            drawText(line1, font: font1, color: NSColor.white.withAlphaComponent(0.8),
+                     at: NSPoint(x: left.midX - w1 / 2, y: left.midY - 10))
+            let line2 = "or click to pick"
+            let font2 = NSFont.systemFont(ofSize: 12)
+            let w2 = (line2 as NSString).size(withAttributes: [.font: font2]).width
+            drawText(line2, font: font2, color: NSColor.white.withAlphaComponent(0.5),
+                     at: NSPoint(x: left.midX - w2 / 2, y: left.midY + 10))
+        }
+        // Right panel: checkerboard + before/after, clipped to a
+        // rounded rect so neither image spills past the corners.
+        let compare = removeBgCompareRect()
+        let comparePath = NSBezierPath(roundedRect: compare, xRadius: 12, yRadius: 12)
+        NSGraphicsContext.saveGraphicsState()
+        comparePath.addClip()
+        let square: CGFloat = 12
+        var row = 0
+        var y = compare.minY
+        while y < compare.maxY {
+            var col = 0
+            var x = compare.minX
+            while x < compare.maxX {
+                let light = (row + col) % 2 == 0
+                NSColor.white.withAlphaComponent(light ? 0.12 : 0.04).setFill()
+                NSRect(x: x, y: y, width: square, height: square).fill()
+                col += 1
+                x += square
+            }
+            row += 1
+            y += square
+        }
+        if let original = removeBgOriginal {
+            let fit = removeBgFitRect(for: original, in: compare.insetBy(dx: 8, dy: 8))
+            // Original, left of the divider only — even while
+            // processing, so the right side stays visibly "result
+            // comes here" (checker) instead of a second original.
+            NSGraphicsContext.saveGraphicsState()
+            NSBezierPath(rect: NSRect(x: compare.minX, y: compare.minY,
+                                      width: removeBgDividerX() - compare.minX,
+                                      height: compare.height)).addClip()
+            drawImageUpright(original, in: fit)
+            NSGraphicsContext.restoreGraphicsState()
+            if let result = removeBgResult {
+                NSGraphicsContext.saveGraphicsState()
+                NSBezierPath(rect: NSRect(x: removeBgDividerX(), y: compare.minY,
+                                          width: compare.maxX - removeBgDividerX(),
+                                          height: compare.height)).addClip()
+                drawImageUpright(result, in: fit)
+                NSGraphicsContext.restoreGraphicsState()
+            }
+        } else {
+            let placeholder = "Drop an image to compare"
+            let font = NSFont.systemFont(ofSize: 13)
+            let width = (placeholder as NSString).size(withAttributes: [.font: font]).width
+            drawText(placeholder, font: font, color: NSColor.white.withAlphaComponent(0.5),
+                     at: NSPoint(x: compare.midX - width / 2, y: compare.midY - 7))
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        NSColor.white.withAlphaComponent(0.3).setStroke()
+        comparePath.lineWidth = 1
+        comparePath.stroke()
+        if removeBgOriginal != nil, removeBgResult != nil {
+            // Divider line + handle, on top of both images.
+            let dividerX = removeBgDividerX()
+            let line = NSBezierPath()
+            line.move(to: NSPoint(x: dividerX, y: compare.minY))
+            line.line(to: NSPoint(x: dividerX, y: compare.maxY))
+            line.lineWidth = 2
+            NSColor.white.withAlphaComponent(0.9).setStroke()
+            line.stroke()
+            let handle = NSBezierPath(ovalIn: NSRect(x: dividerX - 11, y: compare.midY - 11,
+                                                     width: 22, height: 22))
+            NSColor.white.setFill()
+            handle.fill()
+            NSColor.black.withAlphaComponent(0.3).setStroke()
+            handle.lineWidth = 1
+            handle.stroke()
+        }
+        // Status row, bottom-left. Errors read red; everything else
+        // is dim white, like the tray's dim labels.
+        let statusFont = NSFont.systemFont(ofSize: 13)
+        let statusColor = removeBgStatusIsError ? NSColor.systemRed : NSColor.white.withAlphaComponent(0.7)
+        drawText(truncated(removeBgStatusText, toWidth: 400, font: statusFont),
+                 font: statusFont, color: statusColor, at: NSPoint(x: 28, y: 244))
+        // Save pill, only once a result exists.
+        if removeBgResultData != nil, !removeBgProcessing {
+            let save = removeBgSaveRect()
+            NSColor.white.setFill()
+            NSBezierPath(roundedRect: save, xRadius: 14, yRadius: 14).fill()
+            let saveFont = NSFont.systemFont(ofSize: 14, weight: .medium)
+            let saveWidth = ("Save" as NSString).size(withAttributes: [.font: saveFont]).width
+            drawText("Save", font: saveFont, color: .black,
+                     at: NSPoint(x: save.midX - saveWidth / 2, y: save.minY + 5))
+        }
+        // Drop highlight, on top of everything else in the section.
+        if removeBgDropHighlight {
+            let zone = NSRect(x: 28, y: 48, width: 572, height: 180)
+            NSColor.white.withAlphaComponent(0.08).setFill()
+            NSBezierPath(roundedRect: zone, xRadius: 16, yRadius: 16).fill()
+            let dashed = NSBezierPath(roundedRect: zone, xRadius: 16, yRadius: 16)
+            dashed.setLineDash([8, 6], count: 2, phase: 0)
+            dashed.lineWidth = 1.5
+            NSColor.white.withAlphaComponent(0.8).setStroke()
+            dashed.stroke()
+            let label = "Release to remove background"
+            let font = NSFont.systemFont(ofSize: 14)
+            let width = (label as NSString).size(withAttributes: [.font: font]).width
+            drawText(label, font: font, color: NSColor.white.withAlphaComponent(0.9),
+                     at: NSPoint(x: zone.midX - width / 2, y: zone.midY - 7))
+        }
+    }
+
+    private func pickRemoveBgImage() {
+        guard !removeBgProcessing else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        // allowedFileTypes is deprecated but avoids a
+        // UniformTypeIdentifiers import; it still works on macOS 13.
+        panel.allowedFileTypes = ["png", "jpg", "jpeg", "heic", "webp", "gif", "bmp", "tiff"]
+        panel.message = "Choose an image to remove the background from"
+        // runModal, not a sheet: the island window is a non-key
+        // panel, so a sheet would have nowhere to attach, while
+        // app-modal works regardless. Drag-and-drop onto the card
+        // is the primary path if the panel ever fails to appear.
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        startRemoveBg(with: url)
+    }
+
+    private func startRemoveBg(with url: URL) {
+        // A new image cancels the old run, so a stale result can
+        // never overwrite the new one (see the Cancelled guard in
+        // the completion below).
+        removeBgTask?.cancel()
+        removeBgTask = nil
+        removeBgProcessing = true
+        removeBgResult = nil
+        removeBgResultData = nil
+        removeBgDivider = 0.5
+        removeBgStatusText = "Processing…"
+        removeBgStatusIsError = false
+        needsDisplay = true
+        guard let image = NSImage(contentsOf: url) else {
+            removeBgProcessing = false
+            removeBgStatusText = "Could not read that image."
+            removeBgStatusIsError = true
+            needsDisplay = true
+            return
+        }
+        removeBgOriginal = image
+        needsDisplay = true
+        guard let fileData = try? Data(contentsOf: url) else {
+            removeBgProcessing = false
+            removeBgStatusText = "Could not read that image."
+            removeBgStatusIsError = true
+            needsDisplay = true
+            return
+        }
+        let prepared = RimufuRemoveBgClient.preparedUploadData(
+            image: image, originalData: fileData, originalName: url.lastPathComponent)
+        let task = RimufuRemoveBgClient.removeBackground(
+            data: prepared.data, fileName: prepared.fileName, mimeType: prepared.mimeType
+        ) { [weak self] result in
+            // URLSession calls back off the main thread; every UI
+            // touch below must happen on main.
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.removeBgTask = nil
+                self.removeBgProcessing = false
+                switch result {
+                case .success(let pngData):
+                    if let resultImage = NSImage(data: pngData) {
+                        self.removeBgResult = resultImage
+                        self.removeBgResultData = pngData
+                        self.removeBgStatusText = "Done — drag the divider to compare."
+                        self.removeBgStatusIsError = false
+                    } else {
+                        self.removeBgStatusText = "Server returned an image Aura could not read."
+                        self.removeBgStatusIsError = true
+                    }
+                case .failure(let error):
+                    // Cancelled means a newer image already reset
+                    // the status; showing an error here would
+                    // overwrite the new run's "Processing…".
+                    if case .uploadFailed(let detail) = error, detail == "Cancelled." {
+                        return
+                    }
+                    self.removeBgStatusText = error.message
+                    self.removeBgStatusIsError = true
+                }
+                self.needsDisplay = true
+            }
+        }
+        removeBgTask = task
+    }
+
+    private func saveRemoveBgResult() {
+        guard let data = removeBgResultData else { return }
+        guard let url = RimufuRemoveBgClient.uniqueDownloadURL(fileName: "Remove BG.png") else {
+            removeBgStatusText = "Could not find the Downloads folder."
+            removeBgStatusIsError = true
+            needsDisplay = true
+            return
+        }
+        do {
+            try data.write(to: url, options: .atomic)
+            let nameFont = NSFont.systemFont(ofSize: 13)
+            removeBgStatusText = "Saved: \(truncated(url.lastPathComponent, toWidth: 400, font: nameFont))"
+            removeBgStatusIsError = false
+        } catch {
+            removeBgStatusText = "Could not save: \(error.localizedDescription)"
+            removeBgStatusIsError = true
+        }
         needsDisplay = true
     }
 
