@@ -5,7 +5,7 @@ import AppKit
 /// permission needed for frames).
 ///
 /// CGWindowListCopyWindowInfo returns on-screen windows with their
-/// owner PID, layer, on-screen flag, alpha, and bounds. A window
+/// owner PID, layer, alpha, and bounds (on-screen only is already enforced by the list option). A window
 /// counts when it is: not Aura's own, layer 0 (normal app windows —
 /// menu bar, Dock, and desktop elements are other layers and are
 /// also excluded by .excludeDesktopElements), on-screen, and
@@ -26,9 +26,6 @@ enum OverlapDetector {
                 continue
             }
             if let layer = win[kCGWindowLayer as String] as? Int, layer != 0 {
-                continue
-            }
-            if let onScreen = win[kCGWindowIsOnScreen as String] as? Bool, !onScreen {
                 continue
             }
             if let alpha = win[kCGWindowAlpha as String] as? Double, alpha <= 0 {
