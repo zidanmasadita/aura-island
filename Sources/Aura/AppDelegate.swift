@@ -145,6 +145,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         window.contentView = islandView
         animator = IslandAnimator(window: window)
+        // Screens changed (monitor plugged/unplugged, display moved):
+        // re-detect the notch and re-layout the current state, so a
+        // notched screen picked up later still gets the merged layout.
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil, queue: .main) { [weak self] _ in
+            guard let self else { return }
+            self.animator.animate(to: self.windowSize(for: self.islandView.state))
+        }
         window.placeAtTopCenter()
         window.orderFrontRegardless()
 
@@ -317,7 +326,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // headroom-sized so the bouncing pill (up to ~1.12x) never
         // clips; the margin is transparent and the pill itself is
         // drawn from its nominal size (see IslandView.draw).
-        let base = islandView.unbulgedSize(for: state)
+        var base = islandView.unbulgedSize(for: state)
+        // Notched screen, closed pill only: never narrower than the
+        // hardware notch, or the notch's edges would stick out on
+        // both sides of the pill. Expanded cards are already wider
+        // than any notch, so they are left alone.
+        if state != .expanded {
+            let notch = HardwareNotch.forMainScreen()
+            if notch.hasNotch {
+                base.width = max(base.width, notch.width)
+            }
+        }
         if islandView.trayDropHighlight || islandView.isTrayBouncing {
             return NSSize(width: base.width * IslandView.bounceHeadroomFactor,
                           height: base.height * IslandView.bounceHeadroomFactor)

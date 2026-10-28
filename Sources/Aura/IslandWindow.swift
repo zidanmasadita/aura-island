@@ -21,16 +21,27 @@ final class IslandWindow: NSWindow {
         ignoresMouseEvents = false
     }
 
+    /// Top Y for a window of this height on this screen. Notchless:
+    /// flush against the menu bar, as before (visibleFrame.maxY, +1
+    /// tuck so no hairline gap can show). Notched: flush against the
+    /// top of the physical screen, so the pill merges with the
+    /// hardware notch instead of floating as a second pill below it.
+    static func topY(forHeight h: CGFloat, on screen: NSScreen) -> CGFloat {
+        if HardwareNotch.forMainScreen().hasNotch {
+            return screen.frame.maxY - h
+        }
+        return screen.visibleFrame.maxY - h + 1
+    }
+
     /// Position the window centered horizontally, flush against the menu
-    /// bar so the card reads as a notch, not a floating pill. The +1
-    /// tucks one pixel under the menu bar so no hairline gap can show.
+    /// bar so the card reads as a notch, not a floating pill.
     func placeAtTopCenter() {
         guard let screen = NSScreen.main else { return }
-        let visible = screen.visibleFrame
         let w = frame.width
         let h = frame.height
-        let x = visible.midX - w / 2
-        let y = visible.maxY - h + 1
+        let notch = HardwareNotch.forMainScreen()
+        let x = notch.hasNotch ? screen.frame.midX - w / 2 : screen.visibleFrame.midX - w / 2
+        let y = Self.topY(forHeight: h, on: screen)
         setFrame(NSRect(x: x, y: y, width: w, height: h), display: true)
     }
 }
@@ -56,7 +67,7 @@ final class IslandAnimator {
         let x = window.frame.midX - size.width / 2
         let y: CGFloat
         if let screen = NSScreen.main {
-            y = screen.visibleFrame.maxY - size.height + 1
+            y = IslandWindow.topY(forHeight: size.height, on: screen)
         } else {
             y = window.frame.minY
         }
