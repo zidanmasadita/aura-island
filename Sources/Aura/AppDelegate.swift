@@ -52,7 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var prevVolume: (level: Double, muted: Bool)?
     private var prevBrightness: Double?
     /// How long a pill alert stays widened (wall clock).
-    private let pillAlertDuration: TimeInterval = 4
+    private let pillAlertDuration: TimeInterval = 1.5
     /// How long after a charger plug/unplug brightness changes are
     /// treated as the power change's auto-adjust (absorbed, not
     /// alerted): macOS re-adjusts brightness on power-source
@@ -283,7 +283,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func setState(_ state: IslandState) {
         // Opening a card cancels a live pill alert: the user's
         // action wins, and the alert must not resurrect when the
-        // card closes (its 4s would otherwise still be running).
+        // card closes (its timer would otherwise still be running).
         if state == .expanded { islandView.pillAlert = nil }
         // Leaving expanded cancels a running tray spring (drop bounce):
         // otherwise the spring transform runs through the close
