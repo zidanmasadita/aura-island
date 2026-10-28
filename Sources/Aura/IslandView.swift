@@ -124,6 +124,10 @@ final class IslandView: NSView, NSDraggingSource {
         needsDisplay = true
     }
 
+    private func lyricLineHeight(_ font: NSFont) -> CGFloat {
+        ceil(font.ascender - font.descender + font.leading)
+    }
+
     /// Clears the lyrics (no session, track change, no lines).
     func clearLyricLines() {
         lyricPrev = nil
