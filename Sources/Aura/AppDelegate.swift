@@ -742,6 +742,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for (i, entry) in lyricsLines.enumerated() where entry.time <= t {
             index = i
         }
+        // Before the first vocal, index is nil and the panel showed
+        // "Lyrics unavailable" (closed pill fell back to the title)
+        // even though synced lines exist — the intro just has no
+        // vocal yet. Show the first line immediately from the start
+        // of the song instead of waiting for its timestamp: prev is
+        // nil, current is line 0, next is line 1. Once its timestamp
+        // passes, index stays 0, so nothing jumps or re-rolls.
+        if index == nil, !lyricsLines.isEmpty {
+            index = 0
+        }
         islandView.updateLyricLines(
             prev: index.flatMap { $0 > 0 ? lyricsLines[$0 - 1].text : nil },
             current: index.map { lyricsLines[$0].text },
