@@ -36,6 +36,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lyricTimer: Timer?
     private var eyeTimer: Timer?
     private var pillHiddenForOverlap = false
+    /// Set by press-to-close, cleared on the next mouse exit.
+    /// See handleHover: without it, closing fights hover-open
+    /// (the bug below).
+    private var suppressHoverOpenAfterClickClose = false
     private var overlapClearTicks = 0
     private var lastOverlapDecision = ""
     private var nextEyeBlink = Date(timeIntervalSinceNow: 3)
@@ -314,6 +318,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 overlapClearTicks = 0
                 islandView.isOverlapHidden = false
             }
+            // Press-to-close vs hover-to-open fight: hovering opens
+            // the card, so closing by click while the cursor stays
+            // over the pill re-opens it as soon as the shrinking
+            // window's tracking area re-fires mouseEntered (bounds
+            // change recreates the tracking area with the cursor
+            // already inside it). The close animation then loses
+            // to a new expand animation, the card stutters and
+            // grows back instead of closing. Suppress hover-open
+            // until the cursor actually leaves the pill, so the
+            // close animation runs to completion; a later entry
+            // opens normally again, and clicking the pill still
+            // opens it (handleClick is not suppressed).
+            if suppressHoverOpenAfterClickClose {
+                return
+            }
             // Hover opens the card directly, no click needed — but
             // only when there is something to show. Idle (no session)
             // keeps the old hover-to-compact behaviour, so hovering
@@ -325,35 +344,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     setState(.compact)
                 }
             }
-        } else if islandView.isShowingModal {
-            // A modal dialog (add-task, water settings) is open, so
-            // the mouse moving down to it is not leaving the card.
-            // Collapsing here used to freeze the window at the expanded
-            // size (the animator timer does not fire in modal mode)
-            // while drawing closed content - the giant-curve pill in
-            // the bug report. The card stays open; IslandView re-syncs
-            // hover when the modal closes.
-            return
-        } else if islandView.isDraggingOut {
-            // A drag-out is in flight (the file is being carried to
-            // another app): the cursor leaving the card is the drag,
-            // not a hover exit. Collapsing mid-drag would shrink the
-            // source window under the drag session. IslandView
-            // re-syncs hover when the drag ends.
-            return
         } else {
-            // Leaving the island always closes it — including an expanded
-            // card, so closing never needs a second click. Playing music
-            // falls back to the closed (compact) state, silence to zen —
-            // unless a pomodoro is live, which keeps the pill compact.
-            setState((sessions.current?.isPlaying == true || islandView.isPomodoroActive) ? .compact : .zen)
+            // Any real exit re-arms hover-open, even when the
+            // exit itself is swallowed below (modal, drag-out):
+            // the cursor has left, so a later entry is a genuine
+            // new hover, not the close animation's own re-entry.
+            suppressHoverOpenAfterClickClose = false
+            if islandView.isShowingModal {
+                // A modal dialog (add-task, water settings) is open, so
+                // the mouse moving down to it is not leaving the card.
+                // Collapsing here used to freeze the window at the expanded
+                // size (the animator timer does not fire in modal mode)
+                // while drawing closed content - the giant-curve pill in
+                // the bug report. The card stays open; IslandView re-syncs
+                // hover when the modal closes.
+                return
+            } else if islandView.isDraggingOut {
+                // A drag-out is in flight (the file is being carried to
+                // another app): the cursor leaving the card is the drag,
+                // not a hover exit. Collapsing mid-drag would shrink the
+                // source window under the drag session. IslandView
+                // re-syncs hover when the drag ends.
+                return
+            } else {
+                // Leaving the island always closes it — including an expanded
+                // card, so closing never needs a second click. Playing music
+                // falls back to the closed (compact) state, silence to zen —
+                // unless a pomodoro is live, which keeps the pill compact.
+                setState((sessions.current?.isPlaying == true || islandView.isPomodoroActive) ? .compact : .zen)
+            }
         }
     }
 
     private func handleClick() {
         if islandView.state == .expanded {
+            suppressHoverOpenAfterClickClose = true
             setState(.compact)
         } else {
+            suppressHoverOpenAfterClickClose = false
             setState(.expanded)
         }
         window.ignoresMouseEvents = false
