@@ -393,6 +393,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         case .water: return NSSize(width: 640, height: 180)
         case .tray: return NSSize(width: 640, height: 280)
         case .removeBg: return NSSize(width: 640, height: 280)
+        case .convert: return NSSize(width: 640, height: 280)
         case .sources: return NSSize(width: 640, height: 220)
         }
     }
@@ -412,7 +413,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         return lyricsMode ? NSSize(width: 360, height: 32) : NSSize(width: 180, height: 32)
     }
 
-    private enum CardPage { case music, lyrics, pomodoro, todo, water, tray, removeBg, sources }
+    private enum CardPage { case music, lyrics, pomodoro, todo, water, tray, removeBg, convert, sources }
 
     /// Sections the dots and three-finger swipe offer: music +
     /// pomodoro + todo + water + tray always, sources only when there is more than
@@ -421,7 +422,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     /// never land on it; that was the old chevron's mistake (it
     /// jumped to lyrics).
     private var availableSections: [CardPage] {
-        sessionsForPicker.count > 1 ? [.music, .pomodoro, .todo, .water, .tray, .removeBg, .sources] : [.music, .pomodoro, .todo, .water, .tray, .removeBg]
+        sessionsForPicker.count > 1 ? [.music, .pomodoro, .todo, .water, .tray, .removeBg, .convert, .sources] : [.music, .pomodoro, .todo, .water, .tray, .removeBg, .convert]
     }
 
     /// The page actually drawn (lyrics included). Sources falls back
@@ -857,6 +858,29 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
                 removeBgPendingDragPoint = point
                 return
             }
+        case .convert:
+            let tool = convertActiveTool
+            if convertState(for: tool).processing {
+                // A run already in flight: ignore clicks and fall
+                // through to collapse (the upload keeps running in
+                // the background, like Remove BG).
+            } else if convertState(for: tool).resultData != nil, removeBgSaveRect().contains(point) {
+                saveConvertResult()
+                return
+            } else if tool == .photo, convertFormatPillRect().contains(point) {
+                showConvertFormatMenu(at: point)
+                return
+            } else if let picked = convertToolPillRects().first(where: { $0.rect.contains(point) })?.tool {
+                convertActiveTool = picked
+                needsDisplay = true
+                return
+            } else if convertLeftRect().contains(point) {
+                pickConvertFile()
+                return
+            } else if convertState(for: tool).resultData != nil, convertRightRect().contains(point) {
+                convertPendingDrag = (tool: tool, point: point)
+                return
+            }
         }
         // Any other click on the expanded card collapses it. Without this
         // fallthrough there was no way to close the card by clicking: only
@@ -902,6 +926,51 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             beginDraggingSession(with: [item], event: event, source: self)
             return
         }
+        if let pendingConvert = convertPendingDrag {
+            let point = convert(event.locationInWindow, from: nil)
+            guard abs(point.x - pendingConvert.point.x) > 3 || abs(point.y - pendingConvert.point.y) > 3 else { return }
+            let tool = pendingConvert.tool
+            convertPendingDrag = nil
+            guard convertState(for: tool).resultData != nil else { return }
+            guard let fileURL = ensureConvertFile(for: tool) else {
+                // Only surface the failure if the user is still
+                // looking at this tool; otherwise it would overwrite
+                // another tool's status.
+                if convertActiveTool == tool {
+                    var failed = convertState(for: tool)
+                    failed.statusText = "Could not save the result to drag it."
+                    failed.statusIsError = true
+                    setConvertState(failed, for: tool)
+                    needsDisplay = true
+                }
+                return
+            }
+            isDraggingOut = true
+            let dragImage: NSImage
+            let dragSize: NSSize
+            if tool == .photo, let resultImage = convertState(for: tool).resultImage {
+                let size = removeBgFitRect(for: resultImage, in: NSRect(x: 0, y: 0, width: 96, height: 96)).size
+                let thumb = NSImage(size: size)
+                thumb.lockFocus()
+                resultImage.draw(in: NSRect(origin: .zero, size: size), from: .zero,
+                                 operation: .sourceOver, fraction: 1.0)
+                thumb.unlockFocus()
+                dragImage = thumb
+                dragSize = size
+            } else {
+                let icon = NSWorkspace.shared.icon(forFile: fileURL.path)
+                dragSize = NSSize(width: 48, height: 48)
+                dragImage = (icon.copy() as? NSImage) ?? icon
+                dragImage.size = dragSize
+            }
+            let item = NSDraggingItem(pasteboardWriter: AuraTrayPasteboardWriter(url: fileURL))
+            let dragFrame = NSRect(x: point.x - dragSize.width / 2,
+                                   y: point.y - dragSize.height / 2,
+                                   width: dragSize.width, height: dragSize.height)
+            item.setDraggingFrame(dragFrame, contents: dragImage)
+            beginDraggingSession(with: [item], event: event, source: self)
+            return
+        }
         guard let pending = trayPendingDrag else { return }
         let point = convert(event.locationInWindow, from: nil)
         guard abs(point.x - pending.point.x) > 3 || abs(point.y - pending.point.y) > 3 else { return }
@@ -931,6 +1000,11 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             // card stays open (unlike an unhandled click, which
             // collapses it — the press already returned early).
             removeBgPendingDragPoint = nil
+        }
+        if convertPendingDrag != nil {
+            // Tap on a Convert result without a drag: nothing,
+            // card stays open (same as Remove BG).
+            convertPendingDrag = nil
         }
         // A press on a grid tile without a drag is a tap = share.
         // (After a real drag, pending is already nil — the drag
@@ -1032,6 +1106,16 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             removeBgDropHighlight = true
             return .copy
         }
+        if state == .expanded, currentPage == .convert,
+           let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [NSPasteboard.ReadingOptionKey.urlReadingFileURLsOnly: true]) as? [URL],
+           urls.contains(where: { convertAccepts(url: $0, for: convertActiveTool) }) {
+            // Matching file for the active Convert tool: drop
+            // into Convert, not the tray. Mismatched files fall
+            // through to the tray block below (they land in the
+            // tray, like any other drop).
+            convertDropHighlight = true
+            return .copy
+        }
         if trayShareFile != nil { clearTrayShare() }
         trayDragPoint = convert(sender.draggingLocation, from: nil)
         trayDropHighlight = true
@@ -1047,6 +1131,11 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         if state == .expanded, currentPage == .removeBg {
             return .copy
         }
+        if state == .expanded, currentPage == .convert,
+           let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [NSPasteboard.ReadingOptionKey.urlReadingFileURLsOnly: true]) as? [URL],
+           urls.contains(where: { convertAccepts(url: $0, for: convertActiveTool) }) {
+            return .copy
+        }
         // Track the cursor so the "+ Copy" badge follows it.
         trayDragPoint = convert(sender.draggingLocation, from: nil)
         return .copy
@@ -1056,6 +1145,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         trayDragPoint = nil
         trayDropHighlight = false
         removeBgDropHighlight = false
+        convertDropHighlight = false
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
@@ -1076,6 +1166,18 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             }
             return false
         }
+        if state == .expanded, currentPage == .convert {
+            trayDragPoint = nil
+            trayDropHighlight = false
+            removeBgDropHighlight = false
+            convertDropHighlight = false
+            let tool = convertActiveTool
+            if let url = urls.first(where: { convertAccepts(url: $0, for: tool) }) {
+                startConvert(with: url, tool: tool)
+                return true
+            }
+            return false
+        }
         let added = addTrayFiles(urls)
         trayDragPoint = nil
         trayDropHighlight = false
@@ -1087,6 +1189,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         trayDragPoint = nil
         trayDropHighlight = false
         removeBgDropHighlight = false
+        convertDropHighlight = false
     }
 
     /// Three-finger swipe switches sections (the MacBook way):
@@ -1692,6 +1795,8 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             drawTray()
         } else if currentPage == .removeBg {
             drawRemoveBg()
+        } else if currentPage == .convert {
+            drawConvert()
         } else {
             guard let session else {
                 drawCentered("No media playing",
@@ -1718,7 +1823,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             case .sources:
                 drawCardHeader()
                 drawPicker(startY: 64)
-            case .pomodoro, .todo, .water, .tray, .removeBg:
+            case .pomodoro, .todo, .water, .tray, .removeBg, .convert:
                 break // handled above
             }
         }
@@ -3169,6 +3274,569 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         let nameFont = NSFont.systemFont(ofSize: 13)
         removeBgStatusText = "Saved: \(truncated(url.lastPathComponent, toWidth: 400, font: nameFont))"
         removeBgStatusIsError = false
+        needsDisplay = true
+    }
+
+
+    // MARK: - Convert section (Fase 1: single-file tools)
+
+    /// Convert section (Rimufu API backend, see RimufuConvert.swift).
+    /// One section with tool pills on top (pomodoro-pill pattern),
+    /// not one section per tool — otherwise the dot column would
+    /// grow to 11-12 sections. Layout mirrors Remove BG: 640x280,
+    /// header + title, dots column on the right edge (content ends
+    /// at x 600). Title at y 10, tool pills at y 36 (28 tall),
+    /// panels at y 72 (156 tall), status at y 244, Save pill at
+    /// y 236 (shared position with Remove BG's Save pill).
+    /// Per-tool state is preserved when switching pills, so a
+    /// result is not lost by an accidental pill tap. Merge PDF is
+    /// Fase 2 and is not here: it needs a multi-file list, which
+    /// does not fit this single-file layout.
+    /// Rects follow the tray convention: base coords, used
+    /// directly from mouseDown (at rest they equal view coords).
+    private enum ConvertTool: CaseIterable {
+        case photo, pdfToWord, compressPDF, pdfToMD
+
+        var displayName: String {
+            switch self {
+            case .photo: return "Photo"
+            case .pdfToWord: return "PDF to Word"
+            case .compressPDF: return "Compress PDF"
+            case .pdfToMD: return "PDF to MD"
+            }
+        }
+
+        var defaultStatus: String {
+            switch self {
+            case .photo: return "Drop an image, or click to pick one."
+            default: return "Drop a PDF, or click to pick one."
+            }
+        }
+    }
+
+    private struct ConvertState {
+        var inputName: String?
+        var inputData: Data?
+        var inputImage: NSImage?
+        var inputSize: Int = 0
+        var resultData: Data?
+        var resultImage: NSImage?
+        var resultFileName: String?
+        var savedURL: URL?
+        var processing: Bool = false
+        var statusText: String
+        var statusIsError: Bool = false
+
+        init(tool: ConvertTool) {
+            statusText = tool.defaultStatus
+        }
+    }
+
+    private var convertStates: [ConvertTool: ConvertState] = [:]
+    private var convertActiveTool: ConvertTool = .photo
+    private var convertPhotoFormat: ConvertFormat = .webp
+    private var convertTask: URLSessionDataTask?
+    private var convertActiveTaskTool: ConvertTool?
+    private var convertPendingDrag: (tool: ConvertTool, point: CGPoint)?
+    private var convertDropHighlight = false { didSet { needsDisplay = true } }
+
+    private func convertState(for tool: ConvertTool) -> ConvertState {
+        convertStates[tool] ?? ConvertState(tool: tool)
+    }
+
+    private func setConvertState(_ state: ConvertState, for tool: ConvertTool) {
+        convertStates[tool] = state
+    }
+
+    /// Whether a dropped/picked URL fits a tool: images for photo
+    /// (same set as the Remove BG drop filter), PDFs for the PDF
+    /// tools. The server re-validates (400 for a non-image / non-
+    /// PDF), so this is a UI filter, not the security boundary.
+    private func convertAccepts(url: URL, for tool: ConvertTool) -> Bool {
+        let ext = url.pathExtension.lowercased()
+        if tool == .photo {
+            return ["png", "jpg", "jpeg", "heic", "webp", "gif", "bmp", "tiff"].contains(ext)
+        }
+        return ext == "pdf"
+    }
+
+    /// Left panel: drop zone and pick target (format pill for
+    /// photo sits inside it, see convertFormatPillRect).
+    private func convertLeftRect() -> NSRect {
+        NSRect(x: 28, y: 72, width: 180, height: 156)
+    }
+
+    /// Right panel: the result. Ends at x 600 so it never
+    /// overlaps the vertical dot column on the right edge. Also
+    /// the drag source: pressing it arms a drag-out.
+    private func convertRightRect() -> NSRect {
+        NSRect(x: 224, y: 72, width: 376, height: 156)
+    }
+
+    /// Tool pills, top of the section (pomodoro-pill pattern):
+    /// 28 tall, 12pt side padding, 8pt gaps, starting at x 28.
+    private func convertToolPillRects() -> [(tool: ConvertTool, rect: NSRect)] {
+        let font = NSFont.systemFont(ofSize: 14, weight: .medium)
+        var x: CGFloat = 28
+        var out: [(tool: ConvertTool, rect: NSRect)] = []
+        for tool in ConvertTool.allCases {
+            let width = (tool.displayName as NSString).size(withAttributes: [.font: font]).width + 24
+            out.append((tool: tool, rect: NSRect(x: x, y: 36, width: width, height: 28)))
+            x += width + 8
+        }
+        return out
+    }
+
+    /// Format pill, bottom of the left panel, photo tool only
+    /// (other tools have no format choice). It sits inside the
+    /// pick rect, so mouseDown checks it BEFORE the general
+    /// left-panel pick — same pattern as the From Tray pill.
+    private func convertFormatPillRect() -> NSRect {
+        let left = convertLeftRect()
+        return NSRect(x: left.minX + 8, y: left.maxY - 36, width: left.width - 16, height: 28)
+    }
+
+    /// Content area inside the left panel: shrunk above the
+    /// format pill for photo, full inset for the PDF tools
+    /// (which have no footer pill).
+    private func convertLeftContentRect() -> NSRect {
+        let left = convertLeftRect()
+        if convertActiveTool == .photo {
+            return NSRect(x: left.minX + 8, y: left.minY + 8,
+                          width: left.width - 16, height: left.height - 16 - 36)
+        }
+        return left.insetBy(dx: 8, dy: 8)
+    }
+
+    private func drawConvert() {
+        drawCardHeader(width: 640)
+        drawText("Convert", font: NSFont.boldSystemFont(ofSize: 20), color: .white,
+                 at: NSPoint(x: 28, y: 10))
+        // Tool pills: active = solid white + black text (Save
+        // pill style), inactive = translucent + stroke (From Tray
+        // pill style).
+        for (tool, rect) in convertToolPillRects() {
+            let active = (tool == convertActiveTool)
+            if active {
+                NSColor.white.setFill()
+            } else {
+                NSColor.white.withAlphaComponent(0.15).setFill()
+            }
+            NSBezierPath(roundedRect: rect, xRadius: 14, yRadius: 14).fill()
+            if !active {
+                NSColor.white.withAlphaComponent(0.3).setStroke()
+                NSBezierPath(roundedRect: rect, xRadius: 14, yRadius: 14).stroke()
+            }
+            let font = NSFont.systemFont(ofSize: 14, weight: .medium)
+            let width = (tool.displayName as NSString).size(withAttributes: [.font: font]).width
+            drawText(tool.displayName, font: font, color: active ? .black : .white,
+                     at: NSPoint(x: rect.midX - width / 2, y: rect.minY + 5))
+        }
+        let state = convertState(for: convertActiveTool)
+        // Left panel: dashed drop zone (tray drop-zone style).
+        let left = convertLeftRect()
+        let leftPath = NSBezierPath(roundedRect: left, xRadius: 16, yRadius: 16)
+        leftPath.setLineDash([8, 6], count: 2, phase: 0)
+        leftPath.lineWidth = 1.5
+        NSColor.white.withAlphaComponent(0.5).setStroke()
+        leftPath.stroke()
+        let content = convertLeftContentRect()
+        if convertActiveTool == .photo {
+            if let image = state.inputImage {
+                let fit = removeBgFitRect(for: image, in: content)
+                drawImageUpright(image, in: fit)
+            } else {
+                let line1 = "Drop image here"
+                let font1 = NSFont.systemFont(ofSize: 14)
+                let w1 = (line1 as NSString).size(withAttributes: [.font: font1]).width
+                drawText(line1, font: font1, color: NSColor.white.withAlphaComponent(0.8),
+                         at: NSPoint(x: content.midX - w1 / 2, y: content.midY - 10))
+                let line2 = "or click to pick"
+                let font2 = NSFont.systemFont(ofSize: 12)
+                let w2 = (line2 as NSString).size(withAttributes: [.font: font2]).width
+                drawText(line2, font: font2, color: NSColor.white.withAlphaComponent(0.5),
+                         at: NSPoint(x: content.midX - w2 / 2, y: content.midY + 10))
+            }
+            // Format pill, always visible for photo so the format
+            // can be chosen before picking (default WebP).
+            let format = convertFormatPillRect()
+            NSColor.white.withAlphaComponent(0.15).setFill()
+            NSBezierPath(roundedRect: format, xRadius: 14, yRadius: 14).fill()
+            NSColor.white.withAlphaComponent(0.3).setStroke()
+            NSBezierPath(roundedRect: format, xRadius: 14, yRadius: 14).stroke()
+            let label = "Format: \(convertPhotoFormat.displayName) \u{25be}"
+            let formatFont = NSFont.systemFont(ofSize: 13, weight: .medium)
+            let formatWidth = (label as NSString).size(withAttributes: [.font: formatFont]).width
+            drawText(label, font: formatFont, color: .white,
+                     at: NSPoint(x: format.midX - formatWidth / 2, y: format.minY + 5))
+        } else {
+            if let name = state.inputName {
+                let nameFont = NSFont.systemFont(ofSize: 13)
+                let nameText = truncated(name, toWidth: content.width, font: nameFont)
+                let nameWidth = (nameText as NSString).size(withAttributes: [.font: nameFont]).width
+                drawText(nameText, font: nameFont, color: NSColor.white.withAlphaComponent(0.9),
+                         at: NSPoint(x: content.midX - nameWidth / 2, y: content.midY - 10))
+                let sizeText = formatBytes(Int64(state.inputSize))
+                let sizeFont = NSFont.systemFont(ofSize: 12)
+                let sizeWidth = (sizeText as NSString).size(withAttributes: [.font: sizeFont]).width
+                drawText(sizeText, font: sizeFont, color: NSColor.white.withAlphaComponent(0.5),
+                         at: NSPoint(x: content.midX - sizeWidth / 2, y: content.midY + 10))
+            } else {
+                let line1 = "Drop PDF here"
+                let font1 = NSFont.systemFont(ofSize: 14)
+                let w1 = (line1 as NSString).size(withAttributes: [.font: font1]).width
+                drawText(line1, font: font1, color: NSColor.white.withAlphaComponent(0.8),
+                         at: NSPoint(x: content.midX - w1 / 2, y: content.midY - 10))
+                let line2 = "or click to pick"
+                let font2 = NSFont.systemFont(ofSize: 12)
+                let w2 = (line2 as NSString).size(withAttributes: [.font: font2]).width
+                drawText(line2, font: font2, color: NSColor.white.withAlphaComponent(0.5),
+                         at: NSPoint(x: content.midX - w2 / 2, y: content.midY + 10))
+            }
+        }
+        // Right panel: result. Photo gets a checkerboard (image
+        // result, like Remove BG); document tools get plain info
+        // text, no checkerboard.
+        let right = convertRightRect()
+        let rightPath = NSBezierPath(roundedRect: right, xRadius: 12, yRadius: 12)
+        if convertActiveTool == .photo {
+            NSGraphicsContext.saveGraphicsState()
+            rightPath.addClip()
+            let square: CGFloat = 12
+            var row = 0
+            var y = right.minY
+            while y < right.maxY {
+                var col = 0
+                var x = right.minX
+                while x < right.maxX {
+                    let light = (row + col) % 2 == 0
+                    NSColor.white.withAlphaComponent(light ? 0.12 : 0.04).setFill()
+                    NSRect(x: x, y: y, width: square, height: square).fill()
+                    col += 1
+                    x += square
+                }
+                row += 1
+                y += square
+            }
+            if let resultImage = state.resultImage {
+                let fit = removeBgFitRect(for: resultImage, in: right.insetBy(dx: 8, dy: 8))
+                drawImageUpright(resultImage, in: fit)
+            } else if let resultData = state.resultData, let resultName = state.resultFileName {
+                // Bytes are valid (the client checked the format
+                // magic) but this Mac cannot decode them for
+                // preview — AVIF is the known case. The file itself
+                // is fine: drag and Save still work, only the
+                // preview is missing, so this is info, not error.
+                let nameFont = NSFont.systemFont(ofSize: 13)
+                let nameText = truncated(resultName, toWidth: right.width - 16, font: nameFont)
+                let nameWidth = (nameText as NSString).size(withAttributes: [.font: nameFont]).width
+                drawText(nameText, font: nameFont, color: NSColor.white.withAlphaComponent(0.9),
+                         at: NSPoint(x: right.midX - nameWidth / 2, y: right.midY - 20))
+                let sizeText = formatBytes(Int64(resultData.count))
+                let sizeFont = NSFont.systemFont(ofSize: 12)
+                let sizeWidth = (sizeText as NSString).size(withAttributes: [.font: sizeFont]).width
+                drawText(sizeText, font: sizeFont, color: NSColor.white.withAlphaComponent(0.5),
+                         at: NSPoint(x: right.midX - sizeWidth / 2, y: right.midY))
+                let note = "Preview not available on this Mac."
+                let noteFont = NSFont.systemFont(ofSize: 12)
+                let noteWidth = (note as NSString).size(withAttributes: [.font: noteFont]).width
+                drawText(note, font: noteFont, color: NSColor.white.withAlphaComponent(0.5),
+                         at: NSPoint(x: right.midX - noteWidth / 2, y: right.midY + 20))
+            } else {
+                let placeholder = "Result appears here"
+                let font = NSFont.systemFont(ofSize: 13)
+                let width = (placeholder as NSString).size(withAttributes: [.font: font]).width
+                drawText(placeholder, font: font, color: NSColor.white.withAlphaComponent(0.5),
+                         at: NSPoint(x: right.midX - width / 2, y: right.midY - 7))
+            }
+            NSGraphicsContext.restoreGraphicsState()
+        } else if convertActiveTool == .pdfToMD, let resultData = state.resultData {
+            let text = String(data: resultData, encoding: .utf8) ?? ""
+            let lines = text.components(separatedBy: "\n")
+            let font = NSFont.systemFont(ofSize: 12)
+            let innerWidth = right.width - 16
+            var y = right.minY + 12
+            for line in lines.prefix(6) {
+                let shown = truncated(line, toWidth: innerWidth, font: font)
+                drawText(shown, font: font, color: NSColor.white.withAlphaComponent(0.8),
+                         at: NSPoint(x: right.minX + 8, y: y))
+                y += 16
+            }
+            if lines.count > 6 {
+                drawText("\u{2026}", font: font, color: NSColor.white.withAlphaComponent(0.5),
+                         at: NSPoint(x: right.minX + 8, y: y))
+            }
+        } else if let resultData = state.resultData, let resultName = state.resultFileName {
+            let nameFont = NSFont.systemFont(ofSize: 13)
+            let nameText = truncated(resultName, toWidth: right.width - 16, font: nameFont)
+            let nameWidth = (nameText as NSString).size(withAttributes: [.font: nameFont]).width
+            drawText(nameText, font: nameFont, color: NSColor.white.withAlphaComponent(0.9),
+                     at: NSPoint(x: right.midX - nameWidth / 2, y: right.midY - 20))
+            let sizeText = formatBytes(Int64(resultData.count))
+            let sizeFont = NSFont.systemFont(ofSize: 12)
+            let sizeWidth = (sizeText as NSString).size(withAttributes: [.font: sizeFont]).width
+            drawText(sizeText, font: sizeFont, color: NSColor.white.withAlphaComponent(0.5),
+                     at: NSPoint(x: right.midX - sizeWidth / 2, y: right.midY))
+            let hint = "Drag the result out or Save it."
+            let hintFont = NSFont.systemFont(ofSize: 12)
+            let hintWidth = (hint as NSString).size(withAttributes: [.font: hintFont]).width
+            drawText(hint, font: hintFont, color: NSColor.white.withAlphaComponent(0.5),
+                     at: NSPoint(x: right.midX - hintWidth / 2, y: right.midY + 20))
+        } else {
+            let placeholder = "Result appears here"
+            let font = NSFont.systemFont(ofSize: 13)
+            let width = (placeholder as NSString).size(withAttributes: [.font: font]).width
+            drawText(placeholder, font: font, color: NSColor.white.withAlphaComponent(0.5),
+                     at: NSPoint(x: right.midX - width / 2, y: right.midY - 7))
+        }
+        NSColor.white.withAlphaComponent(0.3).setStroke()
+        rightPath.lineWidth = 1
+        rightPath.stroke()
+        // Status row, bottom-left (same coordinates as Remove BG).
+        let statusFont = NSFont.systemFont(ofSize: 13)
+        let statusColor = state.statusIsError ? NSColor.systemRed : NSColor.white.withAlphaComponent(0.7)
+        drawText(truncated(state.statusText, toWidth: 400, font: statusFont),
+                 font: statusFont, color: statusColor, at: NSPoint(x: 28, y: 244))
+        // Save pill, only once a result exists (shared position
+        // with Remove BG's Save pill).
+        if state.resultData != nil, !state.processing {
+            let save = removeBgSaveRect()
+            NSColor.white.setFill()
+            NSBezierPath(roundedRect: save, xRadius: 14, yRadius: 14).fill()
+            let saveFont = NSFont.systemFont(ofSize: 14, weight: .medium)
+            let saveWidth = ("Save" as NSString).size(withAttributes: [.font: saveFont]).width
+            drawText("Save", font: saveFont, color: .black,
+                     at: NSPoint(x: save.midX - saveWidth / 2, y: save.minY + 5))
+        }
+        // Drop highlight, on top of everything else in the section.
+        if convertDropHighlight {
+            let zone = NSRect(x: 28, y: 72, width: 572, height: 156)
+            NSColor.white.withAlphaComponent(0.08).setFill()
+            NSBezierPath(roundedRect: zone, xRadius: 16, yRadius: 16).fill()
+            let dashed = NSBezierPath(roundedRect: zone, xRadius: 16, yRadius: 16)
+            dashed.setLineDash([8, 6], count: 2, phase: 0)
+            dashed.lineWidth = 1.5
+            NSColor.white.withAlphaComponent(0.8).setStroke()
+            dashed.stroke()
+            let label = "Release to convert"
+            let font = NSFont.systemFont(ofSize: 14)
+            let width = (label as NSString).size(withAttributes: [.font: font]).width
+            drawText(label, font: font, color: NSColor.white.withAlphaComponent(0.9),
+                     at: NSPoint(x: zone.midX - width / 2, y: zone.midY - 7))
+        }
+    }
+
+    private func pickConvertFile() {
+        let tool = convertActiveTool
+        guard !convertState(for: tool).processing else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        // allowedFileTypes is deprecated but avoids a
+        // UniformTypeIdentifiers import; it still works on macOS 13.
+        if tool == .photo {
+            panel.allowedFileTypes = ["png", "jpg", "jpeg", "heic", "webp", "gif", "bmp", "tiff"]
+            panel.message = "Choose an image to convert"
+        } else {
+            panel.allowedFileTypes = ["pdf"]
+            panel.message = "Choose a PDF"
+        }
+        // runModal, not a sheet: the island window is a non-key
+        // panel, so a sheet would have nowhere to attach (same
+        // reasoning as Remove BG's picker).
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        startConvert(with: url, tool: tool)
+    }
+
+    private func convertResultFileName(for tool: ConvertTool, inputName: String, format: ConvertFormat) -> String {
+        let base = (inputName as NSString).deletingPathExtension
+        switch tool {
+        case .photo: return base + "." + format.fileExtension
+        case .pdfToWord: return base + ".docx"
+        case .compressPDF: return base + " compressed.pdf"
+        case .pdfToMD: return base + ".md"
+        }
+    }
+
+    private func startConvert(with url: URL, tool: ConvertTool) {
+        guard let fileData = try? Data(contentsOf: url) else {
+            var failed = convertState(for: tool)
+            failed.processing = false
+            failed.statusText = "Could not read that file."
+            failed.statusIsError = true
+            setConvertState(failed, for: tool)
+            needsDisplay = true
+            return
+        }
+        var inputImage: NSImage?
+        if tool == .photo {
+            guard let image = NSImage(contentsOf: url) else {
+                var failed = convertState(for: tool)
+                failed.processing = false
+                failed.statusText = "Could not read that image."
+                failed.statusIsError = true
+                setConvertState(failed, for: tool)
+                needsDisplay = true
+                return
+            }
+            inputImage = image
+        }
+        startConvertData(fileData, inputName: url.lastPathComponent, tool: tool, inputImage: inputImage)
+    }
+
+    /// Shared run start, used by pick/drop and by format changes
+    /// (which re-run with the stored input, no re-pick needed).
+    /// Cancelling a previous run resets that tool's state
+    /// synchronously first, so its cancelled completion — which
+    /// returns early — can never overwrite the new run's status.
+    private func startConvertData(_ fileData: Data, inputName: String, tool: ConvertTool, inputImage: NSImage?) {
+        if let prevTool = convertActiveTaskTool, convertTask != nil {
+            var prev = convertState(for: prevTool)
+            if prev.processing {
+                prev.processing = false
+                prev.statusText = "Cancelled."
+                prev.statusIsError = false
+                setConvertState(prev, for: prevTool)
+            }
+            convertTask?.cancel()
+            convertTask = nil
+            convertActiveTaskTool = nil
+        }
+        let photoFormat = convertPhotoFormat
+        var state = convertState(for: tool)
+        state.processing = true
+        state.resultData = nil
+        state.resultImage = nil
+        state.resultFileName = nil
+        state.savedURL = nil
+        state.statusText = "Processing…"
+        state.statusIsError = false
+        state.inputName = inputName
+        state.inputData = fileData
+        state.inputSize = fileData.count
+        state.inputImage = inputImage
+        setConvertState(state, for: tool)
+        needsDisplay = true
+        let completion: (Result<Data, RimufuConvertError>) -> Void = { [weak self] result in
+            // URLSession calls back off the main thread; every UI
+            // touch below must happen on main.
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if self.convertActiveTaskTool == tool {
+                    self.convertTask = nil
+                    self.convertActiveTaskTool = nil
+                }
+                switch result {
+                case .success(let data):
+                    var done = self.convertState(for: tool)
+                    done.processing = false
+                    done.resultData = data
+                    done.resultFileName = self.convertResultFileName(for: tool, inputName: inputName, format: photoFormat)
+                    if tool == .photo {
+                        // May stay nil for AVIF: the bytes are valid
+                        // (the client checked the magic), this Mac
+                        // just cannot decode them for preview. Draw
+                        // handles that as info, not error.
+                        done.resultImage = NSImage(data: data)
+                    }
+                    done.statusText = "Done — drag the result out to use it."
+                    done.statusIsError = false
+                    self.setConvertState(done, for: tool)
+                case .failure(let error):
+                    // Cancelled means a newer run already reset the
+                    // status; showing an error here would overwrite
+                    // the new run's "Processing…".
+                    if case .uploadFailed(let detail) = error, detail == "Cancelled." {
+                        return
+                    }
+                    var failed = self.convertState(for: tool)
+                    failed.processing = false
+                    failed.statusText = error.message
+                    failed.statusIsError = true
+                    self.setConvertState(failed, for: tool)
+                }
+                self.needsDisplay = true
+            }
+        }
+        let task: URLSessionDataTask?
+        switch tool {
+        case .photo:
+            task = RimufuConvertClient.convertImage(data: fileData, fileName: inputName,
+                                                     mimeType: RimufuRemoveBgClient.mimeType(for: inputName),
+                                                     format: photoFormat, completion: completion)
+        case .pdfToWord:
+            task = RimufuConvertClient.pdfToWord(data: fileData, fileName: inputName, completion: completion)
+        case .compressPDF:
+            task = RimufuConvertClient.compressPDF(data: fileData, fileName: inputName, completion: completion)
+        case .pdfToMD:
+            task = RimufuConvertClient.pdfToMarkdown(data: fileData, fileName: inputName, completion: completion)
+        }
+        convertTask = task
+        convertActiveTaskTool = tool
+    }
+
+    /// Format menu for the photo tool (left-panel footer pill).
+    /// The current format is checkmarked. Picking a new format
+    /// re-runs with the stored input when one exists, so the user
+    /// can compare AVIF vs WebP without re-picking.
+    private func showConvertFormatMenu(at point: CGPoint) {
+        let menu = NSMenu()
+        for format in ConvertFormat.allCases {
+            let item = NSMenuItem(title: format.displayName,
+                                  action: #selector(pickConvertFormat(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = format.formValue
+            item.state = (format == convertPhotoFormat) ? .on : .off
+            menu.addItem(item)
+        }
+        menu.popUp(positioning: nil, at: point, in: self)
+    }
+
+    @objc private func pickConvertFormat(_ sender: NSMenuItem) {
+        guard let value = sender.representedObject as? String,
+              let format = ConvertFormat(rawValue: value) else { return }
+        convertPhotoFormat = format
+        needsDisplay = true
+        let state = convertState(for: .photo)
+        guard !state.processing, let inputData = state.inputData, let inputName = state.inputName else { return }
+        startConvertData(inputData, inputName: inputName, tool: .photo, inputImage: state.inputImage)
+    }
+
+    /// The result's file on disk, written once and reused (same
+    /// pattern as Remove BG's ensure, but per Convert tool).
+    private func ensureConvertFile(for tool: ConvertTool) -> URL? {
+        var state = convertState(for: tool)
+        guard let data = state.resultData, let fileName = state.resultFileName else { return nil }
+        if let saved = state.savedURL, FileManager.default.fileExists(atPath: saved.path) {
+            return saved
+        }
+        guard let url = RimufuRemoveBgClient.uniqueDownloadURL(fileName: fileName) else { return nil }
+        do {
+            try data.write(to: url, options: .atomic)
+            state.savedURL = url
+            setConvertState(state, for: tool)
+            return url
+        } catch {
+            return nil
+        }
+    }
+
+    private func saveConvertResult() {
+        let tool = convertActiveTool
+        guard let url = ensureConvertFile(for: tool) else {
+            var failed = convertState(for: tool)
+            failed.statusText = "Could not save the result."
+            failed.statusIsError = true
+            setConvertState(failed, for: tool)
+            needsDisplay = true
+            return
+        }
+        var done = convertState(for: tool)
+        let nameFont = NSFont.systemFont(ofSize: 13)
+        done.statusText = "Saved: \(truncated(url.lastPathComponent, toWidth: 400, font: nameFont))"
+        done.statusIsError = false
+        setConvertState(done, for: tool)
         needsDisplay = true
     }
 
