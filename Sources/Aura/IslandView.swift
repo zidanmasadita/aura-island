@@ -168,6 +168,7 @@ final class IslandView: NSView, NSDraggingSource {
         let next = next?.replacingOccurrences(of: "\r\n", with: " ")
             .replacingOccurrences(of: "\n", with: " ")
             .replacingOccurrences(of: "\r", with: " ")
+        let oldCurrent = lyricCurrent
         lyricPrev = prev
         lyricCurrent = current
         lyricNext = next
