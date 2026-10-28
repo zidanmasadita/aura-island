@@ -75,6 +75,10 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     /// True when the card was last closed from the lyrics page: the
     /// inactive pill then shows lyrics, not clock/battery/waveform.
     private var lyricsMode = false
+    /// Read by AppDelegate's overlap hiding: a pill in lyrics mode
+    /// is never hidden, by request — the user opened lyrics
+    /// precisely to keep seeing the lyric line on the closed pill.
+    var isLyricsPill: Bool { lyricsMode }
     /// True while a modal NSAlert (water settings) is open.
     /// AppDelegate skips the leave-the-island collapse while this is
     /// set: moving the mouse down to the dialog is not leaving the

@@ -825,6 +825,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
               !islandView.isDraggingOut, !islandView.isShowingModal,
               !islandView.trayDropHighlight, !islandView.isTrayBouncing,
               let screen = window.screen ?? NSScreen.main else { return }
+        // Lyrics exception: once the user has opened lyrics, the
+        // inactive lyrics pill is never overlap-hidden — it exists
+        // to keep the lyric line visible. If it was hidden before
+        // lyrics were opened, restore it the next tick instead of
+        // leaving a strip where the lyrics should be.
+        if islandView.isLyricsPill {
+            if pillHiddenForOverlap {
+                pillHiddenForOverlap = false
+                overlapClearTicks = 0
+                islandView.isOverlapHidden = false
+                animator.animate(to: windowSize(for: islandView.state))
+            }
+            return
+        }
         if islandView.pillAlert != nil {
             if pillHiddenForOverlap {
                 pillHiddenForOverlap = false
