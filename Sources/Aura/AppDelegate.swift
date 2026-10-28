@@ -285,6 +285,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // action wins, and the alert must not resurrect when the
         // card closes (its 4s would otherwise still be running).
         if state == .expanded { islandView.pillAlert = nil }
+        // Leaving expanded cancels a running tray spring (drop bounce):
+        // otherwise the spring transform runs through the close
+        // animation and pushes closed content outside the small pill.
+        if state != .expanded { islandView.cancelTraySpring() }
         islandView.state = state
         // Expanded size follows the card's page (music 520x180,
         // lyrics 700x180 — same height, only the width grows —

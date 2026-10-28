@@ -1038,7 +1038,13 @@ final class IslandView: NSView, NSDraggingSource {
         // scale an already-grown pill a second time, rendering it
         // clipped/misaligned (a "new pill" instead of the existing
         // one). The transform below maps base coords to window coords.
-        let springScale = traySpringScale(now: Date())
+        // Spring only while expanded: closed content (drawClosed/drawPillAlert)
+        // is laid out from bounds, so a running tray spring during a
+        // close animation would map those bounds coords through the
+        // spring transform a second time and push battery/clock/waveform
+        // outside the small pill. Guarding here makes the close draw
+        // follow the window animator (single pill, content inside).
+        let springScale = state == .expanded ? traySpringScale(now: Date()) : 1.0
         let base = unbulgedSize(for: state)
         let pathRect = springScale != 1.0
             ? NSRect(x: 0, y: 0, width: base.width, height: base.height)
@@ -1080,7 +1086,7 @@ final class IslandView: NSView, NSDraggingSource {
         // gradient from black at the top down to the cover's dominant
         // color (darkened so white text stays readable) at the bottom.
         // Without artwork, plain black.
-        if state != .zen, let bottomColor = gradientBottomColor() {
+        if state != .zen, currentPage != .tray, let bottomColor = gradientBottomColor() {
             ctx.saveGState()
             ctx.addPath(path)
             ctx.clip()
@@ -2309,6 +2315,20 @@ final class IslandView: NSView, NSDraggingSource {
         }
         if let traySpringTimer { RunLoop.main.add(traySpringTimer, forMode: .common) }
     }
+    /// Stop a running tray spring at once (used when the pill leaves
+    /// expanded, e.g. closing right after a drop): without this the
+    /// spring keeps oscillating through the 0.35s close animation and
+    /// its transform fights the window animator. Cancelling also
+    /// suppresses the bounce-settle onTraySizeChanged callback, so
+    /// closing does not re-animate to the closed size a second time.
+    func cancelTraySpring() {
+        traySpringTimer?.invalidate()
+        traySpringTimer = nil
+        traySpringStart = nil
+        traySpringFrom = 1.0
+        traySpringTo = 1.0
+        needsDisplay = true
+    }
     /// The island's size without the drop bulge (single source of
     /// truth for AppDelegate.windowSize's base).
     func unbulgedSize(for state: IslandState) -> NSSize {
@@ -2660,6 +2680,35 @@ final class IslandView: NSView, NSDraggingSource {
         drawText("Tray", font: NSFont.boldSystemFont(ofSize: 20), color: .white, at: NSPoint(x: 28, y: 10))
         drawTrayClearPill()
         let zone = NSRect(x: 28, y: 44, width: 584, height: 212)
+        // Cursor light (replaces the tray gradient): a radial glow
+        // centred on the drag cursor, clipped to the drop zone, so it
+        // follows the cursor as draggingUpdated refreshes trayDragPoint.
+        // Drop-zone drawing lives in base coords (the draw() spring
+        // transform maps them to window coords), so a drag point in
+        // window coords is converted back to base coords while a
+        // spring runs; at rest the two are identical.
+        if let point = trayDragPoint, let ctx = NSGraphicsContext.current?.cgContext {
+            let spring = traySpringScale(now: Date())
+            let glowPoint: CGPoint
+            if spring != 1.0 {
+                let baseWidth = unbulgedSize(for: state).width
+                glowPoint = CGPoint(x: (point.x - bounds.midX) / spring + baseWidth / 2,
+                                    y: point.y / spring)
+            } else {
+                glowPoint = point
+            }
+            ctx.saveGState()
+            ctx.addPath(CGPath(roundedRect: zone, cornerWidth: 20, cornerHeight: 20, transform: nil))
+            ctx.clip()
+            let glowColors = [NSColor.white.withAlphaComponent(0.25).cgColor,
+                              NSColor.white.withAlphaComponent(0.0).cgColor] as CFArray
+            if let glow = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
+                                     colors: glowColors, locations: [0, 1]) {
+                ctx.drawRadialGradient(glow, startCenter: glowPoint, startRadius: 0,
+                                       endCenter: glowPoint, endRadius: 160, options: [])
+            }
+            ctx.restoreGState()
+        }
         let dashed = NSBezierPath(roundedRect: zone, xRadius: 20, yRadius: 20)
         dashed.setLineDash([8, 6], count: 2, phase: 0)
         dashed.lineWidth = 1.5
