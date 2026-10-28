@@ -865,12 +865,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
 
-
-
-
-
-
-
     @objc private func quitApp() {
         NSApplication.shared.terminate(nil)
     }
