@@ -1703,14 +1703,20 @@ final class IslandView: NSView, NSDraggingSource {
                 let color = NSColor.white.withAlphaComponent(alpha)
                 let centerY = y + line.height / 2
                 if scale != 1.0, let ctx = NSGraphicsContext.current?.cgContext {
-                    // Scale about the line block's own center, so the
-                    // block grows/shrinks in place while it travels;
-                    // wrapped lines were fixed at roll start, so the
+                    // Scale about the line's LEFT edge, not the panel
+                    // center. Center scaling moved a shrinking line's
+                    // left edge to the right during the roll, then it
+                    // snapped back left at commit — the rightward
+                    // shift the user reported on incoming/passed
+                    // lines. Left-anchored, the focus line only zooms
+                    // in place and passed lines only travel up and
+                    // fade; no line ever moves right.
+                    // Wrapped lines were fixed at roll start, so the
                     // scale never reflows text.
                     ctx.saveGState()
-                    ctx.translateBy(x: x + width / 2, y: centerY)
+                    ctx.translateBy(x: x, y: centerY)
                     ctx.scaleBy(x: scale, y: scale)
-                    ctx.translateBy(x: -(x + width / 2), y: -centerY)
+                    ctx.translateBy(x: -x, y: -centerY)
                     var ly = y
                     for text in line.lines {
                         drawText(text, font: line.font, color: color, at: NSPoint(x: x, y: ly))
