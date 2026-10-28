@@ -6,6 +6,10 @@ let package = Package(
     platforms: [.macOS(.v13)],
     targets: [
         .executableTarget(
+            name: "AuraArtworkHelper",
+            path: "Sources/AuraArtworkHelper"
+        ),
+        .executableTarget(
             name: "Aura",
             path: "Sources/Aura",
             // The .jxa/.applescript files are standalone manual-test
