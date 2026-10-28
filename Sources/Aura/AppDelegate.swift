@@ -158,6 +158,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             self.animator.animate(to: self.windowSize(for: self.islandView.state))
         }
+        // Notch diagnostic, visible when run from Terminal: this is
+        // the only way to tell, on a real notched Mac, whether the
+        // below-notch symptom is detection failing (hasNotch=false)
+        // or the window being placed/constrained elsewhere
+        // (hasNotch=true but Y wrong). No behavior change.
+        if let screen = NSScreen.main {
+            let notch = HardwareNotch.forMainScreen()
+            print("[Aura] Notch: hasNotch=\(notch.hasNotch) width=\(notch.width) height=\(notch.height) frame=\(screen.frame) visibleFrame=\(screen.visibleFrame) auxLeft=\(String(describing: screen.auxiliaryTopLeftArea)) auxRight=\(String(describing: screen.auxiliaryTopRightArea)) safeTop=\(screen.safeAreaInsets.top)")
+        }
         window.placeAtTopCenter()
         window.orderFrontRegardless()
 
