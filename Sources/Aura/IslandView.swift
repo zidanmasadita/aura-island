@@ -497,6 +497,32 @@ final class IslandView: NSView, NSDraggingSource {
     /// Visual rects of the page dots, a VERTICAL column on the
     /// right edge (navigation is vertical scroll, so the indicator
     /// is vertical too): active = tall dash (6x16), rest = dots
+    /// Width/height the content is drawn in. While a tray spring
+    /// runs, draw() maps base coords to window coords (headroom
+    /// window, e.g. 736 wide for a 640 card), so any element anchored
+    /// to bounds.width/height would land too far right / low — the
+    /// right side of the pill looking wider than the left during a
+    /// drag, while the left (fixed-coord content) stays correct.
+    /// At rest the spring scale is 1.0 and base == bounds.
+    private var drawingWidth: CGFloat {
+        let s = state == .expanded ? traySpringScale(now: Date()) : 1.0
+        return s != 1.0 ? unbulgedSize(for: state).width : bounds.width
+    }
+    private var drawingHeight: CGFloat {
+        let s = state == .expanded ? traySpringScale(now: Date()) : 1.0
+        return s != 1.0 ? unbulgedSize(for: state).height : bounds.height
+    }
+    /// Inverse of draw()'s spring transform: a mouse/drag point in
+    /// window coords back to base coords, so hit tests and
+    /// cursor-following drawing (badge, glow) sit on the same
+    /// coordinates as the fixed-coord content.
+    private func basePoint(from windowPoint: NSPoint) -> NSPoint {
+        let s = state == .expanded ? traySpringScale(now: Date()) : 1.0
+        guard s != 1.0 else { return windowPoint }
+        let base = unbulgedSize(for: state)
+        return NSPoint(x: (windowPoint.x - bounds.midX) / s + base.width / 2,
+                       y: windowPoint.y / s)
+    }
     /// (6x6), each centered in an 18pt slot so the column never
     /// shifts when the active section changes. Drawn 18pt from the
     /// right edge (x W-24..W-18) so it never hugs the edge; the
@@ -507,7 +533,7 @@ final class IslandView: NSView, NSDraggingSource {
         let pages = availableSections
         let active = pages.firstIndex(of: sectionForDots) ?? 0
         let top = dotColumnTop
-        let x = bounds.width - 24
+        let x = drawingWidth - 24
         return pages.indices.map { i in
             let y = top + CGFloat(i) * 18
             return i == active
@@ -518,14 +544,17 @@ final class IslandView: NSView, NSDraggingSource {
 
     /// Top of the vertical dot column, centered on the card height.
     private var dotColumnTop: CGFloat {
-        (bounds.height - CGFloat(availableSections.count) * 18) / 2
+        (drawingHeight - CGFloat(availableSections.count) * 18) / 2
     }
 
     private func dotIndex(at point: CGPoint) -> Int? {
-        guard point.x >= bounds.width - 32 && point.x <= bounds.width - 10 else { return nil }
+        // Mouse points arrive in window coords; dot rects are drawn
+        // in base coords, so convert first (identity at rest).
+        let p = basePoint(from: point)
+        guard p.x >= drawingWidth - 32 && p.x <= drawingWidth - 10 else { return nil }
         let top = dotColumnTop
-        guard point.y >= top && point.y <= top + CGFloat(availableSections.count) * 18 else { return nil }
-        let index = Int((point.y - top) / 18)
+        guard p.y >= top && p.y <= top + CGFloat(availableSections.count) * 18 else { return nil }
+        let index = Int((p.y - top) / 18)
         return (index >= 0 && index < availableSections.count) ? index : nil
     }
 
@@ -2688,15 +2717,7 @@ final class IslandView: NSView, NSDraggingSource {
         // window coords is converted back to base coords while a
         // spring runs; at rest the two are identical.
         if let point = trayDragPoint, let ctx = NSGraphicsContext.current?.cgContext {
-            let spring = traySpringScale(now: Date())
-            let glowPoint: CGPoint
-            if spring != 1.0 {
-                let baseWidth = unbulgedSize(for: state).width
-                glowPoint = CGPoint(x: (point.x - bounds.midX) / spring + baseWidth / 2,
-                                    y: point.y / spring)
-            } else {
-                glowPoint = point
-            }
+            let glowPoint = basePoint(from: point)
             ctx.saveGState()
             ctx.addPath(CGPath(roundedRect: zone, cornerWidth: 20, cornerHeight: 20, transform: nil))
             ctx.clip()
@@ -2722,10 +2743,14 @@ final class IslandView: NSView, NSDraggingSource {
         drawTrayPageDots()
         // "+ Copy" badge below-right of the cursor (clamped to the card).
         if let point = trayDragPoint {
+            // Badge is drawn in base coords: use the converted cursor
+            // point and clamp to the base card, not the headroom window,
+            // or the badge (like the dots) drifts right during a drag.
+            let base = basePoint(from: point)
             let badgeFont = NSFont.systemFont(ofSize: 12, weight: .semibold)
             let badgeW = ("+ Copy" as NSString).size(withAttributes: [.font: badgeFont]).width + 16
-            let badgeX = min(point.x + 14, bounds.width - badgeW - 8)
-            let badgeY = min(point.y + 6, bounds.height - 22 - 8)
+            let badgeX = min(base.x + 14, drawingWidth - badgeW - 8)
+            let badgeY = min(base.y + 6, drawingHeight - 22 - 8)
             let badge = NSRect(x: badgeX, y: badgeY, width: badgeW, height: 22)
             NSColor.white.setFill()
             NSBezierPath(roundedRect: badge, xRadius: 11, yRadius: 11).fill()
