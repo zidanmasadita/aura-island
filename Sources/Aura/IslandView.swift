@@ -1135,26 +1135,9 @@ final class IslandView: NSView, NSDraggingSource {
         ctx.addPath(path)
         ctx.setFillColor(NSColor.black.withAlphaComponent(0.98).cgColor)
         ctx.fillPath()
-        // Pill tint: when album artwork is present, the background is a
-        // gradient from black at the top down to the cover's dominant
-        // color (darkened so white text stays readable) at the bottom.
-        // Without artwork, plain black.
-        if state != .zen, currentPage != .tray, let bottomColor = gradientBottomColor() {
-            ctx.saveGState()
-            ctx.addPath(path)
-            ctx.clip()
-            let colors = [NSColor.black.cgColor, bottomColor.cgColor] as CFArray
-            if let gradient = CGGradient(
-                colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: [0, 1]) {
-                ctx.drawLinearGradient(
-                    gradient,
-                    start: CGPoint(x: 0, y: pathRect.minY),
-                    end: CGPoint(x: 0, y: pathRect.maxY),
-                    options: []
-                )
-            }
-            ctx.restoreGState()
-        }
+        // Pill background is always plain black (0.98): the
+        // artwork gradient was removed — it showed up on the
+        // lyrics card and tinted the whole pill.
         ctx.addPath(path)
         ctx.setStrokeColor(NSColor.white.withAlphaComponent(0.15).cgColor)
         ctx.setLineWidth(0.5)
@@ -1306,62 +1289,6 @@ final class IslandView: NSView, NSDraggingSource {
             NSBezierPath(roundedRect: NSRect(x: x + 2, y: y + 2, width: fillWidth, height: height - 4),
                          xRadius: min(1.5, fillWidth / 2), yRadius: min(1.5, fillWidth / 2)).fill()
         }
-    }
-
-    private var cachedDominantKey: String?
-    private var cachedDominantColor: NSColor?
-
-    /// Darkened dominant cover color at the bottom of the background
-    /// gradient, or nil when there is no artwork (plain black pill).
-    /// Cached per track so the 10x/second waveform redraw never
-    /// re-samples the image.
-    private func gradientBottomColor() -> NSColor? {
-        guard let session, let artwork = session.artwork else {
-            cachedDominantKey = nil
-            cachedDominantColor = nil
-            return nil
-        }
-        let key = "\(session.title)|\(session.artist)|art"
-        if key != cachedDominantKey {
-            cachedDominantKey = key
-            cachedDominantColor = dominantColor(of: artwork).map { darkenForText($0) }
-        }
-        return cachedDominantColor
-    }
-
-    /// Average color of the image, sampled at 32x32.
-    private func dominantColor(of image: NSImage) -> NSColor? {
-        guard let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
-        let w = 32, h = 32
-        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8,
-                                  bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
-                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
-        ctx.interpolationQuality = .low
-        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
-        guard let data = ctx.data else { return nil }
-        let px = data.bindMemory(to: UInt8.self, capacity: w * h * 4)
-        var r = 0, g = 0, b = 0
-        for i in 0..<(w * h) {
-            r += Int(px[i * 4])
-            g += Int(px[i * 4 + 1])
-            b += Int(px[i * 4 + 2])
-        }
-        let n = CGFloat(w * h)
-        return NSColor(red: CGFloat(r) / n / 255.0,
-                       green: CGFloat(g) / n / 255.0,
-                       blue: CGFloat(b) / n / 255.0, alpha: 1.0)
-    }
-
-    /// Scales a color down so its luminance is at most 0.28 — white text
-    /// on top stays readable even for bright covers. Hue is preserved.
-    private func darkenForText(_ color: NSColor) -> NSColor {
-        guard let rgb = color.usingColorSpace(.deviceRGB) else { return color }
-        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        rgb.getRed(&r, green: &g, blue: &b, alpha: &a)
-        let luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
-        guard luminance > 0.28 else { return color }
-        let scale = 0.28 / luminance
-        return NSColor(red: r * scale, green: g * scale, blue: b * scale, alpha: 1.0)
     }
 
     /// Animated bars; flat when paused, lively while playing.
