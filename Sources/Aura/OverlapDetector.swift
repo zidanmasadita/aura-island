@@ -59,10 +59,10 @@ enum OverlapDetector {
         }
         for win in list {
             // Foreground app only, like Nusa's GetForegroundWindow.
-            guard let pid = win[kCGWindowOwnerPID as String] as? Int32, pid == frontPID else {
+            guard let pid = (win[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value, pid == frontPID else {
                 continue
             }
-            if let layer = win[kCGWindowLayer as String] as? Int, layer != 0 {
+            if let layer = (win[kCGWindowLayer as String] as? NSNumber)?.intValue, layer != 0 {
                 continue
             }
             if let alpha = win[kCGWindowAlpha as String] as? Double, alpha <= 0 {
