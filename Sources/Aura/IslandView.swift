@@ -168,16 +168,21 @@ final class IslandView: NSView, NSDraggingSource {
         let next = next?.replacingOccurrences(of: "\r\n", with: " ")
             .replacingOccurrences(of: "\n", with: " ")
             .replacingOccurrences(of: "\r", with: " ")
-        let oldCurrent = lyricCurrent
+        let oldPrev = lyricPrev, oldCurrent = lyricCurrent, oldNext = lyricNext
         lyricPrev = prev
         lyricCurrent = current
         lyricNext = next
         guard current != oldCurrent else { return }
-        // Lyrics are shown statically: the new triple is stored and
-        // drawn as-is, with no slot-machine roll. The roll machinery
-        // stays in the file unused, and any in-flight roll is
-        // cancelled so a line change never animates again.
+        // Changed: any in-flight roll is stale (its target is no
+        // longer current) — cancel it, then maybe start a new one.
         cancelLyricRoll()
+        guard let oldCurrent, let current, oldNext == current,
+              state == .expanded, currentPage == .lyrics else {
+            needsDisplay = true
+            return
+        }
+        startLyricRoll(oldPrev: oldPrev, oldCurrent: oldCurrent, oldNext: oldNext,
+                       newPrev: prev, newCurrent: current, newNext: next)
         needsDisplay = true
     }
 
