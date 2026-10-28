@@ -34,6 +34,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <true/>
     <key>NSAppleEventsUsageDescription</key>
     <string>Aura membaca daftar tab Google Chrome untuk menemukan tab YouTube Music yang sedang memutar, supaya cover lagu bisa ditampilkan tanpa ekstensi.</string>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>Aura checks which Bluetooth devices are already connected, to show a connect/disconnect alert. It does not scan for or discover new devices.</string>
 </dict>
 </plist>
 PLIST
