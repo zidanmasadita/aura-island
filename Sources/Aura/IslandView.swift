@@ -716,7 +716,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         guard state == .expanded, session != nil,
               currentPage == .music || currentPage == .lyrics else { return .none }
         if musicBubbleRect.contains(point) { return .bubble }
-        let centers = currentPage == .lyrics ? [118, 170, 222] : [208, 260, 312]
+        let centers: [CGFloat] = currentPage == .lyrics ? [118, 170, 222] : [208, 260, 312]
         if let hit = controlHit(at: point, centers: centers, yMin: 130, yMax: 150) {
             return .control(hit)
         }
