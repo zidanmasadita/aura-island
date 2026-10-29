@@ -1,9 +1,9 @@
 import AppKit
 
 /// Convert client for the deployed Rimufu API, used by the Aura
-/// "Convert" section (IslandView, Fase 1: single-file tools only —
-/// photo convert, PDF to Word, PDF compress, PDF to Markdown).
-/// Merge PDF is Fase 2 and is not in this file.
+/// "Convert" section (IslandView): single-file tools (photo
+/// convert, PDF to Word, PDF compress, PDF to Markdown) plus
+/// Merge PDF (multi-file, Fase 2, see mergePDFs).
 ///
 /// Shares the backend base URL and the Downloads/Aura numbering
 /// with RimufuRemoveBgClient (same module, no duplication). The
@@ -230,6 +230,61 @@ final class RimufuConvertClient {
                 return
             }
             completion(.success(utf8))
+        }
+        task.resume()
+        return task
+    }
+
+    /// POST /api/pdf/merge. FastAPI reads files as list[UploadFile],
+    /// so every part is named "files" (one part per PDF, in list
+    /// order - the server merges in the order received). The server
+    /// 400s below 2 files; the section enforces that before calling,
+    /// so a short list here is a programming error, not a silent
+    /// no-op. Success is a PDF again (%PDF check, like compress).
+    @discardableResult
+    static func mergePDFs(files: [(data: Data, fileName: String)],
+                          completion: @escaping (Result<Data, RimufuConvertError>) -> Void) -> URLSessionDataTask? {
+        guard let url = URL(string: baseURL + "/api/pdf/merge") else {
+            completion(.failure(.serverError("Convert backend URL is invalid.")))
+            return nil
+        }
+        let boundary = "Aura-\(UUID().uuidString)"
+        var body = Data()
+        for file in files {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"files\"; filename=\"\(file.fileName)\"\r\n".data(using: .utf8)!)
+            body.append("Content-Type: application/pdf\r\n\r\n".data(using: .utf8)!)
+            body.append(file.data)
+            body.append("\r\n".data(using: .utf8)!)
+        }
+        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+        request.timeoutInterval = 180
+        let task = URLSession.shared.dataTask(with: request) { responseData, response, error in
+            if let error = error as? URLError, error.code == .cancelled {
+                completion(.failure(.uploadFailed("Cancelled.")))
+                return
+            }
+            if let error {
+                completion(.failure(.uploadFailed("Could not reach the server: \(error.localizedDescription)")))
+                return
+            }
+            guard let http = response as? HTTPURLResponse else {
+                completion(.failure(.uploadFailed("No response from the server.")))
+                return
+            }
+            guard http.statusCode == 200, let responseData else {
+                completion(.failure(.serverError(serverMessage(from: responseData, status: http.statusCode))))
+                return
+            }
+            guard hasPrefix(responseData, Array("%PDF".utf8)) else {
+                completion(.failure(.invalidResponse))
+                return
+            }
+            completion(.success(responseData))
         }
         task.resume()
         return task

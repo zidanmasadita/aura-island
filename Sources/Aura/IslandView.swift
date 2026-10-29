@@ -870,6 +870,9 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             } else if convertState(for: tool).resultData != nil, removeBgSaveRect().contains(point) {
                 saveConvertResult()
                 return
+            } else if tool == .mergePDF, removeBgSaveRect().contains(point) {
+                startMerge()
+                return
             } else if tool == .photo, convertFormatPillRect().contains(point) {
                 showConvertFormatMenu(at: point)
                 return
@@ -878,10 +881,22 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
                 needsDisplay = true
                 return
             } else if !convertTrayFiles(for: tool).isEmpty, convertFromTrayPillRect().contains(point) {
-                showConvertFromTrayMenu(at: point)
+                if tool == .mergePDF {
+                    showMergeTrayMenu(at: point)
+                } else {
+                    showConvertFromTrayMenu(at: point)
+                }
                 return
             } else if convertLeftRect().contains(point) {
-                pickConvertFile()
+                if tool == .mergePDF {
+                    if let hit = mergeFileRemoveRects().first(where: { $0.rect.contains(point) }) {
+                        removeMergeFile(at: hit.index)
+                    } else {
+                        pickMergeFiles()
+                    }
+                } else {
+                    pickConvertFile()
+                }
                 return
             } else if convertState(for: tool).resultData != nil, convertRightRect().contains(point) {
                 convertPendingDrag = (tool: tool, point: point)
@@ -1178,6 +1193,16 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             removeBgDropHighlight = false
             convertDropHighlight = false
             let tool = convertActiveTool
+            if tool == .mergePDF {
+                // Merge collects files, it never runs on drop:
+                // the user may drop in batches, then press Merge.
+                let pdfs = urls.filter { convertAccepts(url: $0, for: tool) }
+                if !pdfs.isEmpty {
+                    addMergeFiles(pdfs)
+                    return true
+                }
+                return false
+            }
             if let url = urls.first(where: { convertAccepts(url: $0, for: tool) }) {
                 startConvert(with: url, tool: tool)
                 return true
@@ -3407,17 +3432,19 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     /// panels at y 72 (156 tall), status at y 244, Save pill at
     /// y 236 (shared position with Remove BG's Save pill).
     /// Per-tool state is preserved when switching pills, so a
-    /// result is not lost by an accidental pill tap. Merge PDF is
-    /// Fase 2 and is not here: it needs a multi-file list, which
-    /// does not fit this single-file layout.
+    /// result is not lost by an accidental pill tap. Merge PDF
+    /// keeps its file list apart (mergeFiles below): one
+    /// ConvertState per single-file tool, plus the merge list
+    /// whose result/status ride in convertStates[.mergePDF].
     /// Rects follow the tray convention: base coords, used
     /// directly from mouseDown (at rest they equal view coords).
     private enum ConvertTool: CaseIterable {
-        case photo, pdfToWord, compressPDF, pdfToMD
+        case photo, mergePDF, pdfToWord, compressPDF, pdfToMD
 
         var displayName: String {
             switch self {
             case .photo: return "Photo"
+            case .mergePDF: return "Merge PDF"
             case .pdfToWord: return "PDF to Word"
             case .compressPDF: return "Compress PDF"
             case .pdfToMD: return "PDF to MD"
@@ -3427,6 +3454,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         var defaultStatus: String {
             switch self {
             case .photo: return "Drop an image, or click to pick one."
+            case .mergePDF: return "Add at least 2 PDFs, then press Merge."
             default: return "Drop a PDF, or click to pick one."
             }
         }
@@ -3457,6 +3485,12 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     private var convertActiveTaskTool: ConvertTool?
     private var convertPendingDrag: (tool: ConvertTool, point: CGPoint)?
     private var convertDropHighlight = false { didSet { needsDisplay = true } }
+
+    /// Merge PDF's file list, in merge order: (file name, bytes).
+    /// The result/status ride in convertStates[.mergePDF] like
+    /// any other tool, so Save, drag-out, and the status row need
+    /// no merge branch - only this list lives apart.
+    private var mergeFiles: [(name: String, data: Data)] = []
 
     private func convertState(for tool: ConvertTool) -> ConvertState {
         convertStates[tool] ?? ConvertState(tool: tool)
@@ -3577,7 +3611,9 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         NSColor.white.withAlphaComponent(0.5).setStroke()
         leftPath.stroke()
         let content = convertLeftContentRect()
-        if convertActiveTool == .photo {
+        if convertActiveTool == .mergePDF {
+            drawMergeFileList(in: content)
+        } else if convertActiveTool == .photo {
             if let image = state.inputImage {
                 let fit = removeBgFitRect(for: image, in: content)
                 drawImageUpright(image, in: fit)
@@ -3733,6 +3769,28 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         let statusColor = state.statusIsError ? NSColor.systemRed : NSColor.white.withAlphaComponent(0.7)
         drawText(truncated(state.statusText, toWidth: 400, font: statusFont),
                  font: statusFont, color: statusColor, at: NSPoint(x: 28, y: 244))
+        // Merge button, same spot as Save (Save replaces it
+        // once a result exists): solid when 2+ files are ready,
+        // translucent when fewer - tapping it short of 2 files
+        // only sets the hint status, it never calls the server.
+        if convertActiveTool == .mergePDF, state.resultData == nil, !state.processing {
+            let merge = removeBgSaveRect()
+            let ready = mergeFiles.count >= 2
+            if ready {
+                NSColor.white.setFill()
+            } else {
+                NSColor.white.withAlphaComponent(0.15).setFill()
+            }
+            NSBezierPath(roundedRect: merge, xRadius: 14, yRadius: 14).fill()
+            if !ready {
+                NSColor.white.withAlphaComponent(0.3).setStroke()
+                NSBezierPath(roundedRect: merge, xRadius: 14, yRadius: 14).stroke()
+            }
+            let mergeFont = NSFont.systemFont(ofSize: 14, weight: .medium)
+            let mergeWidth = ("Merge" as NSString).size(withAttributes: [.font: mergeFont]).width
+            drawText("Merge", font: mergeFont, color: ready ? .black : .white,
+                     at: NSPoint(x: merge.midX - mergeWidth / 2, y: merge.minY + 5))
+        }
         // Save pill, only once a result exists (shared position
         // with Remove BG's Save pill).
         if state.resultData != nil, !state.processing {
@@ -3754,7 +3812,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             dashed.lineWidth = 1.5
             NSColor.white.withAlphaComponent(0.8).setStroke()
             dashed.stroke()
-            let label = "Release to convert"
+            let label = convertActiveTool == .mergePDF ? "Release to add PDFs" : "Release to convert"
             let font = NSFont.systemFont(ofSize: 14)
             let width = (label as NSString).size(withAttributes: [.font: font]).width
             drawText(label, font: font, color: NSColor.white.withAlphaComponent(0.9),
@@ -3768,9 +3826,9 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     }
 
     /// Tray files usable for a tool (same filter as the drop
-    /// filter, plus the file still existing on disk). One file
-    /// only, like Remove BG's picker — merge (Fase 2) will use a
-    /// different, multi-add picker.
+    /// filter, plus the file still existing on disk). Single-file
+    /// tools take one; merge appends from the same list via its
+    /// own menu (showMergeTrayMenu) instead of replacing.
     private func convertTrayFiles(for tool: ConvertTool) -> [TrayFile] {
         trayFiles.filter { file in
             !file.isDirectory && trayFileExists(file) && convertAccepts(url: file.url, for: tool)
@@ -3827,6 +3885,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         case .pdfToWord: return base + ".docx"
         case .compressPDF: return base + " compressed.pdf"
         case .pdfToMD: return base + ".md"
+        case .mergePDF: return "merged_document.pdf"
         }
     }
 
@@ -3862,6 +3921,9 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     /// synchronously first, so its cancelled completion — which
     /// returns early — can never overwrite the new run's status.
     private func startConvertData(_ fileData: Data, inputName: String, tool: ConvertTool, inputImage: NSImage?) {
+        // Merge never comes through here (it uses startMerge,
+        // which owns the same single-task machinery).
+        guard tool != .mergePDF else { return }
         if let prevTool = convertActiveTaskTool, convertTask != nil {
             var prev = convertState(for: prevTool)
             if prev.processing {
@@ -3942,6 +4004,9 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             task = RimufuConvertClient.compressPDF(data: fileData, fileName: inputName, completion: completion)
         case .pdfToMD:
             task = RimufuConvertClient.pdfToMarkdown(data: fileData, fileName: inputName, completion: completion)
+        case .mergePDF:
+            // Unreachable (guarded above); kept for exhaustiveness.
+            task = nil
         }
         convertTask = task
         convertActiveTaskTool = tool
@@ -3991,6 +4056,220 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         } catch {
             return nil
         }
+    }
+
+    /// Rows of the merge list, for drawing and for hit-testing
+    /// the per-row remove control. Rows live in the left panel's
+    /// content rect (which already shrinks above the From Tray
+    /// footer pill when one is drawn), 18pt tall. When the list
+    /// is longer than the panel, the last visible row becomes
+    /// an overflow line with no remove control.
+    private func mergeFileRemoveRects() -> [(index: Int, rect: NSRect)] {
+        let content = convertLeftContentRect()
+        let maxRows = max(1, Int(content.height / 18))
+        let shown = min(mergeFiles.count, maxRows)
+        let overflow = mergeFiles.count > maxRows
+        let removable = overflow ? shown - 1 : shown
+        var out: [(index: Int, rect: NSRect)] = []
+        for i in 0..<removable {
+            let y = content.minY + CGFloat(i) * 18
+            out.append((index: i, rect: NSRect(x: content.maxX - 20, y: y, width: 20, height: 18)))
+        }
+        return out
+    }
+
+    private func drawMergeFileList(in content: NSRect) {
+        if mergeFiles.isEmpty {
+            let line1 = "Drop PDFs here"
+            let font1 = NSFont.systemFont(ofSize: 14)
+            let w1 = (line1 as NSString).size(withAttributes: [.font: font1]).width
+            drawText(line1, font: font1, color: NSColor.white.withAlphaComponent(0.8),
+                     at: NSPoint(x: content.midX - w1 / 2, y: content.midY - 10))
+            let line2 = "or click to pick"
+            let font2 = NSFont.systemFont(ofSize: 12)
+            let w2 = (line2 as NSString).size(withAttributes: [.font: font2]).width
+            drawText(line2, font: font2, color: NSColor.white.withAlphaComponent(0.5),
+                     at: NSPoint(x: content.midX - w2 / 2, y: content.midY + 10))
+            return
+        }
+        let maxRows = max(1, Int(content.height / 18))
+        let overflow = mergeFiles.count > maxRows
+        let shown = min(mergeFiles.count, maxRows)
+        let nameFont = NSFont.systemFont(ofSize: 13)
+        for i in 0..<shown {
+            let y = content.minY + CGFloat(i) * 18
+            if overflow, i == shown - 1 {
+                let more = "... +\(mergeFiles.count - (shown - 1)) more"
+                drawText(more, font: nameFont, color: NSColor.white.withAlphaComponent(0.5),
+                         at: NSPoint(x: content.minX, y: y + 2))
+                continue
+            }
+            let name = truncated(mergeFiles[i].name, toWidth: content.width - 24, font: nameFont)
+            drawText(name, font: nameFont, color: NSColor.white.withAlphaComponent(0.9),
+                     at: NSPoint(x: content.minX, y: y + 2))
+            // Remove control, drawn as two strokes (not a glyph):
+            // a 10pt cross at the row's right edge, inside the
+            // 20pt hit rect mergeFileRemoveRects returns.
+            let cross = NSRect(x: content.maxX - 14, y: y + 4, width: 10, height: 10)
+            NSColor.white.withAlphaComponent(0.5).setStroke()
+            let crossPath = NSBezierPath()
+            crossPath.lineWidth = 1.5
+            crossPath.move(to: NSPoint(x: cross.minX, y: cross.minY))
+            crossPath.line(to: NSPoint(x: cross.maxX, y: cross.maxY))
+            crossPath.move(to: NSPoint(x: cross.maxX, y: cross.minY))
+            crossPath.line(to: NSPoint(x: cross.minX, y: cross.maxY))
+            crossPath.stroke()
+        }
+    }
+
+    /// Append files to the merge list (picker, drop, or From
+    /// Tray). Any list change invalidates a previous result:
+    /// the merged file no longer matches the list.
+    private func addMergeFiles(_ urls: [URL]) {
+        guard !convertState(for: .mergePDF).processing else { return }
+        var added = 0
+        for url in urls where convertAccepts(url: url, for: .mergePDF) {
+            guard let data = try? Data(contentsOf: url) else { continue }
+            mergeFiles.append((name: url.lastPathComponent, data: data))
+            added += 1
+        }
+        guard added > 0 else { return }
+        var state = convertState(for: .mergePDF)
+        state.resultData = nil
+        state.resultImage = nil
+        state.resultFileName = nil
+        state.savedURL = nil
+        state.statusIsError = false
+        state.statusText = mergeFiles.count == 1
+            ? "1 PDF - add at least 1 more, then press Merge."
+            : "\(mergeFiles.count) PDFs ready - press Merge."
+        setConvertState(state, for: .mergePDF)
+        needsDisplay = true
+    }
+
+    private func removeMergeFile(at index: Int) {
+        guard !convertState(for: .mergePDF).processing else { return }
+        guard mergeFiles.indices.contains(index) else { return }
+        mergeFiles.remove(at: index)
+        var state = convertState(for: .mergePDF)
+        state.resultData = nil
+        state.resultImage = nil
+        state.resultFileName = nil
+        state.savedURL = nil
+        state.statusIsError = false
+        if mergeFiles.isEmpty {
+            state.statusText = ConvertTool.mergePDF.defaultStatus
+        } else if mergeFiles.count == 1 {
+            state.statusText = "1 PDF - add at least 1 more, then press Merge."
+        } else {
+            state.statusText = "\(mergeFiles.count) PDFs ready - press Merge."
+        }
+        setConvertState(state, for: .mergePDF)
+        needsDisplay = true
+    }
+
+    private func pickMergeFiles() {
+        guard !convertState(for: .mergePDF).processing else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.allowedFileTypes = ["pdf"]
+        panel.message = "Choose PDFs to merge"
+        // runModal, not a sheet: same non-key window reasoning
+        // as pickConvertFile.
+        guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
+        addMergeFiles(panel.urls)
+    }
+
+    private func showMergeTrayMenu(at point: CGPoint) {
+        let files = convertTrayFiles(for: .mergePDF)
+        guard !files.isEmpty else { return }
+        let menu = NSMenu()
+        for file in files {
+            let nameFont = NSFont.systemFont(ofSize: 13)
+            let item = NSMenuItem(title: truncated(file.name, toWidth: 300, font: nameFont),
+                                  action: #selector(pickMergeFromTrayMenuFile(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = file
+            menu.addItem(item)
+        }
+        menu.popUp(positioning: nil, at: point, in: self)
+    }
+
+    @objc private func pickMergeFromTrayMenuFile(_ sender: NSMenuItem) {
+        guard let file = sender.representedObject as? TrayFile else { return }
+        addMergeFiles([file.url])
+    }
+
+    /// Run the merge. The files snapshot is taken up front:
+    /// adds/removes are ignored while a run is in flight, so
+    /// the list cannot change under the upload.
+    private func startMerge() {
+        let tool = ConvertTool.mergePDF
+        if convertState(for: tool).processing { return }
+        guard mergeFiles.count >= 2 else {
+            var hint = convertState(for: tool)
+            hint.statusText = "Add at least 2 PDFs to merge."
+            hint.statusIsError = false
+            setConvertState(hint, for: tool)
+            needsDisplay = true
+            return
+        }
+        if let prevTool = convertActiveTaskTool, convertTask != nil {
+            var prev = convertState(for: prevTool)
+            if prev.processing {
+                prev.processing = false
+                prev.statusText = "Cancelled."
+                prev.statusIsError = false
+                setConvertState(prev, for: prevTool)
+            }
+            convertTask?.cancel()
+            convertTask = nil
+            convertActiveTaskTool = nil
+        }
+        let files = mergeFiles
+        var state = convertState(for: tool)
+        state.processing = true
+        state.resultData = nil
+        state.resultImage = nil
+        state.resultFileName = nil
+        state.savedURL = nil
+        state.statusText = "Merging..."
+        state.statusIsError = false
+        setConvertState(state, for: tool)
+        needsDisplay = true
+        let completion: (Result<Data, RimufuConvertError>) -> Void = { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if self.convertActiveTaskTool == tool {
+                    self.convertTask = nil
+                    self.convertActiveTaskTool = nil
+                }
+                switch result {
+                case .success(let data):
+                    var done = self.convertState(for: tool)
+                    done.processing = false
+                    done.resultData = data
+                    done.resultFileName = "merged_document.pdf"
+                    done.statusText = "Done - drag the result out to use it."
+                    done.statusIsError = false
+                    self.setConvertState(done, for: tool)
+                case .failure(let error):
+                    if case .uploadFailed(let detail) = error, detail == "Cancelled." {
+                        return
+                    }
+                    var failed = self.convertState(for: tool)
+                    failed.processing = false
+                    failed.statusText = error.message
+                    failed.statusIsError = true
+                    self.setConvertState(failed, for: tool)
+                }
+                self.needsDisplay = true
+            }
+        }
+        convertTask = RimufuConvertClient.mergePDFs(files: files, completion: completion)
+        convertActiveTaskTool = tool
     }
 
     private func saveConvertResult() {
