@@ -3826,7 +3826,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
                 if ok {
                     self.removeBgSavedURL = url
                     let nameFont = NSFont.systemFont(ofSize: 13)
-                    self.removeBgStatusText = "Saved: \(truncated(url.lastPathComponent, toWidth: 400, font: nameFont))"
+                    self.removeBgStatusText = "Saved: \(self.truncated(url.lastPathComponent, toWidth: 400, font: nameFont))"
                     self.removeBgStatusIsError = false
                 } else {
                     self.removeBgStatusText = "Could not save the result."
@@ -4828,7 +4828,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
                 if ok {
                     done.savedURL = url
                     let nameFont = NSFont.systemFont(ofSize: 13)
-                    done.statusText = "Saved: \(truncated(url.lastPathComponent, toWidth: 400, font: nameFont))"
+                    done.statusText = "Saved: \(self.truncated(url.lastPathComponent, toWidth: 400, font: nameFont))"
                     done.statusIsError = false
                 } else {
                     done.statusText = "Could not save the result."
