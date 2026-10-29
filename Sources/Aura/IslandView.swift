@@ -642,9 +642,17 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     /// Which music-card region the cursor is over. Only
     /// region CHANGES trigger redraws, not every move.
     private var hoverRegion: MusicHoverRegion = .none
-    private enum MusicHoverRegion: Equatable {
+    private enum MusicHoverRegion: Hashable {
         case none, bubble, control(Int), progress
     }
+    /// Animated zoom per music button (1.0 = normal, 1.2 =
+    /// hovered). A 60fps timer eases each value toward its
+    /// target over 0.18s, so a button swells and shrinks
+    /// smoothly instead of popping between sizes.
+    private var buttonZoomCurrent: [MusicHoverRegion: CGFloat] = [:]
+    private var buttonZoomFrom: [MusicHoverRegion: CGFloat] = [:]
+    private var buttonZoomStart: Date?
+    private var buttonZoomTimer: Timer?
     private var waveTimer: Timer?
     private var wavePhase: Double = 0
 
@@ -688,7 +696,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
 
     override func mouseExited(with event: NSEvent) {
         hoverPoint = nil
-        hoverRegion = .none
+        setHoverRegion(.none)
         needsDisplay = true
         onHoverChanged?(false)
     }
@@ -701,11 +709,39 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         }
         let point = convert(event.locationInWindow, from: nil)
         hoverPoint = point
-        let region = musicHoverRegion(at: point)
-        if region != hoverRegion {
-            hoverRegion = region
-            needsDisplay = true
+        setHoverRegion(musicHoverRegion(at: point))
+    }
+
+    /// Hover-region change: retarget every button zoom (the
+    /// hovered button to 1.2, the rest to 1.0) and animate.
+    private func setHoverRegion(_ region: MusicHoverRegion) {
+        guard region != hoverRegion else { return }
+        hoverRegion = region
+        buttonZoomFrom = buttonZoomCurrent
+        buttonZoomStart = Date()
+        guard buttonZoomTimer == nil else { return }
+        buttonZoomTimer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            guard let self, let start = self.buttonZoomStart else {
+                self?.buttonZoomTimer?.invalidate()
+                self?.buttonZoomTimer = nil
+                return
+            }
+            let p = min(1.0, Date().timeIntervalSince(start) / 0.18)
+            let e = 1.0 - pow(1.0 - p, 3.0)
+            for key in [MusicHoverRegion.bubble, .control(0), .control(1), .control(2)] {
+                let target: CGFloat = (key == self.hoverRegion) ? 1.2 : 1.0
+                let from = self.buttonZoomFrom[key] ?? 1.0
+                self.buttonZoomCurrent[key] = from + (target - from) * e
+            }
+            self.needsDisplay = true
+            if p >= 1.0 {
+                self.buttonZoomTimer?.invalidate()
+                self.buttonZoomTimer = nil
+                self.buttonZoomStart = nil
+            }
         }
+        if let buttonZoomTimer { RunLoop.main.add(buttonZoomTimer, forMode: .common) }
+        needsDisplay = true
     }
 
     /// Music-card hover region for a view point. Only the
@@ -2060,16 +2096,13 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     /// portion of the slightly wider 700-wide card — and the header
     /// (clock + waveform) is omitted there. The right section
     /// arrow is omitted there too (the panel occupies that edge).
-    /// One music-card button: symbol, grown + circled while hovered.
+    /// One music-card button: symbol at its animated zoom size
+    /// (20pt normal, up to 24pt hovered). No glow circle: the
+    /// smooth swell alone signals hover.
     private func drawMusicButton(_ name: String, fallback: String, center: CGPoint,
-                                 hovered: Bool, color: NSColor) {
-        if hovered {
-            NSColor.white.withAlphaComponent(0.15).setFill()
-            NSBezierPath(ovalIn: NSRect(x: center.x - 19, y: center.y - 19, width: 38, height: 38)).fill()
-            drawSymbol(name, size: 24, center: center, fallback: fallback, color: color)
-        } else {
-            drawSymbol(name, size: 20, center: center, fallback: fallback, color: color)
-        }
+                                 region: MusicHoverRegion, color: NSColor) {
+        let size = 20 * (buttonZoomCurrent[region] ?? 1.0)
+        drawSymbol(name, size: size, center: center, fallback: fallback, color: color)
     }
 
     private func drawMusicCard(_ session: DisplaySession, lyricsOpen: Bool = false, placeholder: Bool = false) {
@@ -2096,20 +2129,19 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             drawProgress(session, elapsedX: 36, barX: 96, barWidth: 324, rightX: 484,
                          y: 104, font: NSFont.systemFont(ofSize: 12), barHeight: 4)
         }
-        // Hover aliveness: the hovered button grows (20 -> 24)
-        // over a soft circle, like a bubble popping up.
-        // Placeholder buttons are dimmed and never highlight
-        // (they do nothing).
+        // Hover aliveness: the hovered button swells smoothly
+        // (animated zoom, no glow). Placeholder buttons are
+        // dimmed and never highlight (they do nothing).
         let dim = placeholder ? NSColor.white.withAlphaComponent(0.35) : NSColor.white
         drawMusicButton("ellipsis.bubble.fill", fallback: "···", center: CGPoint(x: 56, y: 140),
-                        hovered: !placeholder && hoverRegion == .bubble, color: dim)
+                        region: placeholder ? .none : .bubble, color: dim)
         let controls: [CGFloat] = lyricsOpen ? [118, 170, 222] : [208, 260, 312]
         let symbols = ["backward.fill", session.isPlaying ? "pause.fill" : "play.fill", "forward.fill"]
         let fallbacks = ["‹", session.isPlaying ? "❚❚" : "▶", "›"]
         for i in 0..<3 {
             drawMusicButton(symbols[i], fallback: fallbacks[i],
                             center: CGPoint(x: controls[i], y: 140),
-                            hovered: !placeholder && hoverRegion == .control(i), color: dim)
+                            region: placeholder ? .none : .control(i), color: dim)
         }
     }
 
