@@ -48,8 +48,13 @@ final class IslandWindow: NSWindow {
         guard let screen = NSScreen.main else { return }
         let w = frame.width
         let h = frame.height
-        let notch = HardwareNotch.forMainScreen()
-        let x = notch.hasNotch ? screen.frame.midX - w / 2 : screen.visibleFrame.midX - w / 2
+        // Physical center, not visibleFrame center: a side Dock
+        // narrows visibleFrame and shifts its midpoint left, which
+        // parked the pill (and grew every card) left of center.
+        // A top-center pill never collides with a side Dock, so
+        // the physical center is the right anchor — the same one
+        // notched Macs already use for the hardware notch.
+        let x = screen.frame.midX - w / 2
         let y = Self.topY(forHeight: h, on: screen)
         setFrame(NSRect(x: x, y: y, width: w, height: h), display: true)
     }
@@ -83,7 +88,16 @@ final class IslandAnimator {
         guard let window else { return }
         timer?.invalidate()
         from = window.frame
-        let x = window.frame.midX - size.width / 2
+        // Re-anchor to the screen's physical center on every
+        // resize, instead of preserving the current midX: the
+        // pill is defined as top-center, so any drift (e.g. from
+        // an earlier visibleFrame-anchored placement) heals on
+        // the next open/close instead of living forever. The
+        // window's own screen wins over NSScreen.main on
+        // multi-monitor setups.
+        let screen = window.screen ?? NSScreen.main
+        let centerX = screen?.frame.midX ?? window.frame.midX
+        let x = centerX - size.width / 2
         let y: CGFloat
         if let yOverride {
             y = yOverride
