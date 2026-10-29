@@ -10,6 +10,8 @@ struct ExtensionTab {
     let playbackState: String // "playing", "paused", "none"
     let position: Double
     let duration: Double
+    /// When the extension's report arrived (position valid at this time).
+    var receivedAt: Date = Date()
 }
 
 /// Tiny localhost HTTP server the Chrome extension talks to.

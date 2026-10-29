@@ -449,48 +449,84 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     /// row (controls at y140, bubble y126).
     private var musicBubbleRect: NSRect { NSRect(x: 42, y: 126, width: 28, height: 28) }
 
-    // MARK: - Realtime position
+    // MARK: - Realtime position (aura-windows MediaTracker port)
 
-    /// Anchor for client-side position interpolation: the last sensor
-    /// reading (track, reported position, wall time, playing state).
-    /// The displayed position advances from this anchor by wall clock
-    /// until the next reading re-anchors it.
-    private var positionAnchor: (key: String, reported: Double, at: Date, playing: Bool)?
-    private var lastReportedPosition: Double?
+    /// Monotonic realtime position tracker, ported from aura-windows
+    /// `MediaTracker` (the reason Windows lyrics stay locked to the
+    /// vocal). The old Mac anchor had three sync bugs:
+    /// 1. It re-anchored to the raw reading at `Date()` of ARRIVAL, so
+    ///    every osascript round-trip (100-400ms) and every stale
+    ///    MediaRemote snapshot became a permanent lag.
+    /// 2. It ignored a display that ran AHEAD of the sensor (only
+    ///    "sensor ahead > 2s" re-anchored), so drift never corrected.
+    /// 3. The 2s deadband let lyrics sit up to 2s off before fixing.
+    /// Now: each reading is age-compensated (`now - sampledAt`), the
+    /// display integrates on a monotonic clock (systemUptime, immune to
+    /// wall-clock changes), small drift (< 1.0s) is eased in gradually
+    /// (no visible jump), and a real seek (> 1.0s) snaps immediately.
+    /// A frozen snapshot (sensor value not advancing while playing, no
+    /// timestamp) is never allowed to drag the display backwards.
+    private var positionAnchor: (key: String, position: Double, at: TimeInterval, playing: Bool)?
+    private var lastRawReading: (position: Double, sampledAt: Date)?
 
-    /// Position to display right now. While playing it advances by wall
-    /// clock from the anchor, so the bar moves even when the sensor's
-    /// elapsed value is a frozen snapshot; while paused it sits at the
-    /// anchored position. Re-anchoring happens on track change, a
-    /// play/pause flip, a sensor jump (seek), or when the sensor runs
-    /// ahead of the display — never when the sensor merely sits behind
-    /// it, because a stale sensor must not drag the bar backwards.
+    private static func monotonicNow() -> TimeInterval { ProcessInfo.processInfo.systemUptime }
+
+    /// Position to display right now (seconds).
     var livePosition: Double {
         guard let s = session else { return 0 }
         guard let a = positionAnchor, a.key == "\(s.title)|\(s.artist)" else { return s.position }
-        if !s.isPlaying { return a.reported }
-        let p = a.reported + Date().timeIntervalSince(a.at)
-        if s.duration > 0 { return min(max(0, p), s.duration) }
+        var p = a.position
+        if a.playing { p += Self.monotonicNow() - a.at }
+        if s.duration > 0 { p = min(p, s.duration) }
         return max(0, p)
     }
 
     private func updatePositionAnchor() {
         guard let s = session else {
             positionAnchor = nil
-            lastReportedPosition = nil
+            lastRawReading = nil
             return
         }
         let key = "\(s.title)|\(s.artist)"
-        let reported = s.position
-        // Interpolated position BEFORE this reading, from the old anchor.
-        let live = livePosition
-        let jumped = lastReportedPosition.map { abs(reported - $0) > 2.0 } ?? true
-        let sensorAhead = (reported - live) > 2.0
-        if positionAnchor == nil || positionAnchor!.key != key || positionAnchor!.playing != s.isPlaying
-            || jumped || sensorAhead {
-            positionAnchor = (key: key, reported: reported, at: Date(), playing: s.isPlaying)
+        let now = Self.monotonicNow()
+        // Sensor value advanced to "this instant" (Windows: Now - LastUpdatedTime).
+        let age = s.isPlaying ? max(0, min(5, Date().timeIntervalSince(s.sampledAt))) : 0
+        var reported = s.position + age
+        if s.duration > 0 { reported = min(reported, s.duration) }
+
+        guard let a = positionAnchor, a.key == key, a.playing == s.isPlaying else {
+            // New track, first reading, or play/pause flip: hard anchor.
+            positionAnchor = (key: key, position: reported, at: now, playing: s.isPlaying)
+            lastRawReading = (s.position, s.sampledAt)
+            return
         }
-        lastReportedPosition = reported
+
+        // Ignore a re-delivery of the same sample (artwork attach,
+        // extension tab refresh): it carries no new timing information.
+        if let last = lastRawReading, last.sampledAt == s.sampledAt, last.position == s.position {
+            return
+        }
+
+        let live = livePosition
+        let drift = reported - live
+        // Sensor frozen: raw value did not move between two different
+        // samples while playing (a snapshot without timestamp).
+        let frozen = s.isPlaying && (lastRawReading.map { abs($0.position - s.position) < 0.01 } ?? false)
+        // Raw jumped relative to the wall time between samples = a seek.
+        let seek: Bool = {
+            guard let last = lastRawReading else { return false }
+            let wall = s.isPlaying ? s.sampledAt.timeIntervalSince(last.sampledAt) : 0
+            return abs((s.position - last.position) - wall) > 1.5
+        }()
+        lastRawReading = (s.position, s.sampledAt)
+
+        if seek || drift > 1.0 || (drift < -1.0 && !frozen) {
+            positionAnchor = (key: key, position: reported, at: now, playing: s.isPlaying)
+        } else if !frozen && abs(drift) > 0.04 {
+            // Ease 35% of the residual drift per reading: converges in a
+            // few polls without a visible jump in the lyrics reel.
+            positionAnchor = (key: key, position: live + drift * 0.35, at: now, playing: s.isPlaying)
+        }
     }
 
     /// Progress-bar seek drag in flight: the bar rect being dragged

@@ -222,14 +222,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.updatePillAlerts()
         }
         if let alertTimer { RunLoop.main.add(alertTimer, forMode: .common) }
-        // Lyric line refresh, DynamicNotch cadence: the 1s session
-        // poll alone made line changes lag up to a second. 0.35s
-        // keeps the line in step with the vocal without touching
-        // the sensor poll. It only re-evaluates when a session and
-        // fetched lines exist; updateLyricLines is a no-op when the
-        // line is unchanged, so this does not redraw needlessly.
-        // .common modes so it fires during drags/scrolls too.
-        lyricTimer = Timer(timeInterval: 0.35, repeats: true) { [weak self] _ in
+        // Lyric line refresh. Was 0.35s, which alone added up to 350ms
+        // of random lateness per line on top of sensor lag. 0.1s (like
+        // aura-windows, which re-evaluates the line on every frame)
+        // keeps the line within ~100ms of the vocal; it only
+        // re-evaluates when a session and fetched lines exist, and
+        // updateLyricLines is a no-op when the line is unchanged, so
+        // this does not redraw needlessly. .common modes so it fires
+        // during drags/scrolls too.
+        lyricTimer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
             guard let self, self.sessions.current != nil, !self.lyricsLines.isEmpty else { return }
             self.refreshLyricLine()
         }

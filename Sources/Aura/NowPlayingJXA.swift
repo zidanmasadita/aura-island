@@ -52,13 +52,24 @@ enum NowPlayingJXA {
               return v ? v.js : 0;
             }
             var position = num('kMRMediaRemoteNowPlayingInfoElapsedTime');
+            var calculated = false;
             try {
               var meta = item.metadata;
               if (meta) {
                 var calc = meta.calculatedPlaybackPosition;
-                if (calc && calc.js > 0) position = calc.js;
+                if (calc && calc.js > 0) { position = calc.js; calculated = true; }
               }
             } catch (e) {}
+            // Sync fix: the snapshot timestamp ElapsedTime is valid at,
+            // and the moment this script sampled (seconds since 1970).
+            // Swift advances the position by these so osascript spawn
+            // latency and stale snapshots never make lyrics lag.
+            var stamp = 0;
+            try {
+              var ts = info.valueForKey('kMRMediaRemoteNowPlayingInfoTimestamp');
+              if (ts) stamp = Number(ts.timeIntervalSince1970);
+            } catch (e) {}
+            var sampledAt = Number($.NSDate.date.timeIntervalSince1970);
             var client = '';
             try {
               var path = MRNowPlayingRequest.localNowPlayingPlayerPath;
@@ -71,6 +82,9 @@ enum NowPlayingJXA {
               duration: num('kMRMediaRemoteNowPlayingInfoDuration'),
               elapsed: position,
               rate: num('kMRMediaRemoteNowPlayingInfoPlaybackRate'),
+              calculated: calculated,
+              stamp: stamp,
+              sampledAt: sampledAt,
               client: client
             });
           } catch (e) {
@@ -282,13 +296,32 @@ enum NowPlayingJXA {
             return (nil, "", "tidak-ada-item")
         }
         let displayTitle = !title.isEmpty ? title : (!artist.isEmpty ? artist : "Musik")
+        // Sync fix (aura-windows LastUpdatedTime port):
+        // - calculatedPlaybackPosition is already "now" at sampledAt.
+        // - Otherwise ElapsedTime is a snapshot valid at `stamp`; advance
+        //   it by (sampledAt - stamp) * rate while playing.
+        // sampledAt is carried into the session so the view also adds
+        // the osascript round-trip (spawn + JSON) on top.
+        let calculated = (obj["calculated"] as? Bool) ?? false
+        let stamp = (obj["stamp"] as? NSNumber)?.doubleValue ?? 0
+        let sampledEpoch = (obj["sampledAt"] as? NSNumber)?.doubleValue ?? 0
+        let nowEpoch = Date().timeIntervalSince1970
+        // Guard against a bogus clock value from the script.
+        let sampled = (sampledEpoch > 0 && abs(nowEpoch - sampledEpoch) < 10) ? sampledEpoch : nowEpoch
+        var position = elapsed
+        if rate > 0, !calculated, stamp > 0 {
+            let age = sampled - stamp
+            if age > 0 && age < 12 * 3600 { position += age * rate }
+        }
+        if duration > 0 { position = min(position, duration) }
         let now = NowPlaying(
             title: displayTitle,
             artist: artist,
             isPlaying: rate > 0,
-            position: elapsed,
+            position: max(0, position),
             duration: duration,
-            artwork: nil
+            artwork: nil,
+            sampledAt: Date(timeIntervalSince1970: sampled)
         )
         return (now, client, nil)
     }

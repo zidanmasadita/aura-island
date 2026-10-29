@@ -214,7 +214,7 @@ final class LyricsClient {
 
     /// Parses "[mm:ss.xx] text" lines into (seconds, text), sorted by
     /// time. Honors the "[offset:+/-ms]" tag when present: it shifts
-    /// every timestamp (positive = lyrics later). The tag is usually
+    /// every timestamp (positive = lyrics sooner, per the LRC spec). The tag is usually
     /// at the top, but it applies to the whole file regardless of
     /// position. A line may carry several timestamps
     /// ("[00:12.00][00:15.00] text" — a repeated chorus): each one
@@ -251,7 +251,10 @@ final class LyricsClient {
                 if parts.count == 2,
                    let minutes = Double(parts[0]),
                    let seconds = Double(parts[1]) {
-                    times.append(max(0, minutes * 60 + seconds + offsetSeconds))
+                    // LRC spec: positive [offset:] = lyrics appear
+                    // SOONER, so it is subtracted (the old "+" made
+                    // every offset-tagged file twice as far off).
+                    times.append(max(0, minutes * 60 + seconds - offsetSeconds))
                     line = rest
                 } else if times.isEmpty {
                     // Metadata prefix ([ti:], [ar:], ...) — skip it and
@@ -264,6 +267,12 @@ final class LyricsClient {
                 }
             }
             guard !times.isEmpty else { continue }
+            // Strip enhanced-LRC word timings ("<00:12.34>word").
+            while let open = line.firstIndex(of: "<"),
+                  let close = line[open...].firstIndex(of: ">") {
+                line.removeSubrange(open...close)
+            }
+            line = line.trimmingCharacters(in: .whitespacesAndNewlines)
             for time in times {
                 out.append((time: time, text: line))
             }

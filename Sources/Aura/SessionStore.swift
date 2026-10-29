@@ -15,6 +15,12 @@ struct DisplaySession {
     /// Extension tabs support play/pause only in v1; system sessions
     /// support full transport through the macOS media keys.
     let supportsNextPrev: Bool
+    /// Wall-clock moment `position` was valid at (sensor sample time,
+    /// not display time). The view adds `now - sampledAt` while playing,
+    /// so a reading that arrives late (osascript spawn, 1s poll) never
+    /// makes lyrics lag behind the vocal (aura-windows LastUpdatedTime
+    /// compensation).
+    var sampledAt: Date = Date()
 
     /// Copy with artwork attached (used for the system artwork fetch:
     /// the JXA sensor reports no artwork in its poll, so AppDelegate
@@ -23,7 +29,8 @@ struct DisplaySession {
     func withArtwork(_ image: NSImage?) -> DisplaySession {
         DisplaySession(id: id, label: label, title: title, artist: artist,
                        isPlaying: isPlaying, position: position, duration: duration,
-                       artwork: image, supportsNextPrev: supportsNextPrev)
+                       artwork: image, supportsNextPrev: supportsNextPrev,
+                       sampledAt: sampledAt)
     }
 }
 
@@ -34,6 +41,8 @@ struct NowPlaying {
     let position: Double
     let duration: Double
     let artwork: NSImage?
+    /// When `position` was valid (see DisplaySession.sampledAt).
+    var sampledAt: Date = Date()
 }
 
 /// Unified session list + pin ("pilih active") logic.
@@ -69,7 +78,8 @@ final class SessionStore {
                 position: system.position,
                 duration: system.duration,
                 artwork: system.artwork,
-                supportsNextPrev: true
+                supportsNextPrev: true,
+                sampledAt: system.sampledAt
             ))
         }
         for tab in extensionTabs.values.sorted(by: { $0.tabId < $1.tabId }) {
@@ -82,7 +92,8 @@ final class SessionStore {
                 position: tab.position,
                 duration: tab.duration,
                 artwork: nil,
-                supportsNextPrev: false
+                supportsNextPrev: false,
+                sampledAt: tab.receivedAt
             ))
         }
         return out

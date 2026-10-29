@@ -113,13 +113,30 @@ final class MediaRemote {
             return nil
         }
         let displayTitle = !title.isEmpty ? title : (!artist.isEmpty ? artist : "Musik")
+        // Sync fix (aura-windows read_realtime_timeline port): ElapsedTime
+        // is a snapshot valid at kMRMediaRemoteNowPlayingInfoTimestamp,
+        // NOT at the moment we read it. Players only refresh it on
+        // play/pause/seek, so the raw value can be many seconds old —
+        // the main reason lyrics lagged on Mac. Advance it by the age of
+        // the timestamp (times the playback rate) while playing, exactly
+        // like Windows adds Now - LastUpdatedTime.
+        let now = Date()
+        var position = elapsed
+        if rate > 0, let stamp = map["kMRMediaRemoteNowPlayingInfoTimestamp"] as? Date {
+            let age = now.timeIntervalSince(stamp)
+            if age > 0 && age < 12 * 3600 {
+                position += age * rate
+            }
+        }
+        if duration > 0 { position = min(position, duration) }
         return NowPlaying(
             title: displayTitle,
             artist: artist,
             isPlaying: rate > 0,
-            position: elapsed,
+            position: max(0, position),
             duration: duration,
-            artwork: artwork
+            artwork: artwork,
+            sampledAt: now
         )
     }
 
