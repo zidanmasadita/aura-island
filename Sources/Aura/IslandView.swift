@@ -1138,6 +1138,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         if let dragged = mergeDragItem, let startPoint = mergeDragPoint,
            currentPage == .convert, convertActiveTool == .mergePDF {
             let point = convert(event.locationInWindow, from: nil)
+            mergeDragCursor = point
             if !mergeDragActive {
                 guard abs(point.x - startPoint.x) > 3 || abs(point.y - startPoint.y) > 3 else { return }
                 mergeDragActive = true
@@ -1151,6 +1152,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
                 mergeDragItem = nil
                 mergeDragIndex = nil
                 mergeDragPoint = nil
+                mergeDragCursor = nil
                 mergeDragActive = false
                 return
             }
@@ -1220,6 +1222,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             mergeDragItem = nil
             mergeDragIndex = nil
             mergeDragPoint = nil
+            mergeDragCursor = nil
             mergeDragActive = false
             if !wasActive {
                 // Tap without a drag: the old behavior, open the
@@ -3934,6 +3937,9 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     private var mergeDragPoint: CGPoint?
     private var mergeDragActive = false
     private var mergeDragStartOrder: [String] = []
+    /// Cursor position during an active merge reorder drag, in
+    /// view coords: the zoomed drag chip is drawn centered on it.
+    private var mergeDragCursor: CGPoint?
 
     private func convertState(for tool: ConvertTool) -> ConvertState {
         convertStates[tool] ?? ConvertState(tool: tool)
@@ -3958,14 +3964,25 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     /// Left panel: drop zone and pick target (the From Tray pill
     /// sits inside it, see convertFromTrayPillRect).
     private func convertLeftRect() -> NSRect {
-        NSRect(x: 28, y: 72, width: 180, height: 156)
+        // Merge PDF keeps a longer queue, so its file panel is
+        // wider than the result panel; every other tool keeps the
+        // original 180/376 split. All hit tests, content rects,
+        // and the From Tray pill go through these two functions,
+        // so nothing else needs to change.
+        if convertActiveTool == .mergePDF {
+            return NSRect(x: 28, y: 72, width: 300, height: 156)
+        }
+        return NSRect(x: 28, y: 72, width: 180, height: 156)
     }
 
     /// Right panel: the result. Ends at x 600 so it never
     /// overlaps the vertical dot column on the right edge. Also
     /// the drag source: pressing it arms a drag-out.
     private func convertRightRect() -> NSRect {
-        NSRect(x: 224, y: 72, width: 376, height: 156)
+        if convertActiveTool == .mergePDF {
+            return NSRect(x: 344, y: 72, width: 256, height: 156)
+        }
+        return NSRect(x: 224, y: 72, width: 376, height: 156)
     }
 
     /// Tool row metrics, self-fitting: the row must end at or
@@ -4198,6 +4215,34 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
                 drawText("\u{2026}", font: font, color: NSColor.white.withAlphaComponent(0.5),
                          at: NSPoint(x: right.minX + 8, y: y))
             }
+        } else if convertActiveTool == .mergePDF, let resultData = state.resultData,
+                  let resultName = state.resultFileName, let preview = state.resultPDFPreview {
+            // Merge result in the narrowed panel: thumbnail
+            // centered, name + size + hint stacked below it
+            // (the side-by-side layout would crush the text at
+            // this width).
+            let box = NSRect(x: right.minX + 8, y: right.minY + 8,
+                             width: right.width - 16, height: 84)
+            let fit = removeBgFitRect(for: preview, in: box)
+            drawImageUpright(preview, in: fit)
+            var ty = box.maxY + 8
+            let mergeNameFont = NSFont.systemFont(ofSize: 13)
+            let mergeNameText = truncated(resultName, toWidth: right.width - 16, font: mergeNameFont)
+            let mergeNameWidth = (mergeNameText as NSString).size(withAttributes: [.font: mergeNameFont]).width
+            drawText(mergeNameText, font: mergeNameFont, color: NSColor.white.withAlphaComponent(0.9),
+                     at: NSPoint(x: right.midX - mergeNameWidth / 2, y: ty))
+            ty += 18
+            let mergeSizeText = formatBytes(Int64(resultData.count))
+            let mergeSizeFont = NSFont.systemFont(ofSize: 12)
+            let mergeSizeWidth = (mergeSizeText as NSString).size(withAttributes: [.font: mergeSizeFont]).width
+            drawText(mergeSizeText, font: mergeSizeFont, color: NSColor.white.withAlphaComponent(0.5),
+                     at: NSPoint(x: right.midX - mergeSizeWidth / 2, y: ty))
+            ty += 18
+            let mergeHint = "Drag the result out or Save it."
+            let mergeHintFont = NSFont.systemFont(ofSize: 12)
+            let mergeHintWidth = (mergeHint as NSString).size(withAttributes: [.font: mergeHintFont]).width
+            drawText(mergeHint, font: mergeHintFont, color: NSColor.white.withAlphaComponent(0.5),
+                     at: NSPoint(x: right.midX - mergeHintWidth / 2, y: ty))
         } else if let resultData = state.resultData, let resultName = state.resultFileName {
             if let preview = state.resultPDFPreview {
                 // PDF result (merged / compressed): first-page
@@ -4610,10 +4655,14 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
                          at: NSPoint(x: content.minX, y: y + 2))
                 continue
             }
-            if mergeDragActive, mergeDragIndex == i {
+            // The dragged row lifts out of the list (drawn as a
+            // zoomed chip under the cursor below); its slot keeps
+            // only the highlight so the landing spot stays visible.
+            let isDraggedRow = mergeDragActive && mergeDragIndex == i
+            if isDraggedRow {
                 NSColor.white.withAlphaComponent(0.12).setFill()
                 NSRect(x: content.minX, y: y, width: content.width, height: 18).fill()
-            }
+            } else {
             // Drag grip (music-queue style): three lines at the
             // row's left edge; the row drags to reorder.
             NSColor.white.withAlphaComponent(0.4).setFill()
@@ -4635,6 +4684,35 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             crossPath.move(to: NSPoint(x: cross.maxX, y: cross.minY))
             crossPath.line(to: NSPoint(x: cross.minX, y: cross.maxY))
             crossPath.stroke()
+            }
+        }
+        // Floating drag chip: the dragged file follows the cursor,
+        // zoomed 1.18x with a soft shadow, so the drag reads as
+        // lifting the file out of the queue.
+        if mergeDragActive, let cursor = mergeDragCursor,
+           let di = mergeDragIndex, di < mergeFiles.count {
+            let file = mergeFiles[di]
+            guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+            ctx.saveGState()
+            ctx.setShadow(offset: CGSize(width: 0, height: 4), blur: 10,
+                          color: NSColor.black.withAlphaComponent(0.45).cgColor)
+            ctx.translateBy(x: cursor.x, y: cursor.y)
+            ctx.scaleBy(x: 1.18, y: 1.18)
+            ctx.translateBy(x: -content.midX, y: -(content.minY + 9))
+            let chip = NSRect(x: content.minX, y: content.minY,
+                              width: content.width, height: 18)
+            NSColor.white.withAlphaComponent(0.32).setFill()
+            NSBezierPath(roundedRect: chip, xRadius: 9, yRadius: 9).fill()
+            NSColor.white.withAlphaComponent(0.5).setStroke()
+            NSBezierPath(roundedRect: chip, xRadius: 9, yRadius: 9).stroke()
+            NSColor.white.withAlphaComponent(0.5).setFill()
+            for gy in [chip.minY + 4, chip.minY + 8, chip.minY + 12] {
+                NSRect(x: chip.minX + 6, y: gy, width: 8, height: 1.5).fill()
+            }
+            let chipName = truncated(file.name, toWidth: content.width - 44, font: nameFont)
+            drawText(chipName, font: nameFont, color: .white,
+                     at: NSPoint(x: chip.minX + 20, y: chip.minY + 2))
+            ctx.restoreGState()
         }
     }
 
