@@ -282,21 +282,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } else {
                 expression = .normal
             }
-            // Proximity blink: each eye shuts gradually as the
-            // cursor nears it horizontally — the nearer eye leads,
+            // Proximity blink (flinch): each eye shuts gradually
+            // as the cursor gets close in 2D — the nearer eye leads,
             // so a cursor arriving from the right closes the right
-            // eye first; centered, both together. Position-driven
-            // (no fixed duration), so a fast cursor blinks fast.
-            // Only in the normal expression; otherwise the eyes
-            // ease back open for the happy/sleepy arcs.
+            // eye first, and a horizontal approach at pill height
+            // counts too; centered, both together. The range is
+            // deliberately tight (shut by 8px, open past 44px): it
+            // reads as flinching from a poke, not as a reaction to
+            // a distant cursor. Position-driven (no fixed duration),
+            // so a fast cursor blinks fast. Only in the normal
+            // expression; otherwise the eyes ease back open for the
+            // happy/sleepy arcs.
             let oldOpen = self.islandView.eyeOpenness
             var newOpen = oldOpen
             for i in 0..<2 {
                 let target: CGFloat
                 if expression == .normal {
                     let eyeX = window.frame.minX + (i == 0 ? 56.5 : 83.5)
-                    let d = abs(mouse.x - eyeX)
-                    let t = max(0, min(1, (d - 6) / 34))
+                    let eyeY = window.frame.maxY - 16
+                    let d = hypot(mouse.x - eyeX, mouse.y - eyeY)
+                    let t = max(0, min(1, (d - 8) / 36))
                     target = t * t * (3 - 2 * t)
                 } else {
                     target = 1

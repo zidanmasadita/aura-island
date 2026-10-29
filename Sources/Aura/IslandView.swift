@@ -1757,9 +1757,9 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
 
     /// Per-eye openness for the cursor-proximity blink: 1 = fully
     /// open, 0 = shut into a line. AppDelegate's eye timer drives
-    /// each eye from the cursor's horizontal distance to that eye
-    /// (the nearer eye leads), smoothed; drawEyes maps it to the
-    /// eye's height. Only used in the normal expression.
+    /// each eye from the cursor's 2D distance to that eye (the
+    /// nearer eye leads), smoothed; drawEyes maps it to the eye's
+    /// height. Only used in the normal expression.
     var eyeOpenness: [CGFloat] = [1, 1]
 
     /// EMO-style eyes for the zen face: two solid white rounded
@@ -1776,7 +1776,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         let w: CGFloat = 18
         for (i, cx) in centers.enumerated() {
             // Proximity blink height: the eye shrinks toward the
-            // flat blink line as the cursor nears its side.
+            // flat blink line as the cursor gets close to it.
             let openness = eyeExpression == .normal ? eyeOpenness[i] : 1
             let h: CGFloat = 2.5 + (11 - 2.5) * openness
             let x = cx - w / 2 + eyeLook.x * 2
