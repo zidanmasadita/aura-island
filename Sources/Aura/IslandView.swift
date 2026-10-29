@@ -997,10 +997,10 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             } else if tool == .mergePDF, removeBgSaveRect().contains(point) {
                 startMerge()
                 return
-            } else if tool == .photo, convertFormatPillRect().contains(point) {
+            } else if tool == .photo, convertToolRowMetrics().format.contains(point) {
                 showConvertFormatMenu(at: point)
                 return
-            } else if let picked = convertToolPillRects().first(where: { $0.rect.contains(point) })?.tool {
+            } else if let picked = convertToolRowMetrics().rects.first(where: { $0.rect.contains(point) })?.tool {
                 convertActiveTool = picked
                 needsDisplay = true
                 return
@@ -2342,7 +2342,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         let pos = seekPreviewPosition ?? livePosition
         drawText(formatTime(pos), font: font, color: .white,
                  at: NSPoint(x: elapsedX, y: y))
-        // Hover/drag state: a thicker bar + knob, so the bar reads
+        // Hover/drag state: a thicker bar, so the bar reads
         // as draggable. Only for seekable tracks (duration > 0).
         let barHit = NSRect(x: barX, y: y, width: barWidth, height: 16)
         let hoveringBar = session.duration > 0
@@ -2368,13 +2368,6 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
                               xRadius: h / 2, yRadius: h / 2)
         NSColor.white.setFill()
         fg.fill()
-        if hoveringBar {
-            let knob = NSBezierPath(ovalIn: NSRect(x: barX + barWidth * CGFloat(filled) - 5,
-                                                   y: barTop + h / 2 - 5,
-                                                   width: 10, height: 10))
-            NSColor.white.setFill()
-            knob.fill()
-        }
     }
 
     private func drawPageDots() {
@@ -3763,32 +3756,42 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         NSRect(x: 224, y: 72, width: 376, height: 156)
     }
 
-    /// Tool pills, top of the section (pomodoro-pill pattern):
-    /// 28 tall, 12pt side padding, 8pt gaps, starting at x 28.
-    private func convertToolPillRects() -> [(tool: ConvertTool, rect: NSRect)] {
-        let font = NSFont.systemFont(ofSize: 14, weight: .medium)
-        var x: CGFloat = 28
-        var out: [(tool: ConvertTool, rect: NSRect)] = []
-        for tool in ConvertTool.allCases {
-            let width = (tool.displayName as NSString).size(withAttributes: [.font: font]).width + 24
-            out.append((tool: tool, rect: NSRect(x: x, y: 36, width: width, height: 28)))
-            x += width + 8
+    /// Tool row metrics, self-fitting: the row must end at or
+    /// before x 600 (the right panel's edge, clear of the dot
+    /// column). Starting from the standard 14pt / 24pt padding,
+    /// shrink the font, then the padding, until the tool pills
+    /// plus the photo Format pill fit. The fit always includes
+    /// the Format pill (even for non-photo tools, where it is
+    /// not drawn) so switching tools never resizes the pills.
+    /// The labels are fixed but the format name varies, and
+    /// font metrics cannot be checked from Linux, so the fit
+    /// is computed here instead of assumed.
+    private func convertToolRowMetrics() -> (rects: [(tool: ConvertTool, rect: NSRect)], format: NSRect, font: NSFont) {
+        var fontSize: CGFloat = 14
+        var pad: CGFloat = 24
+        while true {
+            let font = NSFont.systemFont(ofSize: fontSize, weight: .medium)
+            var x: CGFloat = 28
+            var rects: [(tool: ConvertTool, rect: NSRect)] = []
+            for tool in ConvertTool.allCases {
+                let width = (tool.displayName as NSString).size(withAttributes: [.font: font]).width + pad
+                rects.append((tool: tool, rect: NSRect(x: x, y: 36, width: width, height: 28)))
+                x += width + 8
+            }
+            let label = "Format: \(convertPhotoFormat.displayName) \u{25be}"
+            let formatWidth = (label as NSString).size(withAttributes: [.font: font]).width + pad
+            // x already carries the trailing 8pt gap after the
+            // last tool pill; 8 more gives the old 16pt gap.
+            let format = NSRect(x: x + 8, y: 36, width: formatWidth, height: 28)
+            if format.maxX <= 600 || (fontSize <= 11 && pad <= 16) {
+                return (rects, format, font)
+            }
+            if fontSize > 11 {
+                fontSize -= 0.5
+            } else {
+                pad -= 2
+            }
         }
-        return out
-    }
-
-    /// Format pill, in the tool row after the tool pills, photo
-    /// tool only (it is a setting, not a tool, so it uses the
-    /// translucent From Tray pill style, not the solid active
-    /// tool style). It moved here from the left-panel footer so
-    /// the footer can hold the From Tray pill for every tool
-    /// without crowding the photo preview.
-    private func convertFormatPillRect() -> NSRect {
-        let last = convertToolPillRects().last?.rect ?? NSRect(x: 28, y: 36, width: 0, height: 28)
-        let label = "Format: \(convertPhotoFormat.displayName) \u{25be}"
-        let font = NSFont.systemFont(ofSize: 13, weight: .medium)
-        let width = (label as NSString).size(withAttributes: [.font: font]).width + 24
-        return NSRect(x: last.maxX + 16, y: 36, width: width, height: 28)
     }
 
     /// Content area inside the left panel: shrunk above the
@@ -3811,7 +3814,8 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         // Tool pills: active = solid white + black text (Save
         // pill style), inactive = translucent + stroke (From Tray
         // pill style).
-        for (tool, rect) in convertToolPillRects() {
+        let row = convertToolRowMetrics()
+        for (tool, rect) in row.rects {
             let active = (tool == convertActiveTool)
             if active {
                 NSColor.white.setFill()
@@ -3823,19 +3827,19 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
                 NSColor.white.withAlphaComponent(0.3).setStroke()
                 NSBezierPath(roundedRect: rect, xRadius: 14, yRadius: 14).stroke()
             }
-            let font = NSFont.systemFont(ofSize: 14, weight: .medium)
+            let font = row.font
             let width = (tool.displayName as NSString).size(withAttributes: [.font: font]).width
             drawText(tool.displayName, font: font, color: active ? .black : .white,
                      at: NSPoint(x: rect.midX - width / 2, y: rect.minY + 5))
         }
         if convertActiveTool == .photo {
-            let format = convertFormatPillRect()
+            let format = row.format
             NSColor.white.withAlphaComponent(0.15).setFill()
             NSBezierPath(roundedRect: format, xRadius: 14, yRadius: 14).fill()
             NSColor.white.withAlphaComponent(0.3).setStroke()
             NSBezierPath(roundedRect: format, xRadius: 14, yRadius: 14).stroke()
             let label = "Format: \(convertPhotoFormat.displayName) \u{25be}"
-            let formatFont = NSFont.systemFont(ofSize: 13, weight: .medium)
+            let formatFont = row.font
             let formatWidth = (label as NSString).size(withAttributes: [.font: formatFont]).width
             drawText(label, font: formatFont, color: .white,
                      at: NSPoint(x: format.midX - formatWidth / 2, y: format.minY + 5))
