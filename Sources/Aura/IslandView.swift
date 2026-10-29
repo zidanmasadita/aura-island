@@ -490,6 +490,44 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         lastReportedPosition = reported
     }
 
+    /// Progress-bar seek drag in flight: the bar rect being dragged
+    /// and the track duration captured at press. While set, the bar
+    /// shows the dragged position instead of the live one.
+    private var progressDrag: (bar: NSRect, duration: Double)?
+    /// Dragged position preview (seconds), shown by the bar while a
+    /// seek drag runs. Nil otherwise.
+    private var seekPreviewPosition: Double?
+
+    /// Hit rect for the music progress bar (generous vertically so
+    /// the 4pt bar is easy to grab). Geometry matches drawProgress:
+    /// barX 96, y 104, 16 tall; width 324 (music) or 164 (lyrics).
+    private func progressBarRect(lyricsOpen: Bool) -> NSRect {
+        NSRect(x: 96, y: 104, width: lyricsOpen ? 164 : 324, height: 16)
+    }
+
+    /// Begin a progress-bar seek drag if the point is on the bar.
+    /// Returns true when a drag started (caller returns).
+    private func startProgressDrag(at point: CGPoint, lyricsOpen: Bool) -> Bool {
+        guard let s = session, s.duration > 0 else { return false }
+        let bar = progressBarRect(lyricsOpen: lyricsOpen)
+        guard bar.contains(point) else { return false }
+        let fraction = min(1.0, max(0.0, (point.x - bar.minX) / bar.width))
+        progressDrag = (bar: bar, duration: s.duration)
+        seekPreviewPosition = fraction * s.duration
+        needsDisplay = true
+        return true
+    }
+
+    /// Called after a seek lands: re-anchor the displayed position
+    /// to the seek target so the bar stays there instead of snapping
+    /// back until the next sensor poll (the poll's jump detection
+    /// then re-anchors to the player's own reading).
+    func noteSeekApplied(_ seconds: Double) {
+        guard let s = session else { return }
+        positionAnchor = (key: "\(s.title)|\(s.artist)", reported: seconds, at: Date(), playing: s.isPlaying)
+        needsDisplay = true
+    }
+
     /// Which control (0 = previous, 1 = play/pause, 2 = next) a point hits,
     /// given the control centers and the row's y range. Nil outside.
     private func controlHit(at point: CGPoint, centers: [CGFloat], yMin: CGFloat, yMax: CGFloat,
@@ -587,6 +625,8 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     var onPlayPause: (() -> Void)?
     var onNext: (() -> Void)?
     var onPrevious: (() -> Void)?
+    /// Progress-bar seek commit (seconds into the track).
+    var onSeek: ((Double) -> Void)?
     /// Fired when the expanded card's page changes, so the window can
     /// resize to the page (music 520, pomodoro/todo/sources 640, lyrics 700 wide).
     /// AppDelegate ignores it unless expanded.
@@ -595,6 +635,16 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     override var isFlipped: Bool { true }
 
     private var trackingArea: NSTrackingArea?
+    /// Last mouse position in view coords while over the card
+    /// (nil when the cursor is outside). Music-card buttons
+    /// and the progress bar read it for their hover state.
+    private var hoverPoint: CGPoint?
+    /// Which music-card region the cursor is over. Only
+    /// region CHANGES trigger redraws, not every move.
+    private var hoverRegion: MusicHoverRegion = .none
+    private enum MusicHoverRegion: Equatable {
+        case none, bubble, control(Int), progress
+    }
     private var waveTimer: Timer?
     private var wavePhase: Double = 0
 
@@ -623,7 +673,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         }
         trackingArea = NSTrackingArea(
             rect: bounds,
-            options: [.mouseEnteredAndExited, .activeAlways],
+            options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways],
             owner: self,
             userInfo: nil
         )
@@ -637,7 +687,43 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     }
 
     override func mouseExited(with event: NSEvent) {
+        hoverPoint = nil
+        hoverRegion = .none
+        needsDisplay = true
         onHoverChanged?(false)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        guard state == .expanded else {
+            hoverPoint = nil
+            hoverRegion = .none
+            return
+        }
+        let point = convert(event.locationInWindow, from: nil)
+        hoverPoint = point
+        let region = musicHoverRegion(at: point)
+        if region != hoverRegion {
+            hoverRegion = region
+            needsDisplay = true
+        }
+    }
+
+    /// Music-card hover region for a view point. Only the
+    /// music and lyrics pages have hoverable controls, and
+    /// only with a real session (placeholder buttons are
+    /// inert, so they never highlight).
+    private func musicHoverRegion(at point: CGPoint) -> MusicHoverRegion {
+        guard state == .expanded, session != nil,
+              currentPage == .music || currentPage == .lyrics else { return .none }
+        if musicBubbleRect.contains(point) { return .bubble }
+        let centers = currentPage == .lyrics ? [118, 170, 222] : [208, 260, 312]
+        if let hit = controlHit(at: point, centers: centers, yMin: 130, yMax: 150) {
+            return .control(hit)
+        }
+        if progressBarRect(lyricsOpen: currentPage == .lyrics).contains(point) {
+            return .progress
+        }
+        return .none
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -676,6 +762,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
                 performControl(hit)
                 return
             }
+            if startProgressDrag(at: point, lyricsOpen: false) { return }
         case .lyrics:
             // Speech bubble goes back to the music card.
             if musicBubbleRect.contains(point) {
@@ -689,6 +776,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
                 performControl(hit)
                 return
             }
+            if startProgressDrag(at: point, lyricsOpen: true) { return }
         case .pomodoro:
             let buttons = pomodoroButtonRects()
             if buttons.play.contains(point) {
@@ -917,6 +1005,13 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     /// only tray tiles drag — other sections are untouched). The
     /// file stays in the tray (copy, not move).
     override func mouseDragged(with event: NSEvent) {
+        if let drag = progressDrag {
+            let point = convert(event.locationInWindow, from: nil)
+            let fraction = min(1.0, max(0.0, (point.x - drag.bar.minX) / drag.bar.width))
+            seekPreviewPosition = fraction * drag.duration
+            needsDisplay = true
+            return
+        }
         if let startPoint = removeBgPendingDragPoint {
             let point = convert(event.locationInWindow, from: nil)
             guard abs(point.x - startPoint.x) > 3 || abs(point.y - startPoint.y) > 3 else { return }
@@ -1016,6 +1111,18 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     }
 
     override func mouseUp(with event: NSEvent) {
+        if let drag = progressDrag {
+            progressDrag = nil
+            let seconds = seekPreviewPosition
+            seekPreviewPosition = nil
+            needsDisplay = true
+            // Commit on release (a plain click seeks too). The
+            // player applies it; onSeek's success path re-anchors
+            // the bar, on failure the bar snaps back on next draw.
+            if let seconds, drag.duration > 0 {
+                onSeek?(seconds)
+            }
+        }
         if removeBgPendingDragPoint != nil {
             // Tap on the result without a drag: nothing, and the
             // card stays open (unlike an unhandled click, which
@@ -1846,6 +1953,15 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
 
     // MARK: - Expanded card
 
+    /// Placeholder session for the no-media music template: same
+    /// layout as a real track, placeholder text, empty bar, dimmed
+    /// (inert) controls.
+    private var placeholderSession: DisplaySession {
+        DisplaySession(id: "placeholder", label: "", title: "No music playing",
+                       artist: "Start playback in any app", isPlaying: false,
+                       position: 0, duration: 0, artwork: nil, supportsNextPrev: false)
+    }
+
     private func drawExpanded() {
         // Pomodoro, todo, water, and tray work without music (their
         // own timer, list, reminder, and file shelf), so they bypass
@@ -1864,10 +1980,23 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             drawConvert()
         } else {
             guard let session else {
-                drawCentered("No media playing",
-                             font: NSFont.systemFont(ofSize: 13),
-                             color: NSColor.white.withAlphaComponent(0.7),
-                             y: bounds.height / 2 - 8)
+                // No session: the music pages keep their full
+                // template with placeholders (cover box, title and
+                // artist lines, empty bar, dimmed controls) instead
+                // of a bare "No media playing" line. Other pages
+                // keep the line: the sources picker has no template
+                // to preserve.
+                if currentPage == .music {
+                    drawMusicCard(placeholderSession, placeholder: true)
+                } else if currentPage == .lyrics {
+                    drawMusicCard(placeholderSession, lyricsOpen: true, placeholder: true)
+                    drawLyricsPanel()
+                } else {
+                    drawCentered("No media playing",
+                                 font: NSFont.systemFont(ofSize: 13),
+                                 color: NSColor.white.withAlphaComponent(0.7),
+                                 y: bounds.height / 2 - 8)
+                }
                 // Still draw dots: without music the usable sections
                 // are pomodoro, todo, and water, and the user reaches
                 // them from here (their dots).
@@ -1931,7 +2060,19 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     /// portion of the slightly wider 700-wide card — and the header
     /// (clock + waveform) is omitted there. The right section
     /// arrow is omitted there too (the panel occupies that edge).
-    private func drawMusicCard(_ session: DisplaySession, lyricsOpen: Bool = false) {
+    /// One music-card button: symbol, grown + circled while hovered.
+    private func drawMusicButton(_ name: String, fallback: String, center: CGPoint,
+                                 hovered: Bool, color: NSColor) {
+        if hovered {
+            NSColor.white.withAlphaComponent(0.15).setFill()
+            NSBezierPath(ovalIn: NSRect(x: center.x - 19, y: center.y - 19, width: 38, height: 38)).fill()
+            drawSymbol(name, size: 24, center: center, fallback: fallback, color: color)
+        } else {
+            drawSymbol(name, size: 20, center: center, fallback: fallback, color: color)
+        }
+    }
+
+    private func drawMusicCard(_ session: DisplaySession, lyricsOpen: Bool = false, placeholder: Bool = false) {
         // No header on the lyrics page: no clock, no waveform.
         if !lyricsOpen {
             drawCardHeader(width: 520)
@@ -1955,12 +2096,21 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             drawProgress(session, elapsedX: 36, barX: 96, barWidth: 324, rightX: 484,
                          y: 104, font: NSFont.systemFont(ofSize: 12), barHeight: 4)
         }
-        drawSymbol("ellipsis.bubble.fill", size: 20, center: CGPoint(x: 56, y: 140), fallback: "···")
+        // Hover aliveness: the hovered button grows (20 -> 24)
+        // over a soft circle, like a bubble popping up.
+        // Placeholder buttons are dimmed and never highlight
+        // (they do nothing).
+        let dim = placeholder ? NSColor.white.withAlphaComponent(0.35) : NSColor.white
+        drawMusicButton("ellipsis.bubble.fill", fallback: "···", center: CGPoint(x: 56, y: 140),
+                        hovered: !placeholder && hoverRegion == .bubble, color: dim)
         let controls: [CGFloat] = lyricsOpen ? [118, 170, 222] : [208, 260, 312]
-        drawSymbol("backward.fill", size: 20, center: CGPoint(x: controls[0], y: 140), fallback: "‹")
-        drawSymbol(session.isPlaying ? "pause.fill" : "play.fill", size: 20,
-                   center: CGPoint(x: controls[1], y: 140), fallback: session.isPlaying ? "❚❚" : "▶")
-        drawSymbol("forward.fill", size: 20, center: CGPoint(x: controls[2], y: 140), fallback: "›")
+        let symbols = ["backward.fill", session.isPlaying ? "pause.fill" : "play.fill", "forward.fill"]
+        let fallbacks = ["‹", session.isPlaying ? "❚❚" : "▶", "›"]
+        for i in 0..<3 {
+            drawMusicButton(symbols[i], fallback: fallbacks[i],
+                            center: CGPoint(x: controls[i], y: 140),
+                            hovered: !placeholder && hoverRegion == .control(i), color: dim)
+        }
     }
 
     private var cachedThumbKey: String?
@@ -2156,21 +2306,43 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
                               font: NSFont, barHeight: CGFloat) {
         // Realtime position, not the raw sensor snapshot (see
         // livePosition): the bar and times move between sensor polls.
-        let pos = livePosition
+        // During a seek drag the dragged preview wins.
+        let pos = seekPreviewPosition ?? livePosition
         drawText(formatTime(pos), font: font, color: .white,
                  at: NSPoint(x: elapsedX, y: y))
-        guard session.duration > 0 else { return }
-        drawRightAligned("-\(formatTime(session.duration - pos))",
-                         font: font, color: .white, rightX: rightX, y: y)
-        let bg = NSBezierPath(roundedRect: NSRect(x: barX, y: y + 6, width: barWidth, height: barHeight),
-                              xRadius: barHeight / 2, yRadius: barHeight / 2)
+        // Hover/drag state: a thicker bar + knob, so the bar reads
+        // as draggable. Only for seekable tracks (duration > 0).
+        let barHit = NSRect(x: barX, y: y, width: barWidth, height: 16)
+        let hoveringBar = session.duration > 0
+            && (progressDrag != nil
+                || (hoverPoint.map { barHit.contains($0) } ?? false))
+        let h = hoveringBar ? barHeight + 2 : barHeight
+        let barTop = y + 6 - (h - barHeight) / 2
+        let bg = NSBezierPath(roundedRect: NSRect(x: barX, y: barTop, width: barWidth, height: h),
+                              xRadius: h / 2, yRadius: h / 2)
         NSColor.white.withAlphaComponent(0.25).setFill()
         bg.fill()
+        // No (or unknown) duration: the template still shows an
+        // empty track (placeholder card, unknown-length streams)
+        // instead of no bar at all.
+        guard session.duration > 0 else {
+            drawRightAligned("0:00", font: font, color: .white, rightX: rightX, y: y)
+            return
+        }
+        drawRightAligned("-\(formatTime(session.duration - pos))",
+                         font: font, color: .white, rightX: rightX, y: y)
         let filled = min(1.0, pos / session.duration)
-        let fg = NSBezierPath(roundedRect: NSRect(x: barX, y: y + 6, width: barWidth * CGFloat(filled), height: barHeight),
-                              xRadius: barHeight / 2, yRadius: barHeight / 2)
+        let fg = NSBezierPath(roundedRect: NSRect(x: barX, y: barTop, width: barWidth * CGFloat(filled), height: h),
+                              xRadius: h / 2, yRadius: h / 2)
         NSColor.white.setFill()
         fg.fill()
+        if hoveringBar {
+            let knob = NSBezierPath(ovalIn: NSRect(x: barX + barWidth * CGFloat(filled) - 5,
+                                                   y: barTop + h / 2 - 5,
+                                                   width: 10, height: 10))
+            NSColor.white.setFill()
+            knob.fill()
+        }
     }
 
     private func drawPageDots() {

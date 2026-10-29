@@ -46,6 +46,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var eyeBlinkUntil = Date.distantPast
     /// Hover auto-expand timer (closed-pill hover, 1.0s).
     private var hoverExpandTimer: Timer?
+    /// Seek-pause recovery: a seek that paused playback itself
+    /// (a known MediaRemote side effect) is resumed on the next
+    /// poll showing the same track paused near the target.
+    private var seekResumePending: (key: String, target: Double, deadline: Date)?
     /// Last hover-enter or click, for the sleepy eyes: 3 minutes
     /// untouched in zen turns the EMO eyes sleepy.
     private var lastZenInteraction = Date()
@@ -132,6 +136,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         islandView.onPrevious = { [weak self] in
             self?.sessions.previousTrack()
+        }
+        islandView.onSeek = { [weak self] seconds in
+            self?.performSeek(seconds)
         }
         islandView.onDragEnteredTray = { [weak self] in
             // Show tray first (sets the expanded size), then expand.
@@ -340,7 +347,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Interaction
 
-    /// Hover auto-expand: 0.5s after a closed-pill hover opens
+    /// Hover auto-expand: 0.3s after a closed-pill hover opens
     /// compact, the card opens on its own - the same as a
     /// click. Started on any hover into a closed pill;
     /// cancelled on hover exit, on click, and on any path
@@ -351,7 +358,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// the exact size.
     private func startHoverExpandTimer() {
         hoverExpandTimer?.invalidate()
-        hoverExpandTimer = Timer(timeInterval: 0.5, repeats: false) { [weak self] _ in
+        hoverExpandTimer = Timer(timeInterval: 0.3, repeats: false) { [weak self] _ in
             // Nil first: a guard failure below must not leave
             // a fired timer behind, or windowSize would keep
             // returning the bulged size for compact.
@@ -389,7 +396,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
             // Hover always opens compact first, then the card on
-            // its own after 0.5s of sustained hover (see
+            // its own after 0.3s of sustained hover (see
             // startHoverExpandTimer) - whether or not music is
             // playing. Clicking still opens the card at once.
             if islandView.state != .expanded {
@@ -552,6 +559,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return base
     }
 
+    /// Seek the system player (see NowPlayingJXA.seek). On success
+    /// the view re-anchors its bar; if playback was running and the
+    /// seek itself paused it, the next poll resumes it (see
+    /// applySystemNowPlaying).
+    private func performSeek(_ seconds: Double) {
+        guard let current = sessions.current, current.duration > 0 else { return }
+        let wasPlaying = current.isPlaying
+        let key = "\(current.title)|\(current.artist)"
+        NowPlayingJXA.seek(to: seconds) { [weak self] ok in
+            guard let self, ok else { return }
+            self.islandView.noteSeekApplied(seconds)
+            if wasPlaying {
+                self.seekResumePending = (key: key, target: seconds,
+                                          deadline: Date().addingTimeInterval(4))
+            }
+        }
+    }
+
     // MARK: - Polling
 
     private func applySystemNowPlaying(_ now: NowPlaying?, logLabel: String, logKey: String) {
@@ -566,6 +591,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             sessions.updateSystem(now)
         } else {
             sessions.clearSystem()
+        }
+        // Seek-pause recovery (see performSeek): a poll showing the
+        // same track playing clears the pending flag (the seek did
+        // not pause anything); a poll showing it paused near the
+        // target resumes once. A track change, a nil reading, or
+        // the deadline clears it without resuming, so an
+        // intentional pause is never overridden.
+        if let pending = seekResumePending {
+            if let now, "\(now.title)|\(now.artist)" == pending.key {
+                if now.isPlaying || Date() >= pending.deadline {
+                    seekResumePending = nil
+                } else if abs(now.position - pending.target) < 5 {
+                    sessions.togglePlayPause()
+                    seekResumePending = nil
+                }
+            } else {
+                seekResumePending = nil
+            }
         }
         refresh()
     }
