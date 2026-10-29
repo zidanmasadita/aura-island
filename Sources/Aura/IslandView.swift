@@ -79,15 +79,18 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     /// is never hidden, by request — the user opened lyrics
     /// precisely to keep seeing the lyric line on the closed pill.
     var isLyricsPill: Bool { lyricsMode }
-    /// True while a modal NSAlert (water settings) is open.
+    /// True while a card-modal dialog, picker, or menu is open.
     /// AppDelegate skips the leave-the-island collapse while this is
     /// set: moving the mouse down to the dialog is not leaving the
     /// card, and collapsing mid-modal used to freeze the window at
     /// the expanded size (the animator timer does not fire in modal
     /// mode) while the state already said closed - a 640x220 window
     /// drawing closed content with a height/2 corner radius, the
-    /// giant-curve pill in the bug report. Cleared (and hover
-    /// re-synced) when the modal closes.
+    /// giant-curve pill in the bug report. Cleared when the
+    /// modal closes. Pickers/menus deliberately do NOT re-sync
+    /// hover afterwards (see presentCardModal): after a pick
+    /// the card stays open on purpose, and the next real hover
+    /// exit collapses it normally.
     var isShowingModal = false
     var session: DisplaySession? {
         didSet {
@@ -966,7 +969,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
                 // A run already in flight: ignore pick/save
                 // clicks and fall through to collapse (the upload
                 // keeps running in the background).
-            } else if removeBgResultData != nil, removeBgSaveRect().contains(point) {
+            } else if removeBgResultData != nil, removeBgSaveRect(saving: removeBgSaving).contains(point) {
                 saveRemoveBgResult()
                 return
             } else if removeBgModelPillRect().contains(point) {
@@ -991,13 +994,13 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
                 // A run already in flight: ignore clicks and fall
                 // through to collapse (the upload keeps running in
                 // the background, like Remove BG).
-            } else if convertState(for: tool).resultData != nil, removeBgSaveRect().contains(point) {
+            } else if convertState(for: tool).resultData != nil, removeBgSaveRect(saving: convertSavingTool == tool).contains(point) {
                 saveConvertResult()
                 return
             } else if tool == .mergePDF, removeBgSaveRect().contains(point) {
                 startMerge()
                 return
-            } else if tool == .photo, convertToolRowMetrics().format.contains(point) {
+            } else if tool == .photo, convertFormatPillRect().contains(point) {
                 showConvertFormatMenu(at: point)
                 return
             } else if let picked = convertToolRowMetrics().rects.first(where: { $0.rect.contains(point) })?.tool {
@@ -1015,6 +1018,15 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
                 if tool == .mergePDF {
                     if let hit = mergeFileRemoveRects().first(where: { $0.rect.contains(point) }) {
                         removeMergeFile(at: hit.index)
+                    } else if let row = mergeFileRowRects().first(where: { $0.rect.contains(point) }) {
+                        // Arm a reorder drag; releasing without
+                        // moving keeps the old tap behavior (the
+                        // picker opens from mouseUp, not here).
+                        mergeDragItem = mergeFiles[row.index]
+                        mergeDragIndex = row.index
+                        mergeDragPoint = point
+                        mergeDragActive = false
+                        mergeDragStartOrder = mergeFiles.map(\.name)
                     } else {
                         pickMergeFiles()
                     }
@@ -1123,6 +1135,38 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             beginDraggingSession(with: [item], event: event, source: self)
             return
         }
+        if let dragged = mergeDragItem, let startPoint = mergeDragPoint,
+           currentPage == .convert, convertActiveTool == .mergePDF {
+            let point = convert(event.locationInWindow, from: nil)
+            if !mergeDragActive {
+                guard abs(point.x - startPoint.x) > 3 || abs(point.y - startPoint.y) > 3 else { return }
+                mergeDragActive = true
+            }
+            // Live shuffle: drop the dragged file out, then
+            // insert it at the row under the cursor (clamped to
+            // the list ends). The dragged item is re-found by
+            // name + bytes each move, so its index never goes
+            // stale as the list mutates under it.
+            guard let current = mergeFiles.firstIndex(where: { $0.name == dragged.name && $0.data == dragged.data }) else {
+                mergeDragItem = nil
+                mergeDragIndex = nil
+                mergeDragPoint = nil
+                mergeDragActive = false
+                return
+            }
+            var rest = mergeFiles
+            rest.remove(at: current)
+            let content = convertLeftContentRect()
+            var target = Int((point.y - content.minY) / 18)
+            target = max(0, min(target, rest.count))
+            if target != current {
+                mergeFiles = rest
+                mergeFiles.insert(dragged, at: target)
+            }
+            mergeDragIndex = mergeFiles.firstIndex(where: { $0.name == dragged.name && $0.data == dragged.data })
+            needsDisplay = true
+            return
+        }
         guard let pending = trayPendingDrag else { return }
         let point = convert(event.locationInWindow, from: nil)
         guard abs(point.x - pending.point.x) > 3 || abs(point.y - pending.point.y) > 3 else { return }
@@ -1170,6 +1214,37 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             // card stays open (same as Remove BG).
             convertPendingDrag = nil
         }
+        if mergeDragIndex != nil {
+            let wasActive = mergeDragActive
+            let startOrder = mergeDragStartOrder
+            mergeDragItem = nil
+            mergeDragIndex = nil
+            mergeDragPoint = nil
+            mergeDragActive = false
+            if !wasActive {
+                // Tap without a drag: the old behavior, open the
+                // picker (deferred here so a drag never opens it).
+                if currentPage == .convert, convertActiveTool == .mergePDF,
+                   !convertState(for: .mergePDF).processing {
+                    pickMergeFiles()
+                }
+            } else if mergeFiles.map(\.name) != startOrder {
+                // Order actually changed: the old merged result
+                // no longer matches the list.
+                var state = convertState(for: .mergePDF)
+                state.resultData = nil
+                state.resultImage = nil
+                state.resultPDFPreview = nil
+                state.resultFileName = nil
+                state.savedURL = nil
+                state.statusIsError = false
+                state.statusText = mergeFiles.count == 1
+                    ? "1 PDF - add at least 1 more, then press Merge."
+                    : "\(mergeFiles.count) PDFs ready - press Merge."
+                setConvertState(state, for: .mergePDF)
+            }
+            needsDisplay = true
+        }
         // A press on a grid tile without a drag is a tap = share.
         // (After a real drag, pending is already nil — the drag
         // cleared it on start — so this never shares post-drag.)
@@ -1205,7 +1280,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             let removeItem = NSMenuItem(title: "Remove", action: #selector(removeTrayMenuFile), keyEquivalent: "")
             removeItem.target = self
             menu.addItem(removeItem)
-            menu.popUp(positioning: nil, at: point, in: self)
+            presentCardModal { menu.popUp(positioning: nil, at: point, in: self) }
             return
         }
     }
@@ -2932,6 +3007,21 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         onHoverChanged?(window.frame.contains(NSEvent.mouseLocation))
     }
 
+    /// Run a card-modal picker/menu without collapsing the card.
+    /// While it is open the cursor sits outside the island window,
+    /// so the hover-exit collapse must be swallowed (the water
+    /// settings dialog already relies on isShowingModal for this).
+    /// Unlike resyncHoverAfterModal, no re-sync runs afterwards:
+    /// after a pick the card stays open on purpose (the cursor is
+    /// over the dismissed panel, i.e. outside the card, so a
+    /// re-sync would collapse it at once), and the next real
+    /// hover exit collapses it normally.
+    private func presentCardModal<T>(_ body: () -> T) -> T {
+        isShowingModal = true
+        defer { isShowingModal = false }
+        return body()
+    }
+
     // MARK: - File tray (drag and drop + share)
 
     /// A file held in the tray: a reference, not a copy — the file
@@ -3232,10 +3322,79 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     /// Save pill, bottom-right of the card (only drawn/hit when a
     /// result exists). Solid white + black text, like the tray
     /// "+ Copy" badge, so it reads as tappable on the black card.
-    private func removeBgSaveRect() -> NSRect {
+    private func removeBgSaveRect(saving: Bool = false) -> NSRect {
+        let label = saving ? "Saving…" : "Save"
         let font = NSFont.systemFont(ofSize: 14, weight: .medium)
-        let width = ("Save" as NSString).size(withAttributes: [.font: font]).width + 24
+        let width = (label as NSString).size(withAttributes: [.font: font]).width + 24 + (saving ? 20 : 0)
         return NSRect(x: 600 - width, y: 236, width: width, height: 28)
+    }
+
+    /// Spinner timer + pill label. Called after the pill fill;
+    /// the text is black on the solid white pill in both sections.
+    private func startSaveSpinner() {
+        guard saveSpinnerTimer == nil else { return }
+        saveSpinnerTimer = Timer(timeInterval: 0.12, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            self.saveSpinnerPhase = (self.saveSpinnerPhase + 1) % 12
+            self.needsDisplay = true
+        }
+        if let saveSpinnerTimer { RunLoop.main.add(saveSpinnerTimer, forMode: .common) }
+    }
+
+    private func stopSaveSpinner() {
+        guard !removeBgSaving && convertSavingTool == nil else { return }
+        saveSpinnerTimer?.invalidate()
+        saveSpinnerTimer = nil
+    }
+
+    private func drawSavePillContent(in rect: NSRect, saving: Bool) {
+        let font = NSFont.systemFont(ofSize: 14, weight: .medium)
+        if saving {
+            let path = NSBezierPath()
+            path.appendArc(withCenter: CGPoint(x: rect.minX + 14, y: rect.midY), radius: 6,
+                           startAngle: CGFloat(saveSpinnerPhase * 30),
+                           endAngle: CGFloat(saveSpinnerPhase * 30 + 270),
+                           clockwise: false)
+            path.lineWidth = 2
+            NSColor.black.setStroke()
+            path.stroke()
+            let label = "Saving…"
+            let width = (label as NSString).size(withAttributes: [.font: font]).width
+            drawText(label, font: font, color: .black,
+                     at: NSPoint(x: rect.midX - width / 2 + 10, y: rect.minY + 5))
+        } else {
+            let width = ("Save" as NSString).size(withAttributes: [.font: font]).width
+            drawText("Save", font: font, color: .black,
+                     at: NSPoint(x: rect.midX - width / 2, y: rect.minY + 5))
+        }
+    }
+
+    /// First-page thumbnail of PDF bytes, via CoreGraphics (no
+    /// new framework: CGPDF lives in CoreGraphics, already
+    /// available through AppKit). White background (a transparent
+    /// one would read as a hole on the black card), capped at 2x
+    /// so a huge page never allocates a giant bitmap. Nil when
+    /// the bytes are not a readable PDF.
+    private func pdfFirstPageImage(from data: Data, maxSize: NSSize) -> NSImage? {
+        guard let provider = CGDataProvider(data: data as CFData),
+              let doc = CGPDFDocument(provider),
+              let page = doc.page(at: 1) else { return nil }
+        let box = page.getBoxRect(.mediaBox)
+        guard box.width > 0, box.height > 0 else { return nil }
+        let scale = min(maxSize.width / box.width, maxSize.height / box.height, 2.0)
+        let w = max(1, Int(box.width * scale))
+        let h = max(1, Int(box.height * scale))
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8,
+                                  bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        ctx.setFillColor(NSColor.white.cgColor)
+        ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+        let transform = page.getDrawingTransform(.mediaBox, rect: CGRect(x: 0, y: 0, width: w, height: h),
+                                                 rotate: 0, preserveAspectRatio: true)
+        ctx.concatenate(transform)
+        ctx.drawPDFPage(page)
+        guard let cgImage = ctx.makeImage() else { return nil }
+        return NSImage(cgImage: cgImage, size: NSSize(width: w, height: h))
     }
 
     /// Aspect-fit rect for an image inside a rect, centered.
@@ -3306,7 +3465,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             item.representedObject = file
             menu.addItem(item)
         }
-        menu.popUp(positioning: nil, at: point, in: self)
+        presentCardModal { menu.popUp(positioning: nil, at: point, in: self) }
     }
 
     @objc private func pickRemoveBgTrayMenuFile(_ sender: NSMenuItem) {
@@ -3413,15 +3572,13 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         let statusColor = removeBgStatusIsError ? NSColor.systemRed : NSColor.white.withAlphaComponent(0.7)
         drawText(truncated(removeBgStatusText, toWidth: 400, font: statusFont),
                  font: statusFont, color: statusColor, at: NSPoint(x: 28, y: 244))
-        // Save pill, only once a result exists.
+        // Save pill, only once a result exists. While a save
+        // runs it shows the spinner instead of "Save".
         if removeBgResultData != nil, !removeBgProcessing {
-            let save = removeBgSaveRect()
+            let save = removeBgSaveRect(saving: removeBgSaving)
             NSColor.white.setFill()
             NSBezierPath(roundedRect: save, xRadius: 14, yRadius: 14).fill()
-            let saveFont = NSFont.systemFont(ofSize: 14, weight: .medium)
-            let saveWidth = ("Save" as NSString).size(withAttributes: [.font: saveFont]).width
-            drawText("Save", font: saveFont, color: .black,
-                     at: NSPoint(x: save.midX - saveWidth / 2, y: save.minY + 5))
+            drawSavePillContent(in: save, saving: removeBgSaving)
         }
         // Drop highlight, on top of everything else in the section.
         if removeBgDropHighlight {
@@ -3455,7 +3612,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         // panel, so a sheet would have nowhere to attach, while
         // app-modal works regardless. Drag-and-drop onto the card
         // is the primary path if the panel ever fails to appear.
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard presentCardModal({ panel.runModal() }) == .OK, let url = panel.url else { return }
         startRemoveBg(with: url)
     }
 
@@ -3481,7 +3638,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             item.state = (model == removeBgModel) ? .on : .off
             menu.addItem(item)
         }
-        menu.popUp(positioning: nil, at: point, in: self)
+        presentCardModal { menu.popUp(positioning: nil, at: point, in: self) }
     }
 
     @objc private func pickRemoveBgModel(_ sender: NSMenuItem) {
@@ -3639,16 +3796,45 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     }
 
     private func saveRemoveBgResult() {
-        guard let url = ensureRemoveBgFile() else {
-            removeBgStatusText = "Could not save the result."
-            removeBgStatusIsError = true
+        // Already written (e.g. after a drag-out): instant, no
+        // spinner — there is nothing to wait for.
+        if let saved = removeBgSavedURL, FileManager.default.fileExists(atPath: saved.path) {
+            let nameFont = NSFont.systemFont(ofSize: 13)
+            removeBgStatusText = "Saved: \(truncated(saved.lastPathComponent, toWidth: 400, font: nameFont))"
+            removeBgStatusIsError = false
             needsDisplay = true
             return
         }
-        let nameFont = NSFont.systemFont(ofSize: 13)
-        removeBgStatusText = "Saved: \(truncated(url.lastPathComponent, toWidth: 400, font: nameFont))"
-        removeBgStatusIsError = false
+        guard !removeBgSaving, let data = removeBgResultData,
+              let url = RimufuRemoveBgClient.uniqueDownloadURL(fileName: "Remove BG.png") else {
+            if !removeBgSaving {
+                removeBgStatusText = "Could not save the result."
+                removeBgStatusIsError = true
+                needsDisplay = true
+            }
+            return
+        }
+        removeBgSaving = true
+        startSaveSpinner()
         needsDisplay = true
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let ok = (try? data.write(to: url, options: .atomic)) != nil
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.removeBgSaving = false
+                self.stopSaveSpinner()
+                if ok {
+                    self.removeBgSavedURL = url
+                    let nameFont = NSFont.systemFont(ofSize: 13)
+                    self.removeBgStatusText = "Saved: \(truncated(url.lastPathComponent, toWidth: 400, font: nameFont))"
+                    self.removeBgStatusIsError = false
+                } else {
+                    self.removeBgStatusText = "Could not save the result."
+                    self.removeBgStatusIsError = true
+                }
+                self.needsDisplay = true
+            }
+        }
     }
 
 
@@ -3698,6 +3884,10 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         var inputSize: Int = 0
         var resultData: Data?
         var resultImage: NSImage?
+        /// First-page thumbnail of a PDF result (merged /
+        /// compressed), rendered once at completion so drawing
+        /// never re-renders the page. Nil for non-PDF results.
+        var resultPDFPreview: NSImage?
         var resultFileName: String?
         var savedURL: URL?
         var processing: Bool = false
@@ -3715,6 +3905,16 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     private var convertTask: URLSessionDataTask?
     private var convertActiveTaskTool: ConvertTool?
     private var convertPendingDrag: (tool: ConvertTool, point: CGPoint)?
+
+    /// Save in flight: the Save pill shows a spinning "Saving…"
+    /// state while the file write runs off the main thread, so a
+    /// big result never looks dead. The spinner timer is shared;
+    /// it stops when neither save runs. Convert tracks the tool
+    /// so a save for one tool never spins another tool's pill.
+    private var removeBgSaving = false
+    private var convertSavingTool: ConvertTool?
+    private var saveSpinnerPhase = 0
+    private var saveSpinnerTimer: Timer?
     private var convertDropHighlight = false { didSet { needsDisplay = true } }
 
     /// Merge PDF's file list, in merge order: (file name, bytes).
@@ -3722,6 +3922,18 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     /// any other tool, so Save, drag-out, and the status row need
     /// no merge branch - only this list lives apart.
     private var mergeFiles: [(name: String, data: Data)] = []
+
+    /// Merge drag reorder: pressing a list row arms a drag (the
+    /// item, the press point, and the name order at press time).
+    /// Moving past 3px activates it and the list shuffles live
+    /// under the cursor; releasing without a drag keeps the old
+    /// tap behavior (open the picker). A reorder invalidates a
+    /// previous result only if the final order actually changed.
+    private var mergeDragItem: (name: String, data: Data)?
+    private var mergeDragIndex: Int?
+    private var mergeDragPoint: CGPoint?
+    private var mergeDragActive = false
+    private var mergeDragStartOrder: [String] = []
 
     private func convertState(for tool: ConvertTool) -> ConvertState {
         convertStates[tool] ?? ConvertState(tool: tool)
@@ -3760,13 +3972,12 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     /// before x 600 (the right panel's edge, clear of the dot
     /// column). Starting from the standard 14pt / 24pt padding,
     /// shrink the font, then the padding, until the tool pills
-    /// plus the photo Format pill fit. The fit always includes
-    /// the Format pill (even for non-photo tools, where it is
-    /// not drawn) so switching tools never resizes the pills.
-    /// The labels are fixed but the format name varies, and
-    /// font metrics cannot be checked from Linux, so the fit
-    /// is computed here instead of assumed.
-    private func convertToolRowMetrics() -> (rects: [(tool: ConvertTool, rect: NSRect)], format: NSRect, font: NSFont) {
+    /// fit. The Format pill used to ride this row and overflow
+    /// it; it now lives in the bottom row (see
+    /// convertFormatPillRect), so the fit covers tools only.
+    /// Font metrics cannot be checked from Linux, so the fit is
+    /// computed here instead of assumed.
+    private func convertToolRowMetrics() -> (rects: [(tool: ConvertTool, rect: NSRect)], font: NSFont) {
         var fontSize: CGFloat = 14
         var pad: CGFloat = 24
         while true {
@@ -3778,13 +3989,8 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
                 rects.append((tool: tool, rect: NSRect(x: x, y: 36, width: width, height: 28)))
                 x += width + 8
             }
-            let label = "Format: \(convertPhotoFormat.displayName) \u{25be}"
-            let formatWidth = (label as NSString).size(withAttributes: [.font: font]).width + pad
-            // x already carries the trailing 8pt gap after the
-            // last tool pill; 8 more gives the old 16pt gap.
-            let format = NSRect(x: x + 8, y: 36, width: formatWidth, height: 28)
-            if format.maxX <= 600 || (fontSize <= 11 && pad <= 16) {
-                return (rects, format, font)
+            if (rects.last?.rect.maxX ?? 28) <= 600 || (fontSize <= 11 && pad <= 16) {
+                return (rects, font)
             }
             if fontSize > 11 {
                 fontSize -= 0.5
@@ -3792,6 +3998,18 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
                 pad -= 2
             }
         }
+    }
+
+    /// Format pill, bottom row of the Convert card (moved down
+    /// from the tool row, which it used to overflow): fixed x 316
+    /// so it never collides with the status text (truncated to
+    /// 280 wide while Photo is active, ending at x 308) or the
+    /// Save pill (x 536+). Same translucent setting-pill style.
+    private func convertFormatPillRect() -> NSRect {
+        let label = "Format: \(convertPhotoFormat.displayName) \u{25be}"
+        let font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        let width = (label as NSString).size(withAttributes: [.font: font]).width + 24
+        return NSRect(x: 316, y: 236, width: width, height: 28)
     }
 
     /// Content area inside the left panel: shrunk above the
@@ -3833,13 +4051,13 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
                      at: NSPoint(x: rect.midX - width / 2, y: rect.minY + 5))
         }
         if convertActiveTool == .photo {
-            let format = row.format
+            let format = convertFormatPillRect()
             NSColor.white.withAlphaComponent(0.15).setFill()
             NSBezierPath(roundedRect: format, xRadius: 14, yRadius: 14).fill()
             NSColor.white.withAlphaComponent(0.3).setStroke()
             NSBezierPath(roundedRect: format, xRadius: 14, yRadius: 14).stroke()
             let label = "Format: \(convertPhotoFormat.displayName) \u{25be}"
-            let formatFont = row.font
+            let formatFont = NSFont.systemFont(ofSize: 13, weight: .medium)
             let formatWidth = (label as NSString).size(withAttributes: [.font: formatFont]).width
             drawText(label, font: formatFont, color: .white,
                      at: NSPoint(x: format.midX - formatWidth / 2, y: format.minY + 5))
@@ -3981,21 +4199,54 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
                          at: NSPoint(x: right.minX + 8, y: y))
             }
         } else if let resultData = state.resultData, let resultName = state.resultFileName {
-            let nameFont = NSFont.systemFont(ofSize: 13)
-            let nameText = truncated(resultName, toWidth: right.width - 16, font: nameFont)
-            let nameWidth = (nameText as NSString).size(withAttributes: [.font: nameFont]).width
-            drawText(nameText, font: nameFont, color: NSColor.white.withAlphaComponent(0.9),
-                     at: NSPoint(x: right.midX - nameWidth / 2, y: right.midY - 20))
-            let sizeText = formatBytes(Int64(resultData.count))
-            let sizeFont = NSFont.systemFont(ofSize: 12)
-            let sizeWidth = (sizeText as NSString).size(withAttributes: [.font: sizeFont]).width
-            drawText(sizeText, font: sizeFont, color: NSColor.white.withAlphaComponent(0.5),
-                     at: NSPoint(x: right.midX - sizeWidth / 2, y: right.midY))
-            let hint = "Drag the result out or Save it."
-            let hintFont = NSFont.systemFont(ofSize: 12)
-            let hintWidth = (hint as NSString).size(withAttributes: [.font: hintFont]).width
-            drawText(hint, font: hintFont, color: NSColor.white.withAlphaComponent(0.5),
-                     at: NSPoint(x: right.midX - hintWidth / 2, y: right.midY + 20))
+            if let preview = state.resultPDFPreview {
+                // PDF result (merged / compressed): first-page
+                // thumbnail on the left, name + size + hint
+                // stacked on the right — the file itself, not
+                // just its name.
+                let fit = removeBgFitRect(for: preview, in: NSRect(x: right.minX + 8, y: right.minY + 8, width: 120, height: 140))
+                drawImageUpright(preview, in: fit)
+                let detailX = fit.maxX + 12
+                let detailWidth = right.maxX - 8 - detailX
+                let nameFont = NSFont.systemFont(ofSize: 13)
+                let nameText = truncated(resultName, toWidth: detailWidth, font: nameFont)
+                drawText(nameText, font: nameFont, color: NSColor.white.withAlphaComponent(0.9),
+                         at: NSPoint(x: detailX, y: right.midY - 20))
+                let sizeText = formatBytes(Int64(resultData.count))
+                let sizeFont = NSFont.systemFont(ofSize: 12)
+                drawText(sizeText, font: sizeFont, color: NSColor.white.withAlphaComponent(0.5),
+                         at: NSPoint(x: detailX, y: right.midY))
+                let hint = "Drag the result out or Save it."
+                let hintFont = NSFont.systemFont(ofSize: 12)
+                drawText(hint, font: hintFont, color: NSColor.white.withAlphaComponent(0.5),
+                         at: NSPoint(x: detailX, y: right.midY + 20))
+            } else {
+                // Non-PDF result (Word): the file's icon, large,
+                // above its name + size + hint.
+                // Copy before resizing: the workspace icon is
+                // shared, and mutating its size would leak into
+                // every other use of that file-type icon.
+                let icon = (NSWorkspace.shared.icon(forFileType: (resultName as NSString).pathExtension).copy() as? NSImage)
+                    ?? NSWorkspace.shared.icon(forFileType: (resultName as NSString).pathExtension)
+                icon.size = NSSize(width: 48, height: 48)
+                icon.draw(in: NSRect(x: right.midX - 24, y: right.midY - 52, width: 48, height: 48),
+                          from: .zero, operation: .sourceOver, fraction: 1.0)
+                let nameFont = NSFont.systemFont(ofSize: 13)
+                let nameText = truncated(resultName, toWidth: right.width - 16, font: nameFont)
+                let nameWidth = (nameText as NSString).size(withAttributes: [.font: nameFont]).width
+                drawText(nameText, font: nameFont, color: NSColor.white.withAlphaComponent(0.9),
+                         at: NSPoint(x: right.midX - nameWidth / 2, y: right.midY + 8))
+                let sizeText = formatBytes(Int64(resultData.count))
+                let sizeFont = NSFont.systemFont(ofSize: 12)
+                let sizeWidth = (sizeText as NSString).size(withAttributes: [.font: sizeFont]).width
+                drawText(sizeText, font: sizeFont, color: NSColor.white.withAlphaComponent(0.5),
+                         at: NSPoint(x: right.midX - sizeWidth / 2, y: right.midY + 28))
+                let hint = "Drag the result out or Save it."
+                let hintFont = NSFont.systemFont(ofSize: 12)
+                let hintWidth = (hint as NSString).size(withAttributes: [.font: hintFont]).width
+                drawText(hint, font: hintFont, color: NSColor.white.withAlphaComponent(0.5),
+                         at: NSPoint(x: right.midX - hintWidth / 2, y: right.midY + 48))
+            }
         } else {
             let placeholder = "Result appears here"
             let font = NSFont.systemFont(ofSize: 13)
@@ -4009,7 +4260,10 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         // Status row, bottom-left (same coordinates as Remove BG).
         let statusFont = NSFont.systemFont(ofSize: 13)
         let statusColor = state.statusIsError ? NSColor.systemRed : NSColor.white.withAlphaComponent(0.7)
-        drawText(truncated(state.statusText, toWidth: 400, font: statusFont),
+        // While Photo is active the status is truncated to 280
+        // so it ends at x 308, clear of the bottom-row format
+        // pill starting at x 316.
+        drawText(truncated(state.statusText, toWidth: convertActiveTool == .photo ? 280 : 400, font: statusFont),
                  font: statusFont, color: statusColor, at: NSPoint(x: 28, y: 244))
         // Merge button, same spot as Save (Save replaces it
         // once a result exists): solid when 2+ files are ready,
@@ -4034,15 +4288,13 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
                      at: NSPoint(x: merge.midX - mergeWidth / 2, y: merge.minY + 5))
         }
         // Save pill, only once a result exists (shared position
-        // with Remove BG's Save pill).
+        // with Remove BG's Save pill). While a save runs it
+        // shows the spinner instead of "Save".
         if state.resultData != nil, !state.processing {
-            let save = removeBgSaveRect()
+            let save = removeBgSaveRect(saving: convertSavingTool == convertActiveTool)
             NSColor.white.setFill()
             NSBezierPath(roundedRect: save, xRadius: 14, yRadius: 14).fill()
-            let saveFont = NSFont.systemFont(ofSize: 14, weight: .medium)
-            let saveWidth = ("Save" as NSString).size(withAttributes: [.font: saveFont]).width
-            drawText("Save", font: saveFont, color: .black,
-                     at: NSPoint(x: save.midX - saveWidth / 2, y: save.minY + 5))
+            drawSavePillContent(in: save, saving: convertSavingTool == convertActiveTool)
         }
         // Drop highlight, on top of everything else in the section.
         if convertDropHighlight {
@@ -4089,7 +4341,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             item.representedObject = file
             menu.addItem(item)
         }
-        menu.popUp(positioning: nil, at: point, in: self)
+        presentCardModal { menu.popUp(positioning: nil, at: point, in: self) }
     }
 
     @objc private func pickConvertFromTrayMenuFile(_ sender: NSMenuItem) {
@@ -4116,7 +4368,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         // runModal, not a sheet: the island window is a non-key
         // panel, so a sheet would have nowhere to attach (same
         // reasoning as Remove BG's picker).
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard presentCardModal({ panel.runModal() }) == .OK, let url = panel.url else { return }
         startConvert(with: url, tool: tool)
     }
 
@@ -4183,6 +4435,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         state.processing = true
         state.resultData = nil
         state.resultImage = nil
+        state.resultPDFPreview = nil
         state.resultFileName = nil
         state.savedURL = nil
         state.statusText = "Processing…"
@@ -4208,6 +4461,9 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
                     done.processing = false
                     done.resultData = data
                     done.resultFileName = self.convertResultFileName(for: tool, inputName: inputName, format: photoFormat)
+                    if tool == .compressPDF {
+                        done.resultPDFPreview = self.pdfFirstPageImage(from: data, maxSize: NSSize(width: 360, height: 140))
+                    }
                     if tool == .photo {
                         // May stay nil for AVIF: the bytes are valid
                         // (the client checked the magic), this Mac
@@ -4254,7 +4510,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         convertActiveTaskTool = tool
     }
 
-    /// Format menu for the photo tool (left-panel footer pill).
+    /// Format menu for the photo tool (bottom-row pill).
     /// The current format is checkmarked. Picking a new format
     /// re-runs with the stored input when one exists, so the user
     /// can compare AVIF vs WebP without re-picking.
@@ -4268,7 +4524,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             item.state = (format == convertPhotoFormat) ? .on : .off
             menu.addItem(item)
         }
-        menu.popUp(positioning: nil, at: point, in: self)
+        presentCardModal { menu.popUp(positioning: nil, at: point, in: self) }
     }
 
     @objc private func pickConvertFormat(_ sender: NSMenuItem) {
@@ -4306,18 +4562,26 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     /// footer pill when one is drawn), 18pt tall. When the list
     /// is longer than the panel, the last visible row becomes
     /// an overflow line with no remove control.
-    private func mergeFileRemoveRects() -> [(index: Int, rect: NSRect)] {
+    /// Rows of the merge list (file rows only: the overflow
+    /// line is not a row and never drags). Shared by drawing,
+    /// the remove control, and reorder hit-testing, so the three
+    /// can never disagree about row geometry.
+    private func mergeFileRowRects() -> [(index: Int, rect: NSRect)] {
         let content = convertLeftContentRect()
         let maxRows = max(1, Int(content.height / 18))
         let shown = min(mergeFiles.count, maxRows)
         let overflow = mergeFiles.count > maxRows
-        let removable = overflow ? shown - 1 : shown
-        var out: [(index: Int, rect: NSRect)] = []
-        for i in 0..<removable {
-            let y = content.minY + CGFloat(i) * 18
-            out.append((index: i, rect: NSRect(x: content.maxX - 20, y: y, width: 20, height: 18)))
+        let rows = overflow ? shown - 1 : shown
+        return (0..<rows).map { i in
+            (index: i, rect: NSRect(x: content.minX, y: content.minY + CGFloat(i) * 18,
+                                    width: content.width, height: 18))
         }
-        return out
+    }
+
+    private func mergeFileRemoveRects() -> [(index: Int, rect: NSRect)] {
+        mergeFileRowRects().map { (index: $0.index,
+                                    rect: NSRect(x: $0.rect.maxX - 20, y: $0.rect.minY,
+                                                 width: 20, height: 18)) }
     }
 
     private func drawMergeFileList(in content: NSRect) {
@@ -4346,9 +4610,19 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
                          at: NSPoint(x: content.minX, y: y + 2))
                 continue
             }
-            let name = truncated(mergeFiles[i].name, toWidth: content.width - 24, font: nameFont)
+            if mergeDragActive, mergeDragIndex == i {
+                NSColor.white.withAlphaComponent(0.12).setFill()
+                NSRect(x: content.minX, y: y, width: content.width, height: 18).fill()
+            }
+            // Drag grip (music-queue style): three lines at the
+            // row's left edge; the row drags to reorder.
+            NSColor.white.withAlphaComponent(0.4).setFill()
+            for gy in [y + 4, y + 8, y + 12] {
+                NSRect(x: content.minX, y: gy, width: 8, height: 1.5).fill()
+            }
+            let name = truncated(mergeFiles[i].name, toWidth: content.width - 38, font: nameFont)
             drawText(name, font: nameFont, color: NSColor.white.withAlphaComponent(0.9),
-                     at: NSPoint(x: content.minX, y: y + 2))
+                     at: NSPoint(x: content.minX + 14, y: y + 2))
             // Remove control, drawn as two strokes (not a glyph):
             // a 10pt cross at the row's right edge, inside the
             // 20pt hit rect mergeFileRemoveRects returns.
@@ -4379,6 +4653,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         var state = convertState(for: .mergePDF)
         state.resultData = nil
         state.resultImage = nil
+        state.resultPDFPreview = nil
         state.resultFileName = nil
         state.savedURL = nil
         state.statusIsError = false
@@ -4396,6 +4671,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         var state = convertState(for: .mergePDF)
         state.resultData = nil
         state.resultImage = nil
+        state.resultPDFPreview = nil
         state.resultFileName = nil
         state.savedURL = nil
         state.statusIsError = false
@@ -4420,7 +4696,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         panel.message = "Choose PDFs to merge"
         // runModal, not a sheet: same non-key window reasoning
         // as pickConvertFile.
-        guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
+        guard presentCardModal({ panel.runModal() }) == .OK, !panel.urls.isEmpty else { return }
         addMergeFiles(panel.urls)
     }
 
@@ -4436,7 +4712,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             item.representedObject = file
             menu.addItem(item)
         }
-        menu.popUp(positioning: nil, at: point, in: self)
+        presentCardModal { menu.popUp(positioning: nil, at: point, in: self) }
     }
 
     @objc private func pickMergeFromTrayMenuFile(_ sender: NSMenuItem) {
@@ -4475,6 +4751,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         state.processing = true
         state.resultData = nil
         state.resultImage = nil
+        state.resultPDFPreview = nil
         state.resultFileName = nil
         state.savedURL = nil
         state.statusText = "Merging..."
@@ -4494,6 +4771,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
                     done.processing = false
                     done.resultData = data
                     done.resultFileName = "merged_document.pdf"
+                    done.resultPDFPreview = self.pdfFirstPageImage(from: data, maxSize: NSSize(width: 360, height: 140))
                     done.statusText = "Done - drag the result out to use it."
                     done.statusIsError = false
                     self.setConvertState(done, for: tool)
@@ -4516,20 +4794,50 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
 
     private func saveConvertResult() {
         let tool = convertActiveTool
-        guard let url = ensureConvertFile(for: tool) else {
-            var failed = convertState(for: tool)
-            failed.statusText = "Could not save the result."
-            failed.statusIsError = true
-            setConvertState(failed, for: tool)
+        var state = convertState(for: tool)
+        // Already written (e.g. after a drag-out): instant, no
+        // spinner — there is nothing to wait for.
+        if let saved = state.savedURL, FileManager.default.fileExists(atPath: saved.path) {
+            let nameFont = NSFont.systemFont(ofSize: 13)
+            state.statusText = "Saved: \(truncated(saved.lastPathComponent, toWidth: 400, font: nameFont))"
+            state.statusIsError = false
+            setConvertState(state, for: tool)
             needsDisplay = true
             return
         }
-        var done = convertState(for: tool)
-        let nameFont = NSFont.systemFont(ofSize: 13)
-        done.statusText = "Saved: \(truncated(url.lastPathComponent, toWidth: 400, font: nameFont))"
-        done.statusIsError = false
-        setConvertState(done, for: tool)
+        guard convertSavingTool == nil, let data = state.resultData, let fileName = state.resultFileName,
+              let url = RimufuRemoveBgClient.uniqueDownloadURL(fileName: fileName) else {
+            if convertSavingTool == nil {
+                state.statusText = "Could not save the result."
+                state.statusIsError = true
+                setConvertState(state, for: tool)
+                needsDisplay = true
+            }
+            return
+        }
+        convertSavingTool = tool
+        startSaveSpinner()
         needsDisplay = true
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let ok = (try? data.write(to: url, options: .atomic)) != nil
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.convertSavingTool = nil
+                self.stopSaveSpinner()
+                var done = self.convertState(for: tool)
+                if ok {
+                    done.savedURL = url
+                    let nameFont = NSFont.systemFont(ofSize: 13)
+                    done.statusText = "Saved: \(truncated(url.lastPathComponent, toWidth: 400, font: nameFont))"
+                    done.statusIsError = false
+                } else {
+                    done.statusText = "Could not save the result."
+                    done.statusIsError = true
+                }
+                self.setConvertState(done, for: tool)
+                self.needsDisplay = true
+            }
+        }
     }
 
     private func drawTray() {
