@@ -1514,45 +1514,79 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     /// Cursor-tracking look for the idle eyes: -1...1 in each axis
     /// (view coords: +x right, +y down, because the view is flipped).
     /// Updated by AppDelegate's eye timer from NSEvent.mouseLocation;
-    /// smoothed there, so drawEyes just places the pupils.
+    /// smoothed there, so drawEyes just places the eyes.
     var eyeLook = CGPoint.zero
 
     /// True while a blink is in progress. Set by AppDelegate's eye
     /// timer on a random 2.5-5s cadence, for 0.2s at a time.
     var eyesClosed = false
 
-    /// Two white eyes, the idle face from Nusa's "Istirahat" state,
-    /// with black pupils that track the cursor. The white ovals stay
-    /// fixed (13x16 at x 50/77, y 8 — slightly larger than the
-    /// original 11x14, same centers); only the 6px pupils move, at
-    /// most 2px horizontally and 3px vertically from center, so a
-    /// pupil never leaves its white. The view is flipped, so a
-    /// positive eyeLook.y (cursor below the pill) moves pupils down.
-    /// There is no eyelid graphic: a blink closes the ovals
-    /// themselves into a 2px line and hides the pupils, then
-    /// reopens — no lid is ever drawn over the eyes.
+    /// EMO expression for the zen eyes, derived by AppDelegate's
+    /// eye timer: happy for 1s after the card closes back to
+    /// zen, sleepy after 3 minutes untouched, else normal.
+    enum EyeExpression { case normal, happy, sleepy }
+    var eyeExpression = EyeExpression.normal
+
+    /// One-eye wink, decided by AppDelegate's eye timer: 15% of
+    /// blinks close one eye instead of both, for the same 0.2s
+    /// window. Read by drawEyes only while the blink window is
+    /// open; the timer clears it when the window ends.
+    enum EyeWink { case left, right }
+    var eyeWink: EyeWink?
+
+    /// EMO-style eyes for the zen face: two solid white rounded
+    /// rectangles (no pupils - EMO's eyes are the glow itself),
+    /// about 18x11 with radius 4, centered on the old oval
+    /// centers (56.5/83.5, y 16). The whole shape shifts with
+    /// eyeLook (at most 2px horizontally, 3px vertically), like
+    /// the old pupils did. Expressions: normal = rectangles;
+    /// happy = upward arcs; sleepy = downward arcs; wink =
+    /// one eye a flat line, the other a rectangle. Blink
+    /// (eyesClosed) still closes both eyes into flat lines.
     private func drawEyes() {
-        NSColor.white.setFill()
-        for x in [50.0, 77.0] {
+        let centers: [CGFloat] = [56.5, 83.5]
+        let w: CGFloat = 18, h: CGFloat = 11
+        for (i, cx) in centers.enumerated() {
+            let x = cx - w / 2 + eyeLook.x * 2
+            let y = 16 - h / 2 + eyeLook.y * 3
+            let rect = NSRect(x: x, y: y, width: w, height: h)
+            let lineRect = NSRect(x: x, y: 16 - 1.25, width: w, height: 2.5)
             if eyesClosed {
-                let line = NSBezierPath(ovalIn: NSRect(x: x, y: 15, width: 13, height: 2))
-                line.fill()
+                NSColor.white.setFill()
+                NSBezierPath(roundedRect: lineRect, xRadius: 1.25, yRadius: 1.25).fill()
+            } else if let wink = eyeWink, (wink == .left && i == 0) || (wink == .right && i == 1) {
+                NSColor.white.setFill()
+                NSBezierPath(roundedRect: lineRect, xRadius: 1.25, yRadius: 1.25).fill()
             } else {
-                let eye = NSBezierPath(ovalIn: NSRect(x: x, y: 8, width: 13, height: 16))
-                eye.fill()
+                switch eyeExpression {
+                case .normal:
+                    NSColor.white.setFill()
+                    NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4).fill()
+                case .happy:
+                    strokeEyeArc(in: rect, upward: true)
+                case .sleepy:
+                    strokeEyeArc(in: rect, upward: false)
+                }
             }
         }
-        guard !eyesClosed else { return }
-        NSColor.black.setFill()
-        for x in [50.0, 77.0] {
-            let center = CGPoint(x: x + 6.5, y: 8 + 8)
-            let pupilCenter = CGPoint(x: center.x + eyeLook.x * 2,
-                                      y: center.y + eyeLook.y * 3)
-            let pupil = NSBezierPath(ovalIn: NSRect(x: pupilCenter.x - 3,
-                                                   y: pupilCenter.y - 3,
-                                                   width: 6, height: 6))
-            pupil.fill()
-        }
+    }
+
+    /// One EMO arc eye: a thick stroked curve across the eye
+    /// rect. Flipped view: minY is the visual top, maxY the
+    /// visual bottom, so happy is a cap (endpoints low, apex
+    /// high) and sleepy is a cup (endpoints high, apex low).
+    private func strokeEyeArc(in rect: NSRect, upward: Bool) {
+        let yEnd = upward ? rect.maxY : rect.minY
+        let yApex = upward ? rect.minY : rect.maxY
+        let path = NSBezierPath()
+        path.lineWidth = 3.5
+        path.lineCapStyle = .round
+        path.move(to: NSPoint(x: rect.minX, y: yEnd))
+        path.curve(to: NSPoint(x: rect.maxX, y: yEnd),
+                   controlPoint1: NSPoint(x: rect.minX + rect.width * 0.25, y: yApex),
+                   controlPoint2: NSPoint(x: rect.maxX - rect.width * 0.25, y: yApex))
+        NSColor.white.setStroke()
+        path.stroke()
     }
 
     /// iOS battery icon (status-bar style): white outline + nub,

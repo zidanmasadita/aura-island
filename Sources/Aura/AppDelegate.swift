@@ -44,6 +44,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastOverlapDecision = ""
     private var nextEyeBlink = Date(timeIntervalSinceNow: 3)
     private var eyeBlinkUntil = Date.distantPast
+    /// Hover auto-expand timer (idle path only, 1.5s).
+    private var hoverExpandTimer: Timer?
+    /// Last hover-enter or click, for the sleepy eyes: 3 minutes
+    /// untouched in zen turns the EMO eyes sleepy.
+    private var lastZenInteraction = Date()
+    /// Happy eyes until this date, set when the card closes back
+    /// to zen (1s greeting); the eye timer clears it after.
+    private var happyUntil = Date.distantPast
     private var currentTrackKey: String?
     private var lastMediaLog: String?
     private var lastTabLog: String?
@@ -222,10 +230,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Idle-eyes cursor tracking: 0.1s, global mouse location,
         // only while the pill is zen (the eyes are only drawn
         // there). The look is smoothed toward the cursor direction
-        // so pupils glide instead of snapping, and the view only
+        // so the eyes glide instead of snapping, and the view only
         // redraws when the look actually moved. Direction is
         // normalized over 300px horizontal / 200px vertical from
-        // the pill center, so the pupils saturate at the edge of
+        // the pill center, so the eyes saturate at the edge of
         // their travel well before the cursor is far away. Screen
         // coords grow upward, view coords grow downward, so the
         // vertical sign flips: cursor below the pill = look down.
@@ -240,16 +248,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let next = CGPoint(x: old.x + (targetX - old.x) * 0.25,
                                y: old.y + (targetY - old.y) * 0.25)
             // Blink: every 2.5-5s, closed for 0.2s (two 0.1s ticks).
+            // 15% of blinks become a wink instead: one eye closes,
+            // the other stays open, for the same 0.2s window.
+            let oldClosed = self.islandView.eyesClosed
+            let oldWink = self.islandView.eyeWink
+            let oldExpression = self.islandView.eyeExpression
             let now = Date()
             if now >= self.nextEyeBlink {
                 self.eyeBlinkUntil = now.addingTimeInterval(0.2)
                 self.nextEyeBlink = now.addingTimeInterval(Double.random(in: 2.5...5.0))
+                self.islandView.eyeWink = Double.random(in: 0..<1) < 0.15
+                    ? (Bool.random() ? .left : .right) : nil
             }
-            let closed = now < self.eyeBlinkUntil
+            let closed = now < self.eyeBlinkUntil && self.islandView.eyeWink == nil
+            if self.islandView.eyeWink != nil && now >= self.eyeBlinkUntil {
+                self.islandView.eyeWink = nil
+            }
+            // Expression, derived each tick from the same rules:
+            // happy wins for 1s after the card closes back to zen,
+            // then sleepy after 3 minutes untouched, else normal.
+            let expression: IslandView.EyeExpression
+            if now < self.happyUntil {
+                expression = .happy
+            } else if now.timeIntervalSince(self.lastZenInteraction) > 180 {
+                expression = .sleepy
+            } else {
+                expression = .normal
+            }
             guard abs(next.x - old.x) > 0.005 || abs(next.y - old.y) > 0.005
-                    || closed != self.islandView.eyesClosed else { return }
+                    || closed != oldClosed
+                    || self.islandView.eyeWink != oldWink
+                    || expression != oldExpression else { return }
             self.islandView.eyeLook = next
             self.islandView.eyesClosed = closed
+            self.islandView.eyeExpression = expression
             self.islandView.needsDisplay = true
         }
         if let eyeTimer { RunLoop.main.add(eyeTimer, forMode: .common) }
@@ -308,8 +340,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Interaction
 
+    /// Hover auto-expand (idle path only): 1.5s after a zen
+    /// hover opens compact, the card opens on its own - the
+    /// same as a click. Started only on the zen-to-compact
+    /// hover transition; cancelled on hover exit, on click,
+    /// and on any path that expands first. Fires only while
+    /// still hovering and still compact.
+    private func startHoverExpandTimer() {
+        hoverExpandTimer?.invalidate()
+        hoverExpandTimer = Timer(timeInterval: 1.5, repeats: false) { [weak self] _ in
+            guard let self, self.isHovering, self.islandView.state == .compact else { return }
+            self.setState(.expanded)
+        }
+        if let hoverExpandTimer { RunLoop.main.add(hoverExpandTimer, forMode: .common) }
+    }
+
     private func handleHover(_ hovering: Bool) {
         if hovering {
+            lastZenInteraction = Date()
             // Hovering a hidden tip opens the pill on purpose, even
             // when the hover target state equals the current state
             // (e.g. compact while already compact).
@@ -341,10 +389,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if sessions.current != nil {
                     setState(.expanded)
                 } else {
+                    // Idle hover opens compact, then the card on
+                    // its own after 1.5s of sustained hover (the
+                    // zen-to-compact transition only - hovering an
+                    // already-compact pill keeps the old behavior).
+                    let wasZen = islandView.state == .zen
                     setState(.compact)
+                    if wasZen { startHoverExpandTimer() }
                 }
             }
         } else {
+            hoverExpandTimer?.invalidate()
+            hoverExpandTimer = nil
             // While the todo input is active, leaving the pill
             // must NOT close it: the user keeps typing with the
             // cursor outside, and the card only closes after
@@ -385,6 +441,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func handleClick() {
+        lastZenInteraction = Date()
+        hoverExpandTimer?.invalidate()
+        hoverExpandTimer = nil
         if islandView.state == .expanded {
             suppressHoverOpenAfterClickClose = true
             setState(.compact)
@@ -396,6 +455,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func setState(_ state: IslandState) {
+        // Closing back to zen shows the happy eyes for 1s (the
+        // EMO greeting); the eye timer clears it after. Expanding
+        // by any path cancels a pending hover auto-expand.
+        if state == .zen, islandView.state != .zen {
+            happyUntil = Date().addingTimeInterval(1.0)
+        }
+        if state == .expanded {
+            hoverExpandTimer?.invalidate()
+            hoverExpandTimer = nil
+        }
         // Closing the card discards an in-progress todo input
         // (its field is a subview of the card and must not float
         // over a closed pill or another page). Opening keeps it.
