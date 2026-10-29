@@ -559,15 +559,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return base
     }
 
-    /// Seek the system player (see NowPlayingJXA.seek). On success
-    /// the view re-anchors its bar; if playback was running and the
-    /// seek itself paused it, the next poll resumes it (see
-    /// applySystemNowPlaying).
+    /// Seek the Chrome YouTube Music tab (see ChromeSeek). On
+    /// success the view re-anchors its bar; if playback was
+    /// running and the seek itself paused it, the next poll
+    /// resumes it (see applySystemNowPlaying).
     private func performSeek(_ seconds: Double) {
         guard let current = sessions.current, current.duration > 0 else { return }
         let wasPlaying = current.isPlaying
         let key = "\(current.title)|\(current.artist)"
-        NowPlayingJXA.seek(to: seconds) { [weak self] ok in
+        ChromeSeek.seek(to: seconds, trackTitle: current.title) { [weak self] ok in
             guard let self, ok else { return }
             self.islandView.noteSeekApplied(seconds)
             if wasPlaying {
@@ -597,7 +597,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // not pause anything); a poll showing it paused near the
         // target resumes once. A track change, a nil reading, or
         // the deadline clears it without resuming, so an
-        // intentional pause is never overridden.
+        // intentional pause is never overridden. (Kept for any
+        // player that pauses on seek; the Chrome JS route
+        // normally does not pause.)
         if let pending = seekResumePending {
             if let now, "\(now.title)|\(now.artist)" == pending.key {
                 if now.isPlaying || Date() >= pending.deadline {

@@ -86,65 +86,6 @@ enum NowPlayingJXA {
     /// explains a nil result (nil when a track was found), so a failed
     /// detection can be diagnosed from the log line alone instead of
     /// guessing which step broke.
-    /// Seek the system now-playing client to `seconds` via the same
-    /// osascript path as the sensor (MediaRemote is loaded from the
-    /// private framework the same way). The C function
-    /// MRMediaRemoteSetElapsedTime is called through the JXA bridge;
-    /// if it is not reachable the script reports failure and the
-    /// caller leaves the bar alone (it snaps back on next draw).
-    /// Runs off the main thread; completion on main.
-    static func seek(to seconds: Double, completion: @escaping (Bool) -> Void) {
-        // Numeric-formatted into the script (no user input): osascript
-        // -e scripts do not reliably receive argv, so interpolation
-        // is the dependable channel.
-        let value = String(format: "%.3f", seconds)
-        let script = """
-        ObjC.import('Foundation');
-        function run() {
-          try {
-            var bundle = $.NSBundle.bundleWithPath('/System/Library/PrivateFrameworks/MediaRemote.framework/');
-            bundle.load;
-            var fn = $.MRMediaRemoteSetElapsedTime;
-            if (typeof fn !== 'function') return JSON.stringify({ error: 'no-seek-function' });
-            fn(\(value));
-            return JSON.stringify({ ok: true });
-          } catch (e) {
-            return JSON.stringify({ error: String(e) });
-          }
-        }
-        """
-        DispatchQueue.global(qos: .userInitiated).async {
-            let proc = Process()
-            proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-            proc.arguments = ["-l", "JavaScript", "-e", script]
-            let out = Pipe()
-            proc.standardOutput = out
-            proc.standardError = FileHandle.nullDevice
-            var ok = false
-            do {
-                try proc.run()
-                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 5) {
-                    if proc.isRunning { proc.terminate() }
-                }
-                proc.waitUntilExit()
-                if proc.terminationStatus == 0,
-                   let text = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8),
-                   let data = text.data(using: .utf8),
-                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                   obj["ok"] as? Bool == true {
-                    ok = true
-                }
-            } catch {
-                ok = false
-            }
-            if !ok {
-                print("[Aura] seek failed (target \(value)s)")
-            }
-            let result = ok
-            DispatchQueue.main.async { completion(result) }
-        }
-    }
-
     static func fetch(completion: @escaping (NowPlaying?, String, String?) -> Void) {
         DispatchQueue.global(qos: .utility).async {
             let result = runScript()
