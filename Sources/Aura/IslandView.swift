@@ -4302,7 +4302,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
                 self.needsDisplay = true
             }
         }
-        convertTask = RimufuConvertClient.mergePDFs(files: files, completion: completion)
+        convertTask = RimufuConvertClient.mergePDFs(files: files.map { (data: $0.data, fileName: $0.name) }, completion: completion)
         convertActiveTaskTool = tool
     }
 
