@@ -64,9 +64,9 @@ final class IslandAnimator {
     private var to: NSRect = .zero
     private var start: Date = Date()
     private let duration: TimeInterval = 0.35
-    /// Bubble pop for one transition (zen-to-compact hover):
-    /// the frame grows slightly past the target mid-flight,
-    /// then settles exactly, like the tray drag bulge.
+    /// Slight bulk-up for one transition (zen-to-compact hover):
+    /// the frame grows just a touch past the target mid-flight,
+    /// then settles exactly. Subtle on purpose, not an extreme expand.
     private var overshoot = false
 
     init(window: IslandWindow) {
@@ -123,13 +123,13 @@ final class IslandAnimator {
         var x = from.origin.x + (to.origin.x - from.origin.x) * e
         var y = from.origin.y + (to.origin.y - from.origin.y) * e
         if overshoot {
-            // Bubble pop: grow slightly past the target
-            // mid-flight (wider and taller), then settle
-            // exactly. The top edge stays glued to the
-            // menu bar, so the pill fattens downward.
+            // Slight bulk-up: grow just a touch past the
+            // target mid-flight (a little wider and taller),
+            // then settle exactly. The top edge stays glued
+            // to the menu bar, so the pill fattens downward.
             let bump = CGFloat(sin(Double.pi * Double(p)))
-            w += to.width * 0.08 * bump
-            h += to.height * 0.12 * bump
+            w += to.width * 0.03 * bump
+            h += to.height * 0.06 * bump
             let midX = from.midX + (to.midX - from.midX) * e
             x = midX - w / 2
             y = to.origin.y + to.height - h
