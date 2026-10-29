@@ -340,7 +340,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Interaction
 
-    /// Hover auto-expand: 1.0s after a closed-pill hover opens
+    /// Hover auto-expand: 0.5s after a closed-pill hover opens
     /// compact, the card opens on its own - the same as a
     /// click. Started on any hover into a closed pill;
     /// cancelled on hover exit, on click, and on any path
@@ -348,7 +348,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// and still compact.
     private func startHoverExpandTimer() {
         hoverExpandTimer?.invalidate()
-        hoverExpandTimer = Timer(timeInterval: 1.0, repeats: false) { [weak self] _ in
+        hoverExpandTimer = Timer(timeInterval: 0.5, repeats: false) { [weak self] _ in
             guard let self, self.isHovering, self.islandView.state == .compact else { return }
             self.setState(.expanded)
         }
@@ -382,11 +382,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
             // Hover always opens compact first, then the card on
-            // its own after 1.0s of sustained hover (see
+            // its own after 0.5s of sustained hover (see
             // startHoverExpandTimer) - whether or not music is
             // playing. Clicking still opens the card at once.
             if islandView.state != .expanded {
-                setState(.compact)
+                // Zen-to-compact gets the bubble pop (see
+                // IslandAnimator overshoot); other closed
+                // hovers keep the plain animation.
+                let wasZen = islandView.state == .zen
+                setState(.compact, overshoot: wasZen)
                 startHoverExpandTimer()
             }
         } else {
@@ -445,7 +449,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.ignoresMouseEvents = false
     }
 
-    func setState(_ state: IslandState) {
+    func setState(_ state: IslandState, overshoot: Bool = false) {
         // Closing back to zen shows the happy eyes for 1s (the
         // EMO greeting); the eye timer clears it after. Expanding
         // by any path cancels a pending hover auto-expand.
@@ -496,7 +500,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // wide, pomodoro 160, lyrics mode 360). Setting state first matters: leaving
         // expanded updates lyricsMode in didSet before closedSize is
         // read.
-        animator.animate(to: windowSize(for: state))
+        animator.animate(to: windowSize(for: state), overshoot: overshoot)
     }
 
     /// Window size for a state. A live pill alert widens every
