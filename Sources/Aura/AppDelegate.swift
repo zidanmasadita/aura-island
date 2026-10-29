@@ -44,7 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastOverlapDecision = ""
     private var nextEyeBlink = Date(timeIntervalSinceNow: 3)
     private var eyeBlinkUntil = Date.distantPast
-    /// Hover auto-expand timer (idle path only, 1.5s).
+    /// Hover auto-expand timer (closed-pill hover, 1.0s).
     private var hoverExpandTimer: Timer?
     /// Last hover-enter or click, for the sleepy eyes: 3 minutes
     /// untouched in zen turns the EMO eyes sleepy.
@@ -340,15 +340,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Interaction
 
-    /// Hover auto-expand (idle path only): 1.5s after a zen
-    /// hover opens compact, the card opens on its own - the
-    /// same as a click. Started only on the zen-to-compact
-    /// hover transition; cancelled on hover exit, on click,
-    /// and on any path that expands first. Fires only while
-    /// still hovering and still compact.
+    /// Hover auto-expand: 1.0s after a closed-pill hover opens
+    /// compact, the card opens on its own - the same as a
+    /// click. Started on any hover into a closed pill;
+    /// cancelled on hover exit, on click, and on any path
+    /// that expands first. Fires only while still hovering
+    /// and still compact.
     private func startHoverExpandTimer() {
         hoverExpandTimer?.invalidate()
-        hoverExpandTimer = Timer(timeInterval: 1.5, repeats: false) { [weak self] _ in
+        hoverExpandTimer = Timer(timeInterval: 1.0, repeats: false) { [weak self] _ in
             guard let self, self.isHovering, self.islandView.state == .compact else { return }
             self.setState(.expanded)
         }
@@ -381,22 +381,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if suppressHoverOpenAfterClickClose {
                 return
             }
-            // Hover opens the card directly, no click needed — but
-            // only when there is something to show. Idle (no session)
-            // keeps the old hover-to-compact behaviour, so hovering
-            // an idle pill never opens an empty card.
+            // Hover always opens compact first, then the card on
+            // its own after 1.0s of sustained hover (see
+            // startHoverExpandTimer) - whether or not music is
+            // playing. Clicking still opens the card at once.
             if islandView.state != .expanded {
-                if sessions.current != nil {
-                    setState(.expanded)
-                } else {
-                    // Idle hover opens compact, then the card on
-                    // its own after 1.5s of sustained hover (the
-                    // zen-to-compact transition only - hovering an
-                    // already-compact pill keeps the old behavior).
-                    let wasZen = islandView.state == .zen
-                    setState(.compact)
-                    if wasZen { startHoverExpandTimer() }
-                }
+                setState(.compact)
+                startHoverExpandTimer()
             }
         } else {
             hoverExpandTimer?.invalidate()
