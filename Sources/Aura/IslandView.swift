@@ -1755,6 +1755,13 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     enum EyeWink { case left, right }
     var eyeWink: EyeWink?
 
+    /// Per-eye openness for the cursor-proximity blink: 1 = fully
+    /// open, 0 = shut into a line. AppDelegate's eye timer drives
+    /// each eye from the cursor's horizontal distance to that eye
+    /// (the nearer eye leads), smoothed; drawEyes maps it to the
+    /// eye's height. Only used in the normal expression.
+    var eyeOpenness: [CGFloat] = [1, 1]
+
     /// EMO-style eyes for the zen face: two solid white rounded
     /// rectangles (no pupils - EMO's eyes are the glow itself),
     /// about 18x11 with radius 4, centered on the old oval
@@ -1766,8 +1773,12 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     /// (eyesClosed) still closes both eyes into flat lines.
     private func drawEyes() {
         let centers: [CGFloat] = [56.5, 83.5]
-        let w: CGFloat = 18, h: CGFloat = 11
+        let w: CGFloat = 18
         for (i, cx) in centers.enumerated() {
+            // Proximity blink height: the eye shrinks toward the
+            // flat blink line as the cursor nears its side.
+            let openness = eyeExpression == .normal ? eyeOpenness[i] : 1
+            let h: CGFloat = 2.5 + (11 - 2.5) * openness
             let x = cx - w / 2 + eyeLook.x * 2
             let y = 16 - h / 2 + eyeLook.y * 3
             let rect = NSRect(x: x, y: y, width: w, height: h)
@@ -1782,7 +1793,8 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
                 switch eyeExpression {
                 case .normal:
                     NSColor.white.setFill()
-                    NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4).fill()
+                    let r = min(4, h / 2)
+                    NSBezierPath(roundedRect: rect, xRadius: r, yRadius: r).fill()
                 case .happy:
                     strokeEyeArc(in: rect, upward: true)
                 case .sleepy:

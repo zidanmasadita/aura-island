@@ -282,13 +282,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } else {
                 expression = .normal
             }
+            // Proximity blink: each eye shuts gradually as the
+            // cursor nears it horizontally — the nearer eye leads,
+            // so a cursor arriving from the right closes the right
+            // eye first; centered, both together. Position-driven
+            // (no fixed duration), so a fast cursor blinks fast.
+            // Only in the normal expression; otherwise the eyes
+            // ease back open for the happy/sleepy arcs.
+            let oldOpen = self.islandView.eyeOpenness
+            var newOpen = oldOpen
+            for i in 0..<2 {
+                let target: CGFloat
+                if expression == .normal {
+                    let eyeX = window.frame.minX + (i == 0 ? 56.5 : 83.5)
+                    let d = abs(mouse.x - eyeX)
+                    let t = max(0, min(1, (d - 6) / 34))
+                    target = t * t * (3 - 2 * t)
+                } else {
+                    target = 1
+                }
+                newOpen[i] = oldOpen[i] + (target - oldOpen[i]) * 0.45
+            }
             guard abs(next.x - old.x) > 0.005 || abs(next.y - old.y) > 0.005
                     || closed != oldClosed
                     || self.islandView.eyeWink != oldWink
-                    || expression != oldExpression else { return }
+                    || expression != oldExpression
+                    || abs(newOpen[0] - oldOpen[0]) > 0.004
+                    || abs(newOpen[1] - oldOpen[1]) > 0.004 else { return }
             self.islandView.eyeLook = next
             self.islandView.eyesClosed = closed
             self.islandView.eyeExpression = expression
+            self.islandView.eyeOpenness = newOpen
             self.islandView.needsDisplay = true
         }
         if let eyeTimer { RunLoop.main.add(eyeTimer, forMode: .common) }
