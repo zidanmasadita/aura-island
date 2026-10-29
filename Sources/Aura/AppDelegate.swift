@@ -345,10 +345,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// click. Started on any hover into a closed pill;
     /// cancelled on hover exit, on click, and on any path
     /// that expands first. Fires only while still hovering
-    /// and still compact.
+    /// and still compact. While the timer waits, the
+    /// compact pill sits slightly enlarged (see
+    /// windowSize); expanding or cancelling restores
+    /// the exact size.
     private func startHoverExpandTimer() {
         hoverExpandTimer?.invalidate()
         hoverExpandTimer = Timer(timeInterval: 0.5, repeats: false) { [weak self] _ in
+            // Nil first: a guard failure below must not leave
+            // a fired timer behind, or windowSize would keep
+            // returning the bulged size for compact.
+            self?.hoverExpandTimer = nil
             guard let self, self.isHovering, self.islandView.state == .compact else { return }
             self.setState(.expanded)
         }
@@ -386,12 +393,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // startHoverExpandTimer) - whether or not music is
             // playing. Clicking still opens the card at once.
             if islandView.state != .expanded {
-                // Zen-to-compact gets the bubble pop (see
-                // IslandAnimator overshoot); other closed
-                // hovers keep the plain animation.
-                let wasZen = islandView.state == .zen
-                setState(.compact, overshoot: wasZen)
+                setState(.compact)
                 startHoverExpandTimer()
+                // Wait-bulge: the timer is pending now, so
+                // windowSize returns the slightly enlarged
+                // compact size; the animator restarts from
+                // the current frame toward it (one smooth
+                // growth, no flicker - no frame is drawn
+                // between the two animate calls).
+                animator.animate(to: windowSize(for: .compact))
             }
         } else {
             hoverExpandTimer?.invalidate()
@@ -449,7 +459,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.ignoresMouseEvents = false
     }
 
-    func setState(_ state: IslandState, overshoot: Bool = false) {
+    func setState(_ state: IslandState) {
         // Closing back to zen shows the happy eyes for 1s (the
         // EMO greeting); the eye timer clears it after. Expanding
         // by any path cancels a pending hover auto-expand.
@@ -500,7 +510,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // wide, pomodoro 160, lyrics mode 360). Setting state first matters: leaving
         // expanded updates lyricsMode in didSet before closedSize is
         // read.
-        animator.animate(to: windowSize(for: state), overshoot: overshoot)
+        animator.animate(to: windowSize(for: state))
     }
 
     /// Window size for a state. A live pill alert widens every
@@ -524,6 +534,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if notch.hasNotch {
                 base.width = max(base.width, notch.width)
             }
+        }
+        // Hover wait-bulge: while the auto-expand timer waits,
+        // the compact pill sits slightly enlarged (1.05x) so
+        // the wait reads as a held, bulkier pill, not a
+        // transition effect. Every cancel path nils the
+        // timer before its setState, and the fire closure
+        // nils it first, so the bulge can never stick.
+        if state == .compact, hoverExpandTimer != nil {
+            base.width *= 1.05
+            base.height *= 1.05
         }
         if islandView.trayDropHighlight || islandView.isTrayBouncing {
             return NSSize(width: base.width * IslandView.bounceHeadroomFactor,

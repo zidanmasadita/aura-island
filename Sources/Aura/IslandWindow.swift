@@ -64,10 +64,6 @@ final class IslandAnimator {
     private var to: NSRect = .zero
     private var start: Date = Date()
     private let duration: TimeInterval = 0.35
-    /// Slight bulk-up for one transition (zen-to-compact hover):
-    /// the frame grows just a touch past the target mid-flight,
-    /// then settles exactly. Subtle on purpose, not an extreme expand.
-    private var overshoot = false
 
     init(window: IslandWindow) {
         self.window = window
@@ -83,7 +79,7 @@ final class IslandAnimator {
         timer = nil
     }
 
-    func animate(to size: NSSize, yOverride: CGFloat? = nil, overshoot: Bool = false) {
+    func animate(to size: NSSize, yOverride: CGFloat? = nil) {
         guard let window else { return }
         timer?.invalidate()
         from = window.frame
@@ -97,7 +93,6 @@ final class IslandAnimator {
             y = window.frame.minY
         }
         to = NSRect(x: x, y: y, width: size.width, height: size.height)
-        self.overshoot = overshoot
         start = Date()
         timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] t in
             self?.step(timer: t)
@@ -118,22 +113,10 @@ final class IslandAnimator {
         let p = min(1.0, elapsed / duration)
         // easeOutCubic
         let e = 1.0 - pow(1.0 - p, 3.0)
-        var w = from.width + (to.width - from.width) * e
-        var h = from.height + (to.height - from.height) * e
-        var x = from.origin.x + (to.origin.x - from.origin.x) * e
-        var y = from.origin.y + (to.origin.y - from.origin.y) * e
-        if overshoot {
-            // Slight bulk-up: grow just a touch past the
-            // target mid-flight (a little wider and taller),
-            // then settle exactly. The top edge stays glued
-            // to the menu bar, so the pill fattens downward.
-            let bump = CGFloat(sin(Double.pi * Double(p)))
-            w += to.width * 0.03 * bump
-            h += to.height * 0.06 * bump
-            let midX = from.midX + (to.midX - from.midX) * e
-            x = midX - w / 2
-            y = to.origin.y + to.height - h
-        }
+        let x = from.origin.x + (to.origin.x - from.origin.x) * e
+        let y = from.origin.y + (to.origin.y - from.origin.y) * e
+        let w = from.width + (to.width - from.width) * e
+        let h = from.height + (to.height - from.height) * e
         window.setFrame(NSRect(x: x, y: y, width: w, height: h), display: true)
         if p >= 1.0 {
             timer.invalidate()
