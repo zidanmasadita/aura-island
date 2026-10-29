@@ -287,9 +287,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // so a cursor arriving from the right closes the right
             // eye first, and a horizontal approach at pill height
             // counts too; centered, both together. The range is
-            // deliberately tight (shut by 8px, open past 44px): it
-            // reads as flinching from a poke, not as a reaction to
-            // a distant cursor. Position-driven (no fixed duration),
+            // range (shut by 12px, open past 110px): the squint
+            // starts as the cursor reaches for the pill and closes
+            // as it arrives — a flinch, not a distant reaction.
+            // Position-driven (no fixed duration),
             // so a fast cursor blinks fast. Only in the normal
             // expression; otherwise the eyes ease back open for the
             // happy/sleepy arcs.
@@ -301,7 +302,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     let eyeX = window.frame.minX + (i == 0 ? 56.5 : 83.5)
                     let eyeY = window.frame.maxY - 16
                     let d = hypot(mouse.x - eyeX, mouse.y - eyeY)
-                    let t = max(0, min(1, (d - 8) / 36))
+                    let t = max(0, min(1, (d - 12) / 98))
                     target = t * t * (3 - 2 * t)
                 } else {
                     target = 1
