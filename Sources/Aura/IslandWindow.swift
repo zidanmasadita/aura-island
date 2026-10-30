@@ -1,8 +1,14 @@
 import AppKit
 
-/// Borderless floating window, Nusa-style: top-center, always on top,
+/// Borderless floating panel, Nusa-style: top-center, always on top,
 /// transparent, never steals focus.
-final class IslandWindow: NSWindow {
+///
+/// A non-activating panel: clicking the pill never activates the app,
+/// so macOS never yanks the user to the Space holding another Aura
+/// window (e.g. Settings). Deliberate interactions that genuinely
+/// need keyboard focus — file pickers, alerts, the todo text field —
+/// activate the app explicitly at their own call sites.
+final class IslandWindow: NSPanel {
     /// Gate for becoming key. The island normally never steals
     /// focus (borderless, non-key), but an inline text field can
     /// only receive keystrokes in a key window. IslandView sets
@@ -15,7 +21,7 @@ final class IslandWindow: NSWindow {
     init(contentRect: NSRect) {
         super.init(
             contentRect: contentRect,
-            styleMask: [.borderless],
+            styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )

@@ -3085,6 +3085,10 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         addSubview(field)
         todoEditingField = field
         if let win = window as? IslandWindow { win.allowKey = true }
+        // The pill is a non-activating panel, so text editing takes
+        // focus explicitly — otherwise keystrokes would land in
+        // whatever app was active.
+        NSApp.activate(ignoringOtherApps: true)
         window?.makeKey()
         window?.makeFirstResponder(field)
         needsDisplay = true
@@ -3781,6 +3785,9 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         // panel, so a sheet would have nowhere to attach, while
         // app-modal works regardless. Drag-and-drop onto the card
         // is the primary path if the panel ever fails to appear.
+        // The pill never activates the app on click, so the dialog
+        // takes focus explicitly (or keystrokes would go elsewhere).
+        NSApp.activate(ignoringOtherApps: true)
         guard presentCardModal({ panel.runModal() }) == .OK, let url = panel.url else { return }
         startRemoveBg(with: url)
     }
@@ -4578,7 +4585,9 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         }
         // runModal, not a sheet: the island window is a non-key
         // panel, so a sheet would have nowhere to attach (same
-        // reasoning as Remove BG's picker).
+        // reasoning as Remove BG's picker). Explicit focus: the
+        // pill is non-activating.
+        NSApp.activate(ignoringOtherApps: true)
         guard presentCardModal({ panel.runModal() }) == .OK, let url = panel.url else { return }
         startConvert(with: url, tool: tool)
     }
@@ -4939,7 +4948,9 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         panel.allowedFileTypes = ["pdf"]
         panel.message = "Choose PDFs to merge"
         // runModal, not a sheet: same non-key window reasoning
-        // as pickConvertFile.
+        // as pickConvertFile. Explicit focus: the pill is
+        // non-activating.
+        NSApp.activate(ignoringOtherApps: true)
         guard presentCardModal({ panel.runModal() }) == .OK, !panel.urls.isEmpty else { return }
         addMergeFiles(panel.urls)
     }
@@ -5564,6 +5575,9 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         alert.accessoryView = accessory
         alert.window.initialFirstResponder = goalField
         isShowingModal = true
+        // The pill is a non-activating panel; the alert has text
+        // fields, so it takes focus explicitly.
+        NSApp.activate(ignoringOtherApps: true)
         let response = alert.runModal()
         isShowingModal = false
         resyncHoverAfterModal()
