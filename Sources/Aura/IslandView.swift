@@ -563,7 +563,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     /// then re-anchors to the player's own reading).
     func noteSeekApplied(_ seconds: Double) {
         guard let s = session else { return }
-        positionAnchor = (key: "\(s.title)|\(s.artist)", reported: seconds, at: Date(), playing: s.isPlaying)
+        positionAnchor = (key: "\(s.title)|\(s.artist)", position: seconds, at: Self.monotonicNow(), playing: s.isPlaying)
         needsDisplay = true
     }
 
