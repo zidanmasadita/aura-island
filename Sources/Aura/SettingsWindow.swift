@@ -86,6 +86,7 @@ private struct SettingsRootView: View {
                         .padding(.trailing, 6)
                 }
                 .padding(.vertical, 3)
+                .padding(.leading, 6)
             }
             .navigationSplitViewColumnWidth(min: 180, ideal: 200)
         } detail: {
