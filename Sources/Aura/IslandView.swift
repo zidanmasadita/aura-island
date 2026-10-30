@@ -2104,7 +2104,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         // clock, battery icon, or waveform. Without a synced line, the
         // song title stands in.
         if lyricsMode, let session {
-            drawLyricsMascot(center: CGPoint(x: 28, y: midY), size: 22)
+            drawLyricsMascot(center: CGPoint(x: 28, y: midY), size: 22, playing: session.isPlaying)
             let line = lyricCurrent ?? session.title
             let font = NSFont.systemFont(ofSize: 13, weight: .medium)
             drawCentered(truncated(line, toWidth: 236, font: font),
@@ -2602,20 +2602,59 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         return img
     }()
 
-    private func drawLyricsMascot(center: CGPoint, size: CGFloat) {
+    /// Groove phase for the lyrics mascot; advances with
+    /// wall-clock time while the song plays, freezing the nod
+    /// mid-bob on pause.
+    private var mascotPhase: Double = 0
+    private var mascotLastTick: Date = Date()
+
+    /// Mascot eye centers in image-normalized coordinates, measured
+    /// from the asset (used for the blink overlay).
+    private let mascotEyeL = CGPoint(x: 0.4343, y: 0.5131)
+    private let mascotEyeR = CGPoint(x: 0.5638, y: 0.5131)
+    private let mascotEyeRadius: CGFloat = 0.024
+
+    /// The mascot, grooving: a vertical nod plus a slight rocking
+    /// tilt while the song plays, and a quick blink every few
+    /// seconds. The asset has a transparent background, so no clip
+    /// is needed — it floats straight on the black pill.
+    private func drawLyricsMascot(center: CGPoint, size: CGFloat, playing: Bool) {
         guard let img = Self.lyricsMascot else {
             drawSymbol("music.note", size: size, center: center, fallback: "♪")
             return
         }
-        let rect = NSRect(x: center.x - size / 2, y: center.y - size / 2, width: size, height: size)
+        let now = Date()
+        if playing {
+            mascotPhase += now.timeIntervalSince(mascotLastTick) * 2 * .pi * 1.5
+        }
+        mascotLastTick = now
+        let bob = sin(mascotPhase) * 1.5
+        let rock = sin(mascotPhase * 0.5) * 0.05
+        let rect = NSRect(x: center.x - size / 2, y: center.y - size / 2 + bob,
+                          width: size, height: size)
         guard let ctx = NSGraphicsContext.current?.cgContext else {
             drawImageUpright(img, in: rect)
             return
         }
         ctx.saveGState()
-        ctx.addPath(CGPath(ellipseIn: rect, transform: nil))
-        ctx.clip()
+        let pivot = CGPoint(x: center.x, y: center.y + bob)
+        ctx.translateBy(x: pivot.x, y: pivot.y)
+        ctx.rotate(by: rock)
+        ctx.translateBy(x: -pivot.x, y: -pivot.y)
         drawImageUpright(img, in: rect)
+        // Blink: briefly cover both eyes with the mascot's own white.
+        let blinkPhase = now.timeIntervalSince1970.truncatingRemainder(dividingBy: 3.4)
+        if blinkPhase < 0.12 {
+            NSColor.white.setFill()
+            for eye in [mascotEyeL, mascotEyeR] {
+                let p = CGPoint(x: rect.minX + eye.x * size,
+                                y: rect.minY + eye.y * size)
+                let r = mascotEyeRadius * size
+                NSBezierPath(roundedRect: NSRect(x: p.x - r * 1.5, y: p.y - r,
+                                                width: r * 3, height: r * 2),
+                             xRadius: r, yRadius: r).fill()
+            }
+        }
         ctx.restoreGState()
     }
 

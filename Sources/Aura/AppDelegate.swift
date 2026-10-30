@@ -235,6 +235,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         lyricTimer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
             guard let self, self.sessions.current != nil, !self.lyricsLines.isEmpty else { return }
             self.refreshLyricLine()
+            // Mascot groove: keep the closed lyrics pill redrawing so
+            // the nod/blink animates even while the lyric line itself
+            // is static. 10fps is plenty for the gentle bob.
+            if self.islandView.isLyricsPill,
+               self.islandView.state == .compact || self.islandView.state == .split {
+                self.islandView.needsDisplay = true
+            }
         }
         if let lyricTimer { RunLoop.main.add(lyricTimer, forMode: .common) }
         // Idle-eyes cursor tracking: 0.1s, global mouse location,
