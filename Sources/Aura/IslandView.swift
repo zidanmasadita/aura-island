@@ -409,12 +409,16 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     /// still fits. A live pomodoro keeps the 160x32 pill (its ring +
     /// countdown are roomy there), so starting/stopping it resizes
     /// the pill between 160 and 180 (animated, like lyrics mode).
-    /// Compact lyrics pill layout: mascot left, the line centered
-    /// in the remaining space.
+    /// Compact lyrics pill layout: mascot left (unless hidden),
+    /// the line centered in the remaining space.
     private var lyricsPillFont: NSFont { NSFont.systemFont(ofSize: 13, weight: .medium) }
     private let lyricsMascotDrawSize: CGFloat = 26
-    private let lyricsTextX: CGFloat = 48 // 12 pad + 26 mascot + 10 gap
-    private let lyricsTextRightPad: CGFloat = 16
+    private let lyricsTextRightPad: CGFloat = 24
+    private var lyricsTextX: CGFloat {
+        // 18 pad + 26 mascot + 12 gap with the mascot; 24 pad for a
+        // text-only pill.
+        AuraSettings.shared.lyricsShowMascot ? 56 : 24
+    }
 
     /// Width the closed lyrics pill wants. Fixed 360 unless the
     /// dynamic-width option is on, in which case it hugs the line —
@@ -424,7 +428,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         guard AuraSettings.shared.lyricsDynamicWidth else { return 360 }
         let line = lyricCurrent ?? session?.title ?? ""
         let textW = (line as NSString).size(withAttributes: [.font: lyricsPillFont]).width
-        return min(max(lyricsTextX + min(textW, 380) + lyricsTextRightPad, 170), 444)
+        return min(max(lyricsTextX + min(textW, 380) + lyricsTextRightPad, 170), 460)
     }
 
     /// AppDelegate uses this instead of the fixed state size for
@@ -2122,8 +2126,10 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         // clock, battery icon, or waveform. Without a synced line, the
         // song title stands in.
         if lyricsMode, let session {
-            drawLyricsMascot(center: CGPoint(x: 12 + lyricsMascotDrawSize / 2, y: midY),
-                             size: lyricsMascotDrawSize, playing: session.isPlaying)
+            if AuraSettings.shared.lyricsShowMascot {
+                drawLyricsMascot(center: CGPoint(x: 18 + lyricsMascotDrawSize / 2, y: midY),
+                                 size: lyricsMascotDrawSize, playing: session.isPlaying)
+            }
             let line = lyricCurrent ?? session.title
             let font = lyricsPillFont
             let textW = bounds.width - lyricsTextX - lyricsTextRightPad

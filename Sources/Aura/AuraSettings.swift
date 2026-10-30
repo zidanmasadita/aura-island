@@ -116,6 +116,12 @@ final class AuraSettings: ObservableObject {
         set { setBool("AuraSettings.lyricsDynamicWidth", newValue) }
     }
 
+    /// Compact lyrics pill: hide the mascot, leaving just the line.
+    var lyricsShowMascot: Bool {
+        get { bool("AuraSettings.lyricsShowMascot", default: true) }
+        set { setBool("AuraSettings.lyricsShowMascot", newValue) }
+    }
+
     /// Global lyric timing shift (seconds), applied on top of the
     /// per-track nudge. For recordings whose timestamps are all
     /// off by the same constant.

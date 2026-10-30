@@ -210,6 +210,10 @@ private struct MusicLyricsSettingsView: View {
                 Text("The compact lyrics pill resizes to fit each line.")
                     .font(.caption)
                     .foregroundColor(.secondary)
+                Toggle("Show mascot", isOn: Binding(
+                    get: { settings.lyricsShowMascot },
+                    set: { settings.lyricsShowMascot = $0 }
+                ))
                 HStack {
                     Text("Global timing offset")
                     Slider(value: Binding(
