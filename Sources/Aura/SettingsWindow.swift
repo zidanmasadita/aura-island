@@ -28,19 +28,26 @@ final class SettingsWindowController {
 }
 
 private enum SettingsSection: String, CaseIterable, Identifiable {
-    case general, appearance
+    case general, appearance, musicLyrics, sections
 
-    var id: String { rawValue }
+    // The List selection binds SettingsSection itself, so the
+    // identity must be the enum (not its raw String) or the
+    // sidebar rows never select — the Appearance-that-wouldn't-open bug.
+    var id: Self { self }
     var title: String {
         switch self {
         case .general: "General"
         case .appearance: "Appearance"
+        case .musicLyrics: "Music & Lyrics"
+        case .sections: "Sections"
         }
     }
     var icon: String {
         switch self {
         case .general: "gear"
         case .appearance: "paintbrush"
+        case .musicLyrics: "music.note"
+        case .sections: "square.grid.2x2"
         }
     }
 }
@@ -58,6 +65,8 @@ private struct SettingsRootView: View {
             switch selection ?? .general {
             case .general: GeneralSettingsView()
             case .appearance: AppearanceSettingsView()
+            case .musicLyrics: MusicLyricsSettingsView()
+            case .sections: SectionsSettingsView()
             }
         }
         .frame(minWidth: 720, minHeight: 480)
@@ -138,6 +147,85 @@ private struct AppearanceSettingsView: View {
         }
         .formStyle(.grouped)
         .navigationTitle("Appearance")
+        .padding()
+    }
+}
+
+private struct MusicLyricsSettingsView: View {
+    @ObservedObject private var settings = AuraSettings.shared
+    @State private var nudgeResetMessage: String?
+
+    var body: some View {
+        Form {
+            Section("Lyrics") {
+                Toggle("Show lyrics", isOn: Binding(
+                    get: { settings.lyricsEnabled },
+                    set: { settings.lyricsEnabled = $0 }
+                ))
+                HStack {
+                    Text("Global timing offset")
+                    Slider(value: Binding(
+                        get: { settings.lyricGlobalOffset },
+                        set: { settings.lyricGlobalOffset = $0 }
+                    ), in: -5...5, step: 0.5)
+                    Text(String(format: "%+.1fs", settings.lyricGlobalOffset))
+                        .frame(width: 52, alignment: .trailing)
+                        .monospacedDigit()
+                }
+                HStack {
+                    Button("Reset per-song timing adjustments") {
+                        settings.resetLyricNudges()
+                        nudgeResetMessage = "Cleared."
+                    }
+                    if let nudgeResetMessage {
+                        Text(nudgeResetMessage)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .navigationTitle("Music & Lyrics")
+        .padding()
+    }
+}
+
+private func sectionDisplayName(_ page: IslandView.CardPage) -> String {
+    switch page {
+    case .music: "Music"
+    case .pomodoro: "Pomodoro"
+    case .todo: "Todo"
+    case .water: "Water"
+    case .tray: "Tray"
+    case .removeBg: "Remove BG"
+    case .convert: "Convert"
+    case .lyrics: "Lyrics"
+    case .sources: "Sources"
+    }
+}
+
+private struct SectionsSettingsView: View {
+    @ObservedObject private var settings = AuraSettings.shared
+
+    var body: some View {
+        Form {
+            Section("Card sections") {
+                ForEach(AuraSettings.toggleableSections, id: \.self) { page in
+                    Toggle(sectionDisplayName(page), isOn: Binding(
+                        get: { settings.isSectionEnabled(page) },
+                        set: { settings.setSectionEnabled(page, $0) }
+                    ))
+                }
+            }
+            Section {
+                Text("Hidden sections disappear from the dots and swipe. If every section is hidden, Music stays as a fallback.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .navigationTitle("Sections")
         .padding()
     }
 }

@@ -90,4 +90,45 @@ final class AuraSettings: ObservableObject {
         get { double("AuraSettings.eyeFlinchRange", default: 110) }
         set { setDouble("AuraSettings.eyeFlinchRange", min(160, max(40, newValue))) }
     }
+
+    // MARK: - Music & Lyrics
+
+    /// Master switch for lyrics: hides the speech bubble, skips
+    /// fetching, and keeps the lyrics panel unreachable.
+    var lyricsEnabled: Bool {
+        get { bool("AuraSettings.lyricsEnabled", default: true) }
+        set { setBool("AuraSettings.lyricsEnabled", newValue) }
+    }
+
+    /// Global lyric timing shift (seconds), applied on top of the
+    /// per-track nudge. For recordings whose timestamps are all
+    /// off by the same constant.
+    var lyricGlobalOffset: Double {
+        get { double("AuraSettings.lyricGlobalOffset", default: 0) }
+        set { setDouble("AuraSettings.lyricGlobalOffset", min(5, max(-5, newValue))) }
+    }
+
+    /// Clears every stored per-track lyric nudge ("lyricNudge.*").
+    /// Those used to be stuck with no UI to reset them.
+    func resetLyricNudges() {
+        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix("lyricNudge.") {
+            defaults.removeObject(forKey: key)
+        }
+        objectWillChange.send()
+    }
+
+    // MARK: - Sections
+
+    /// Sections the user may toggle. Lyrics is a panel of music,
+    /// not a section; sources is conditional on session count.
+    static let toggleableSections: [IslandView.CardPage] = [.music, .pomodoro, .todo, .water, .tray, .removeBg, .convert]
+
+    func isSectionEnabled(_ page: IslandView.CardPage) -> Bool {
+        guard Self.toggleableSections.contains(page) else { return true }
+        return bool("AuraSettings.section.\(page)", default: true)
+    }
+
+    func setSectionEnabled(_ page: IslandView.CardPage, _ enabled: Bool) {
+        setBool("AuraSettings.section.\(page)", enabled)
+    }
 }

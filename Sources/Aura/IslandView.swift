@@ -416,7 +416,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         return lyricsMode ? NSSize(width: 360, height: 32) : NSSize(width: 180, height: 32)
     }
 
-    private enum CardPage { case music, lyrics, pomodoro, todo, water, tray, removeBg, convert, sources }
+    enum CardPage { case music, lyrics, pomodoro, todo, water, tray, removeBg, convert, sources }
 
     /// Sections the dots and three-finger swipe offer: music +
     /// pomodoro + todo + water + tray always, sources only when there is more than
@@ -425,13 +425,21 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     /// never land on it; that was the old chevron's mistake (it
     /// jumped to lyrics).
     private var availableSections: [CardPage] {
-        sessionsForPicker.count > 1 ? [.music, .pomodoro, .todo, .water, .tray, .removeBg, .convert, .sources] : [.music, .pomodoro, .todo, .water, .tray, .removeBg, .convert]
+        let base: [CardPage] = sessionsForPicker.count > 1 ? [.music, .pomodoro, .todo, .water, .tray, .removeBg, .convert, .sources] : [.music, .pomodoro, .todo, .water, .tray, .removeBg, .convert]
+        let filtered = base.filter { AuraSettings.shared.isSectionEnabled($0) }
+        return filtered.isEmpty ? [.music] : filtered
     }
 
     /// The page actually drawn (lyrics included). Sources falls back
     /// to music when it stops being available (sessions drop to one).
     private var currentPage: CardPage {
-        (cardPage == .sources && sessionsForPicker.count <= 1) ? .music : cardPage
+        var page = cardPage
+        if page == .sources && sessionsForPicker.count <= 1 { page = .music }
+        if page == .lyrics && !AuraSettings.shared.lyricsEnabled { page = .music }
+        if page != .lyrics && !availableSections.contains(page) {
+            page = availableSections.first ?? .music
+        }
+        return page
     }
 
     /// The section the dots/swipe act on: lyrics counts as music
@@ -790,7 +798,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     private func musicHoverRegion(at point: CGPoint) -> MusicHoverRegion {
         guard state == .expanded, session != nil,
               currentPage == .music || currentPage == .lyrics else { return .none }
-        if musicBubbleRect.contains(point) { return .bubble }
+        if AuraSettings.shared.lyricsEnabled, musicBubbleRect.contains(point) { return .bubble }
         let centers: [CGFloat] = currentPage == .lyrics ? [118, 170, 222] : [208, 260, 312]
         if let hit = controlHit(at: point, centers: centers, yMin: 130, yMax: 150) {
             return .control(hit)
@@ -828,7 +836,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         case .music:
             // Speech bubble opens lyrics (the card extends horizontally).
             // Sections switch by dots or three-finger swipe (no arrows).
-            if musicBubbleRect.contains(point) {
+            if AuraSettings.shared.lyricsEnabled, musicBubbleRect.contains(point) {
                 cardPage = .lyrics
                 needsDisplay = true
                 return
@@ -2267,8 +2275,10 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         // (animated zoom, no glow). Placeholder buttons are
         // dimmed and never highlight (they do nothing).
         let dim = placeholder ? NSColor.white.withAlphaComponent(0.35) : NSColor.white
-        drawMusicButton("ellipsis.bubble.fill", fallback: "···", center: CGPoint(x: 56, y: 140),
-                        region: placeholder ? .none : .bubble, color: dim)
+        if AuraSettings.shared.lyricsEnabled {
+            drawMusicButton("ellipsis.bubble.fill", fallback: "···", center: CGPoint(x: 56, y: 140),
+                            region: placeholder ? .none : .bubble, color: dim)
+        }
         let controls: [CGFloat] = lyricsOpen ? [118, 170, 222] : [208, 260, 312]
         let symbols = ["backward.fill", session.isPlaying ? "pause.fill" : "play.fill", "forward.fill"]
         let fallbacks = ["‹", session.isPlaying ? "❚❚" : "▶", "›"]

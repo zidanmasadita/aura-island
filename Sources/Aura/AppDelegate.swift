@@ -1098,13 +1098,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             lyricsLinesRaw = []
             lyricsLines = []
             islandView.clearLyricLines()
-            lyrics.fetchLyrics(title: current.title, artist: current.artist, duration: current.duration) { [weak self] lines in
-                // A slow fetch for an older track must not overwrite
-                // the current track's lines if the song changed again
-                // while it was in flight.
-                guard let self, self.currentTrackKey == key else { return }
-                self.lyricsLinesRaw = lines
-                self.applyLyricNudge()
+            if AuraSettings.shared.lyricsEnabled {
+                lyrics.fetchLyrics(title: current.title, artist: current.artist, duration: current.duration) { [weak self] lines in
+                    // A slow fetch for an older track must not overwrite
+                    // the current track's lines if the song changed again
+                    // while it was in flight.
+                    guard let self, self.currentTrackKey == key else { return }
+                    self.lyricsLinesRaw = lines
+                    self.applyLyricNudge()
+                }
             }
         }
         refreshLyricLine()
@@ -1125,7 +1127,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// slightly different recording than the one playing — shows up
     /// as a constant offset, and this is what corrects it per song.
     private func applyLyricNudge() {
-        let nudge = currentTrackKey.map { UserDefaults.standard.double(forKey: "lyricNudge.\($0)") } ?? 0
+        let perTrack = currentTrackKey.map { UserDefaults.standard.double(forKey: "lyricNudge.\($0)") } ?? 0
+        let nudge = perTrack + AuraSettings.shared.lyricGlobalOffset
         lyricsLines = lyricsLinesRaw.map { (time: max(0, $0.time + nudge), text: $0.text) }
         refreshLyricLine()
         // Redraw immediately: the inactive lyrics pill must show the
