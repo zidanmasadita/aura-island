@@ -28,7 +28,7 @@ final class SettingsWindowController {
 }
 
 private enum SettingsSection: String, CaseIterable, Identifiable {
-    case general, appearance, musicLyrics, sections
+    case general, appearance, musicLyrics, sections, pillAlerts, permissions, about
 
     // The List selection binds SettingsSection itself, so the
     // identity must be the enum (not its raw String) or the
@@ -40,6 +40,9 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .appearance: "Appearance"
         case .musicLyrics: "Music & Lyrics"
         case .sections: "Sections"
+        case .pillAlerts: "Pill Alerts"
+        case .permissions: "Permissions"
+        case .about: "About"
         }
     }
     var icon: String {
@@ -48,6 +51,9 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .appearance: "paintbrush"
         case .musicLyrics: "music.note"
         case .sections: "square.grid.2x2"
+        case .pillAlerts: "bell"
+        case .permissions: "checkmark.seal"
+        case .about: "info.circle"
         }
     }
 }
@@ -67,6 +73,9 @@ private struct SettingsRootView: View {
             case .appearance: AppearanceSettingsView()
             case .musicLyrics: MusicLyricsSettingsView()
             case .sections: SectionsSettingsView()
+            case .pillAlerts: PillAlertsSettingsView()
+            case .permissions: PermissionsSettingsView()
+            case .about: AboutSettingsView()
             }
         }
         .frame(minWidth: 720, minHeight: 480)
@@ -226,6 +235,143 @@ private struct SectionsSettingsView: View {
         }
         .formStyle(.grouped)
         .navigationTitle("Sections")
+        .padding()
+    }
+}
+
+private struct PillAlertsSettingsView: View {
+    @ObservedObject private var settings = AuraSettings.shared
+
+    private func toggle(_ get: @escaping () -> Bool,
+                        _ set: @escaping (Bool) -> Void) -> Binding<Bool> {
+        Binding(get: get, set: set)
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Show pill alerts", isOn: toggle({ settings.pillAlertsEnabled }, { settings.pillAlertsEnabled = $0 }))
+                HStack {
+                    Text("Alert duration")
+                    Slider(value: Binding(
+                        get: { settings.pillAlertDuration },
+                        set: { settings.pillAlertDuration = $0 }
+                    ), in: 0.5...4, step: 0.25)
+                    Text(String(format: "%.2fs", settings.pillAlertDuration))
+                        .frame(width: 52, alignment: .trailing)
+                        .monospacedDigit()
+                }
+            }
+            Section("Alert types") {
+                Toggle("Battery", isOn: toggle({ settings.alertBattery }, { settings.alertBattery = $0 }))
+                Toggle("Volume", isOn: toggle({ settings.alertVolume }, { settings.alertVolume = $0 }))
+                Toggle("Brightness", isOn: toggle({ settings.alertBrightness }, { settings.alertBrightness = $0 }))
+                Toggle("Caps Lock", isOn: toggle({ settings.alertCapsLock }, { settings.alertCapsLock = $0 }))
+                Toggle("Bluetooth", isOn: toggle({ settings.alertBluetooth }, { settings.alertBluetooth = $0 }))
+            }
+        }
+        .formStyle(.grouped)
+        .navigationTitle("Pill Alerts")
+        .padding()
+    }
+}
+
+private struct PermissionsSettingsView: View {
+    @ObservedObject private var settings = AuraSettings.shared
+
+    private func openPane(_ pane: String) {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?\(pane)") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    var body: some View {
+        Form {
+            Section("Accessibility") {
+                HStack {
+                    VStack(alignment: .leading) {
+                        Text("Accessibility")
+                        Text("Needed for overlap-hide and the media keys.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                    Text(settings.accessibilityGranted ? "Granted" : "Not granted")
+                        .foregroundColor(settings.accessibilityGranted ? .green : .red)
+                    Button("Open System Settings") {
+                        openPane("Privacy_Accessibility")
+                    }
+                }
+            }
+            Section("Automation") {
+                HStack {
+                    VStack(alignment: .leading) {
+                        Text("Google Chrome")
+                        Text("Needed for seeking from the progress bar.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                    Button("Open System Settings") {
+                        openPane("Privacy_Automation")
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .navigationTitle("Permissions")
+        .padding()
+    }
+}
+
+private struct AboutSettingsView: View {
+    @ObservedObject private var settings = AuraSettings.shared
+    @State private var confirmReset = false
+    @State private var resetDone = false
+
+    private var appVersion: String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info?["CFBundleVersion"] as? String ?? "?"
+        return "\(short) (\(build))"
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                HStack {
+                    Text("Aura Island")
+                        .font(.headline)
+                    Spacer()
+                    Text(appVersion)
+                        .foregroundColor(.secondary)
+                }
+                Text("Dynamic island for Mac. Native, no webview.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            Section("Settings") {
+                HStack {
+                    Button(confirmReset ? "Click again to confirm" : "Reset all settings") {
+                        if confirmReset {
+                            settings.resetAllSettings()
+                            confirmReset = false
+                            resetDone = true
+                        } else {
+                            confirmReset = true
+                            resetDone = false
+                        }
+                    }
+                    if resetDone {
+                        Text("Defaults restored.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .navigationTitle("About")
         .padding()
     }
 }

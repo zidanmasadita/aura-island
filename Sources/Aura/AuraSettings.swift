@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import ServiceManagement
 
 /// UserDefaults-backed settings for Aura, exposed as an
@@ -130,5 +131,56 @@ final class AuraSettings: ObservableObject {
 
     func setSectionEnabled(_ page: IslandView.CardPage, _ enabled: Bool) {
         setBool("AuraSettings.section.\(page)", enabled)
+    }
+
+    // MARK: - Pill Alerts
+
+    /// Master switch for the closed-pill event alerts (battery,
+    /// volume, brightness, caps lock, bluetooth).
+    var pillAlertsEnabled: Bool {
+        get { bool("AuraSettings.pillAlertsEnabled", default: true) }
+        set { setBool("AuraSettings.pillAlertsEnabled", newValue) }
+    }
+
+    /// How long an alert stays on screen.
+    var pillAlertDuration: Double {
+        get { double("AuraSettings.pillAlertDuration", default: 1.5) }
+        set { setDouble("AuraSettings.pillAlertDuration", min(4, max(0.5, newValue))) }
+    }
+
+    var alertBattery: Bool {
+        get { bool("AuraSettings.alertBattery", default: true) }
+        set { setBool("AuraSettings.alertBattery", newValue) }
+    }
+    var alertVolume: Bool {
+        get { bool("AuraSettings.alertVolume", default: true) }
+        set { setBool("AuraSettings.alertVolume", newValue) }
+    }
+    var alertBrightness: Bool {
+        get { bool("AuraSettings.alertBrightness", default: true) }
+        set { setBool("AuraSettings.alertBrightness", newValue) }
+    }
+    var alertCapsLock: Bool {
+        get { bool("AuraSettings.alertCapsLock", default: true) }
+        set { setBool("AuraSettings.alertCapsLock", newValue) }
+    }
+    var alertBluetooth: Bool {
+        get { bool("AuraSettings.alertBluetooth", default: true) }
+        set { setBool("AuraSettings.alertBluetooth", newValue) }
+    }
+
+    // MARK: - Permissions (live state, not stored)
+
+    /// Accessibility trust drives overlap-hide and the media keys.
+    var accessibilityGranted: Bool { AXIsProcessTrusted() }
+
+    // MARK: - Maintenance
+
+    /// Removes every AuraSettings.* key, restoring defaults.
+    func resetAllSettings() {
+        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix("AuraSettings.") {
+            defaults.removeObject(forKey: key)
+        }
+        objectWillChange.send()
     }
 }

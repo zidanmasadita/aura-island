@@ -75,7 +75,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var prevVolume: (level: Double, muted: Bool)?
     private var prevBrightness: Double?
     /// How long a pill alert stays widened (wall clock).
-    private let pillAlertDuration: TimeInterval = 1.5
+    /// From Settings (Pill Alerts); live, no restart needed.
+    private var pillAlertDuration: TimeInterval { AuraSettings.shared.pillAlertDuration }
     /// How long after a charger plug/unplug brightness changes are
     /// treated as the power change's auto-adjust (absorbed, not
     /// alerted): macOS re-adjusts brightness on power-source
@@ -777,6 +778,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Bluetooth baseline advances even while a card is expanded;
         // the alert itself is presented only when no card is open.
         let btAlert = bluetoothAlert()
+        let alerts = AuraSettings.shared
+        guard alerts.pillAlertsEnabled else {
+            // Alerts off: keep every baseline fresh so re-enabling
+            // never fires a stale change, and drop a live alert.
+            if let battery { prevBattery = battery }
+            prevCaps = caps
+            if let volume { prevVolume = volume }
+            if let brightness { prevBrightness = brightness }
+            if islandView.pillAlert != nil {
+                islandView.pillAlert = nil
+                animator.animate(to: windowSize(for: islandView.state))
+            }
+            return
+        }
         // A charger plug/unplug also re-adjusts brightness (system
         // auto-adjust), which must not overwrite the charging
         // alert: remember the flip so brightness changes in the
@@ -786,10 +801,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         var fired = false
         if islandView.state != .expanded {
-            if let alert = batteryAlert(for: battery) { fired = presentAlert(alert) || fired }
-            if let alert = capsAlert(for: caps) { fired = presentAlert(alert) || fired }
-            if let alert = volumeAlert(for: volume), presentAlert(alert) { fired = true; prevVolume = volume }
-            if let powerChangeRecent = lastPowerChange, Date().timeIntervalSince(powerChangeRecent) < brightnessSuppressAfterPowerChange {
+            if alerts.alertBattery, let alert = batteryAlert(for: battery) { fired = presentAlert(alert) || fired }
+            if alerts.alertCapsLock, let alert = capsAlert(for: caps) { fired = presentAlert(alert) || fired }
+            if alerts.alertVolume, let alert = volumeAlert(for: volume), presentAlert(alert) { fired = true; prevVolume = volume }
+            if !alerts.alertBrightness {
+                // Brightness alerts off: absorb into the baseline so
+                // re-enabling never fires a stale change.
+                if let brightness { prevBrightness = brightness }
+                brightnessHoldSince = nil
+            } else if let powerChangeRecent = lastPowerChange, Date().timeIntervalSince(powerChangeRecent) < brightnessSuppressAfterPowerChange {
                 // Suppressed: absorb the auto-adjust into the
                 // baseline (a manual adjustment in this window is
                 // also absorbed — a 2s, rare tradeoff for keeping
@@ -829,7 +849,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } else {
                 brightnessHoldSince = nil
             }
-            if let alert = btAlert { fired = presentAlert(alert) || fired }
+            if alerts.alertBluetooth, let alert = btAlert { fired = presentAlert(alert) || fired }
             if fired {
                 animator.animate(to: windowSize(for: islandView.state))
             }
