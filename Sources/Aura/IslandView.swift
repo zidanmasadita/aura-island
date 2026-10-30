@@ -1634,8 +1634,9 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         // is in lyrics mode (closed from the lyrics page, showing the
         // lyric line). Every other card and pill stays plain black
         // (0.98), including the tray card and the music card.
-        let lyricsGradientActive = (state == .expanded && currentPage == .lyrics)
-            || (state != .expanded && lyricsMode)
+        let lyricsGradientActive = AuraSettings.shared.lyricsGradient
+            && ((state == .expanded && currentPage == .lyrics)
+                || (state != .expanded && lyricsMode))
         if lyricsGradientActive, let bottomColor = gradientBottomColor() {
             ctx.saveGState()
             ctx.addPath(path)
@@ -2105,12 +2106,19 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         // and the waveform ends 10pt before the right edge, so the
         // contents never hug the pill's border (at any width,
         // including mid-collapse-animation frames).
-        drawBatteryIcon(center: CGPoint(x: 30, y: midY), percent: batteryPercent, charging: batteryCharging)
-        drawCentered(Self.clockFormatter.string(from: Date()),
-                     font: NSFont.systemFont(ofSize: 15, weight: .semibold),
-                     color: .white, y: midY - 9)
-        let waveHeight: CGFloat = bounds.height <= 40 ? 14 : 20
-        drawWaveform(in: NSRect(x: bounds.width - 50, y: midY - waveHeight / 2, width: 28, height: waveHeight))
+        let appearance = AuraSettings.shared
+        if appearance.showBattery {
+            drawBatteryIcon(center: CGPoint(x: 30, y: midY), percent: batteryPercent, charging: batteryCharging)
+        }
+        if appearance.showClock {
+            drawCentered(Self.clockFormatter.string(from: Date()),
+                         font: NSFont.systemFont(ofSize: 15, weight: .semibold),
+                         color: .white, y: midY - 9)
+        }
+        if appearance.showWaveform {
+            let waveHeight: CGFloat = bounds.height <= 40 ? 14 : 20
+            drawWaveform(in: NSRect(x: bounds.width - 50, y: midY - waveHeight / 2, width: 28, height: waveHeight))
+        }
     }
 
     // MARK: - Expanded card

@@ -35,6 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pollTimer: Timer?
     private var lyricTimer: Timer?
     private var eyeTimer: Timer?
+    private var settingsController: SettingsWindowController?
     private var pillHiddenForOverlap = false
     /// Set by press-to-close, cleared on the next mouse exit.
     /// See handleHover: without it, closing fights hover-open
@@ -303,7 +304,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     let eyeX = window.frame.minX + (i == 0 ? 56.5 : 83.5)
                     let eyeY = window.frame.maxY - 16
                     let d = hypot(mouse.x - eyeX, mouse.y - eyeY)
-                    let t = max(0, min(1, (d - 12) / 98))
+                    let t = max(0, min(1, (d - 12) / (AuraSettings.shared.eyeFlinchRange - 12)))
                     target = t * t * (3 - 2 * t)
                 } else {
                     target = 1
@@ -378,7 +379,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Interaction
 
-    /// Hover auto-expand: 0.3s after a closed-pill hover opens
+    /// Hover auto-expand: hoverDelay after a closed-pill hover opens
     /// compact, the card opens on its own - the same as a
     /// click. Started on any hover into a closed pill;
     /// cancelled on hover exit, on click, and on any path
@@ -389,7 +390,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// the exact size.
     private func startHoverExpandTimer() {
         hoverExpandTimer?.invalidate()
-        hoverExpandTimer = Timer(timeInterval: 0.3, repeats: false) { [weak self] _ in
+        hoverExpandTimer = Timer(timeInterval: AuraSettings.shared.hoverDelay, repeats: false) { [weak self] _ in
             // Nil first: a guard failure below must not leave
             // a fired timer behind, or windowSize would keep
             // returning the bulged size for compact.
@@ -982,6 +983,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// visible while live.
     private func updateOverlapHiding() {
         guard islandView.state != .expanded,
+              AuraSettings.shared.overlapHideEnabled,
               !islandView.isDraggingOut, !islandView.isShowingModal,
               !islandView.trayDropHighlight, !islandView.isTrayBouncing,
               let screen = window.screen ?? NSScreen.main else { return }
@@ -1181,6 +1183,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let about = NSMenuItem(title: "About Aura Island", action: #selector(showAbout), keyEquivalent: "")
         about.target = self
         menu.addItem(about)
+        let settings = NSMenuItem(title: "Settings...", action: #selector(showSettings), keyEquivalent: ",")
+        settings.target = self
+        menu.addItem(settings)
         let quit = NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
@@ -1194,6 +1199,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.runModal()
     }
 
+
+    @objc private func showSettings() {
+        if settingsController == nil { settingsController = SettingsWindowController() }
+        settingsController?.show()
+    }
 
     @objc private func quitApp() {
         NSApplication.shared.terminate(nil)
