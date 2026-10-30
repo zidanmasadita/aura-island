@@ -145,15 +145,7 @@ private struct GeneralSettingsView: View {
                     get: { settings.overlapHideEnabled },
                     set: { settings.overlapHideEnabled = $0 }
                 ))
-                Picker("Display", selection: Binding(
-                    get: { settings.notchScreen },
-                    set: { settings.notchScreen = $0 }
-                )) {
-                    Text("Active monitor").tag(0)
-                    ForEach(1...max(NSScreen.screens.count, 1), id: \.self) { i in
-                        Text("Display \(i)").tag(i)
-                    }
-                }
+                DisplayPickerView()
                 Text("Pin the pill to a display instead of following the active monitor.")
                     .font(.caption)
                     .foregroundColor(.secondary)
@@ -163,6 +155,112 @@ private struct GeneralSettingsView: View {
         .tint(.red)
         .navigationTitle("General")
         .padding()
+    }
+}
+
+/// Visual display picker for the pill's display: the real monitor
+/// arrangement as clickable rectangles (like System Settings), plus
+/// an "Active monitor" row. No dropdown.
+private struct DisplayPickerView: View {
+    @ObservedObject private var settings = AuraSettings.shared
+
+    private struct DisplayItem {
+        let index: Int
+        let rect: CGRect
+        let screenSize: CGSize
+        let isMain: Bool
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            // Active-monitor mode: a full-width radio row.
+            Button {
+                settings.notchScreen = 0
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: settings.notchScreen == 0
+                          ? "checkmark.circle.fill" : "circle")
+                        .foregroundColor(settings.notchScreen == 0 ? .red : .secondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Active monitor")
+                        Text("The pill follows the focused app.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            // Pinned displays: the actual arrangement, clickable.
+            GeometryReader { geo in
+                ZStack {
+                    ForEach(displayRects(in: geo.size), id: \.index) { item in
+                        let selected = settings.notchScreen == item.index + 1
+                        Button {
+                            settings.notchScreen = item.index + 1
+                        } label: {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(selected ? Color.red.opacity(0.22)
+                                                  : Color.gray.opacity(0.18))
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(selected ? Color.red : Color.gray.opacity(0.6),
+                                            lineWidth: selected ? 2.5 : 1.5)
+                                VStack(spacing: 2) {
+                                    Text("Display \(item.index + 1)")
+                                        .font(.caption)
+                                        .fontWeight(selected ? .semibold : .regular)
+                                    Text("\(Int(item.screenSize.width))×\(Int(item.screenSize.height))")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                                // Mini pill: where Aura will sit.
+                                if selected || (settings.notchScreen == 0 && item.isMain) {
+                                    RoundedRectangle(cornerRadius: 3)
+                                        .fill(Color.black)
+                                        .frame(width: 26, height: 6)
+                                        .position(x: item.rect.width / 2, y: 9)
+                                }
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .frame(width: item.rect.width, height: item.rect.height)
+                        .position(x: item.rect.midX, y: item.rect.midY)
+                    }
+                }
+            }
+            .frame(height: 160)
+        }
+    }
+
+    /// Display rects in view coordinates, preserving the real
+    /// arrangement (flipped Y, scaled to fit, centered).
+    private func displayRects(in size: CGSize) -> [DisplayItem] {
+        let screens = NSScreen.screens
+        guard !screens.isEmpty, size.width > 0, size.height > 0 else { return [] }
+        let minX = screens.map { $0.frame.minX }.min() ?? 0
+        let maxX = screens.map { $0.frame.maxX }.max() ?? 1
+        let minY = screens.map { $0.frame.minY }.min() ?? 0
+        let maxY = screens.map { $0.frame.maxY }.max() ?? 1
+        let totalW = max(maxX - minX, 1)
+        let totalH = max(maxY - minY, 1)
+        let scale = min(size.width / totalW, size.height / totalH)
+        let ox = (size.width - totalW * scale) / 2
+        let oy = (size.height - totalH * scale) / 2
+        let main = NSScreen.main
+        return screens.enumerated().map { i, s in
+            let f = s.frame
+            return DisplayItem(
+                index: i,
+                rect: CGRect(
+                    x: ox + (f.minX - minX) * scale,
+                    y: oy + (maxY - f.maxY) * scale,
+                    width: max(f.width * scale, 24),
+                    height: max(f.height * scale, 16)),
+                screenSize: f.size,
+                isMain: s == main)
+        }
     }
 }
 
