@@ -243,6 +243,8 @@ private func sectionDisplayName(_ page: IslandView.CardPage) -> String {
 
 private struct SectionsSettingsView: View {
     @ObservedObject private var settings = AuraSettings.shared
+    // EditButton is iOS-only; macOS needs a manual edit-mode toggle.
+    @State private var isEditing = false
 
     var body: some View {
         List {
@@ -265,7 +267,10 @@ private struct SectionsSettingsView: View {
                     .foregroundColor(.secondary)
             }
         }
-        .toolbar { EditButton() }
+        .toolbar {
+            Button(isEditing ? "Done" : "Edit") { isEditing.toggle() }
+        }
+        .environment(\.editMode, .constant(isEditing ? .active : .inactive))
         .navigationTitle("Sections")
         .padding()
     }
