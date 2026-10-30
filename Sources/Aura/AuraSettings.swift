@@ -109,6 +109,13 @@ final class AuraSettings: ObservableObject {
         set { setBool("AuraSettings.lyricsEnabled", newValue) }
     }
 
+    /// Compact lyrics pill: when on, its width follows the lyric
+    /// line instead of staying fixed at 360.
+    var lyricsDynamicWidth: Bool {
+        get { bool("AuraSettings.lyricsDynamicWidth", default: true) }
+        set { setBool("AuraSettings.lyricsDynamicWidth", newValue) }
+    }
+
     /// Global lyric timing shift (seconds), applied on top of the
     /// per-track nudge. For recordings whose timestamps are all
     /// off by the same constant.

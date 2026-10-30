@@ -409,11 +409,29 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     /// still fits. A live pomodoro keeps the 160x32 pill (its ring +
     /// countdown are roomy there), so starting/stopping it resizes
     /// the pill between 160 and 180 (animated, like lyrics mode).
+    /// Compact lyrics pill layout: mascot left, the line centered
+    /// in the remaining space.
+    private var lyricsPillFont: NSFont { NSFont.systemFont(ofSize: 13, weight: .medium) }
+    private let lyricsMascotDrawSize: CGFloat = 26
+    private let lyricsTextX: CGFloat = 48 // 12 pad + 26 mascot + 10 gap
+    private let lyricsTextRightPad: CGFloat = 16
+
+    /// Width the closed lyrics pill wants. Fixed 360 unless the
+    /// dynamic-width option is on, in which case it hugs the line —
+    /// clamped so a one-word line never collapses the pill and a
+    /// very long line never stretches it across the screen.
+    var lyricsPillWidth: CGFloat {
+        guard AuraSettings.shared.lyricsDynamicWidth else { return 360 }
+        let line = lyricCurrent ?? session?.title ?? ""
+        let textW = (line as NSString).size(withAttributes: [.font: lyricsPillFont]).width
+        return min(max(lyricsTextX + min(textW, 380) + lyricsTextRightPad, 170), 444)
+    }
+
     /// AppDelegate uses this instead of the fixed state size for
     /// compact/split.
     var closedSize: NSSize {
         if isPomodoroActive { return NSSize(width: 160, height: 32) }
-        return lyricsMode ? NSSize(width: 360, height: 32) : NSSize(width: 180, height: 32)
+        return lyricsMode ? NSSize(width: lyricsPillWidth, height: 32) : NSSize(width: 180, height: 32)
     }
 
     enum CardPage { case music, lyrics, pomodoro, todo, water, tray, removeBg, convert, sources }
@@ -2104,11 +2122,15 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         // clock, battery icon, or waveform. Without a synced line, the
         // song title stands in.
         if lyricsMode, let session {
-            drawLyricsMascot(center: CGPoint(x: 28, y: midY), size: 22, playing: session.isPlaying)
+            drawLyricsMascot(center: CGPoint(x: 12 + lyricsMascotDrawSize / 2, y: midY),
+                             size: lyricsMascotDrawSize, playing: session.isPlaying)
             let line = lyricCurrent ?? session.title
-            let font = NSFont.systemFont(ofSize: 13, weight: .medium)
-            drawCentered(truncated(line, toWidth: 236, font: font),
-                         font: font, color: .white, y: midY - 8)
+            let font = lyricsPillFont
+            let textW = bounds.width - lyricsTextX - lyricsTextRightPad
+            let shown = truncated(line, toWidth: textW, font: font)
+            let w = (shown as NSString).size(withAttributes: [.font: font]).width
+            drawText(shown, font: font, color: .white,
+                     at: NSPoint(x: lyricsTextX + (textW - w) / 2, y: midY - 8))
             return
         }
         // The plain music pill is 180 wide: battery icon + clock +

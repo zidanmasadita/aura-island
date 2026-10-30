@@ -233,14 +233,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // this does not redraw needlessly. .common modes so it fires
         // during drags/scrolls too.
         lyricTimer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
-            guard let self, self.sessions.current != nil, !self.lyricsLines.isEmpty else { return }
-            self.refreshLyricLine()
-            // Mascot groove: keep the closed lyrics pill redrawing so
-            // the nod/blink animates even while the lyric line itself
-            // is static. 10fps is plenty for the gentle bob.
+            guard let self, self.sessions.current != nil else { return }
+            if !self.lyricsLines.isEmpty { self.refreshLyricLine() }
+            // Closed lyrics pill upkeep (10fps): the mascot's nod/blink
+            // needs continuous redraws, and the dynamic-width option
+            // needs the window to follow the line — a new line, a new
+            // track, or the option being toggled all land here.
             if self.islandView.isLyricsPill,
                self.islandView.state == .compact || self.islandView.state == .split {
                 self.islandView.needsDisplay = true
+                let target = self.windowSize(for: self.islandView.state)
+                if abs(target.width - self.islandView.bounds.width) > 1 {
+                    self.animator.animate(to: target)
+                }
             }
         }
         if let lyricTimer { RunLoop.main.add(lyricTimer, forMode: .common) }

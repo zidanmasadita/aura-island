@@ -203,6 +203,13 @@ private struct MusicLyricsSettingsView: View {
                     get: { settings.lyricsEnabled },
                     set: { settings.lyricsEnabled = $0 }
                 ))
+                Toggle("Dynamic pill width", isOn: Binding(
+                    get: { settings.lyricsDynamicWidth },
+                    set: { settings.lyricsDynamicWidth = $0 }
+                ))
+                Text("The compact lyrics pill resizes to fit each line.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
                 HStack {
                     Text("Global timing offset")
                     Slider(value: Binding(
