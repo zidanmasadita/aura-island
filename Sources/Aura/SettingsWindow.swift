@@ -241,10 +241,39 @@ private func sectionDisplayName(_ page: IslandView.CardPage) -> String {
     }
 }
 
+/// Manual drag-reorder for the sections list. macOS has no
+/// List edit mode (EditButton and \.editMode are iOS-only), so
+/// rows are rearranged with onDrag/onDrop directly.
+private struct SectionReorderDropDelegate: DropDelegate {
+    let target: IslandView.CardPage
+    let settings: AuraSettings
+    @Binding var dragging: IslandView.CardPage?
+
+    func dropEntered(info: DropInfo) {
+        guard let dragging, dragging != target else { return }
+        var order = settings.sectionOrder
+        let fromKey = "\(dragging)", toKey = "\(target)"
+        guard let from = order.firstIndex(of: fromKey),
+              let to = order.firstIndex(of: toKey),
+              from != to else { return }
+        let item = order.remove(at: from)
+        order.insert(item, at: to)
+        settings.sectionOrder = order
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        dragging = nil
+        return true
+    }
+}
+
 private struct SectionsSettingsView: View {
     @ObservedObject private var settings = AuraSettings.shared
-    // EditButton is iOS-only; macOS needs a manual edit-mode toggle.
-    @State private var isEditing = false
+    @State private var draggingPage: IslandView.CardPage?
 
     var body: some View {
         List {
@@ -254,23 +283,23 @@ private struct SectionsSettingsView: View {
                         get: { settings.isSectionEnabled(page) },
                         set: { settings.setSectionEnabled(page, $0) }
                     ))
-                }
-                .onMove { from, to in
-                    var order = settings.sectionOrder
-                    order.move(fromOffsets: from, toOffset: to)
-                    settings.sectionOrder = order
+                    .onDrag {
+                        draggingPage = page
+                        return NSItemProvider(object: "\(page)" as NSString)
+                    }
+                    .onDrop(of: [.text], delegate: SectionReorderDropDelegate(
+                        target: page,
+                        settings: settings,
+                        dragging: $draggingPage
+                    ))
                 }
             }
             Section {
-                Text("Tap Edit, then drag to reorder. The dots and swipe follow this order. Hidden sections disappear from the dots and swipe; if every section is hidden, Music stays as a fallback.")
+                Text("Drag rows to reorder. The dots and swipe follow this order. Hidden sections disappear from the dots and swipe; if every section is hidden, Music stays as a fallback.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
         }
-        .toolbar {
-            Button(isEditing ? "Done" : "Edit") { isEditing.toggle() }
-        }
-        .environment(\.editMode, .constant(isEditing ? .active : .inactive))
         .navigationTitle("Sections")
         .padding()
     }
