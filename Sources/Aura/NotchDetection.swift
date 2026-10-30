@@ -9,9 +9,9 @@ import AppKit
 /// - `width`/`height` come from the auxiliary top areas (macOS 12+):
 ///   the notch is whatever is left between the left and right menu-bar
 ///   areas. On a notchless screen both are 0.
-/// - Detection follows `NSScreen.main`, the screen Aura already lives
-///   on, so a notchless external monitor as main still gets the
-///   floating pill, and a notched built-in as main gets the merged
+/// - Detection follows the pill's target display (the pinned display,
+///   or the active monitor), so a notchless external monitor still
+///   gets the floating pill, and a notched built-in gets the merged
 ///   layout. It is re-read on every call, so a screen change is
 ///   picked up the next time the window is placed or resized.
 /// - Debug preview on a notchless Mac: `defaults write
@@ -23,10 +23,14 @@ struct HardwareNotch {
     let width: CGFloat
     let height: CGFloat
 
-    static func forMainScreen() -> HardwareNotch {
-        guard let screen = NSScreen.main else {
+    static func forPillScreen() -> HardwareNotch {
+        guard let screen = IslandWindow.targetScreen() else {
             return HardwareNotch(hasNotch: false, width: 0, height: 0)
         }
+        return forScreen(screen)
+    }
+
+    static func forScreen(_ screen: NSScreen) -> HardwareNotch {
         if let left = screen.auxiliaryTopLeftArea,
            let right = screen.auxiliaryTopRightArea {
             let width = screen.frame.width - (left.width + right.width)

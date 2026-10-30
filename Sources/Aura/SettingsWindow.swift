@@ -145,6 +145,18 @@ private struct GeneralSettingsView: View {
                     get: { settings.overlapHideEnabled },
                     set: { settings.overlapHideEnabled = $0 }
                 ))
+                Picker("Display", selection: Binding(
+                    get: { settings.notchScreen },
+                    set: { settings.notchScreen = $0 }
+                )) {
+                    Text("Active monitor").tag(0)
+                    ForEach(1...max(NSScreen.screens.count, 1), id: \.self) { i in
+                        Text("Display \(i)").tag(i)
+                    }
+                }
+                Text("Pin the pill to a display instead of following the active monitor.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
         }
         .formStyle(.grouped)

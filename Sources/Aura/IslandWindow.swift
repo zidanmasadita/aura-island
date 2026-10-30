@@ -30,13 +30,25 @@ final class IslandWindow: NSWindow {
         ignoresMouseEvents = false
     }
 
+    /// The screen the pill belongs on: the pinned display when the
+    /// notchScreen setting names an attached one, otherwise the
+    /// active monitor (NSScreen.main).
+    static func targetScreen() -> NSScreen? {
+        let screens = NSScreen.screens
+        let pinned = AuraSettings.shared.notchScreen
+        if pinned >= 1, pinned - 1 < screens.count {
+            return screens[pinned - 1]
+        }
+        return NSScreen.main ?? screens.first
+    }
+
     /// Top Y for a window of this height on this screen. Notchless:
     /// flush against the menu bar, as before (visibleFrame.maxY, +1
     /// tuck so no hairline gap can show). Notched: flush against the
     /// top of the physical screen, so the pill merges with the
     /// hardware notch instead of floating as a second pill below it.
     static func topY(forHeight h: CGFloat, on screen: NSScreen) -> CGFloat {
-        if HardwareNotch.forMainScreen().hasNotch {
+        if HardwareNotch.forScreen(screen).hasNotch {
             return screen.frame.maxY - h
         }
         return screen.visibleFrame.maxY - h + 1
@@ -45,7 +57,7 @@ final class IslandWindow: NSWindow {
     /// Position the window centered horizontally, flush against the menu
     /// bar so the card reads as a notch, not a floating pill.
     func placeAtTopCenter() {
-        guard let screen = NSScreen.main else { return }
+        guard let screen = Self.targetScreen() else { return }
         let w = frame.width
         let h = frame.height
         // Physical center, not visibleFrame center: a side Dock
@@ -88,20 +100,19 @@ final class IslandAnimator {
         guard let window else { return }
         timer?.invalidate()
         from = window.frame
-        // Re-anchor to the screen's physical center on every
-        // resize, instead of preserving the current midX: the
-        // pill is defined as top-center, so any drift (e.g. from
-        // an earlier visibleFrame-anchored placement) heals on
-        // the next open/close instead of living forever. The
-        // window's own screen wins over NSScreen.main on
-        // multi-monitor setups.
-        let screen = window.screen ?? NSScreen.main
+        // Re-anchor to the target display's physical center on
+        // every resize, instead of preserving the current midX: the
+        // pill is defined as top-center of its display, so any drift
+        // (e.g. from an earlier visibleFrame-anchored placement, or a
+        // display being plugged/unplugged) heals on the next
+        // open/close instead of living forever.
+        let screen = IslandWindow.targetScreen() ?? window.screen ?? NSScreen.main
         let centerX = screen?.frame.midX ?? window.frame.midX
         let x = centerX - size.width / 2
         let y: CGFloat
         if let yOverride {
             y = yOverride
-        } else if let screen = NSScreen.main {
+        } else if let screen {
             y = IslandWindow.topY(forHeight: size.height, on: screen)
         } else {
             y = window.frame.minY

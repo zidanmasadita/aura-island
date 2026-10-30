@@ -27,6 +27,13 @@ final class AuraSettings: ObservableObject {
         defaults.set(value, forKey: key)
         objectWillChange.send()
     }
+    private func int(_ key: String, default defaultValue: Int) -> Int {
+        defaults.object(forKey: key) as? Int ?? defaultValue
+    }
+    private func setInt(_ key: String, _ value: Int) {
+        defaults.set(value, forKey: key)
+        objectWillChange.send()
+    }
 
     // MARK: - General
 
@@ -67,6 +74,22 @@ final class AuraSettings: ObservableObject {
     var overlapHideEnabled: Bool {
         get { bool("AuraSettings.overlapHideEnabled", default: true) }
         set { setBool("AuraSettings.overlapHideEnabled", newValue) }
+    }
+
+    /// Posted when notchScreen changes so AppDelegate can glide the
+    /// pill to its new display.
+    static let notchScreenChanged = Notification.Name("AuraNotchScreenChanged")
+
+    /// Which display the pill lives on: 0 = active monitor (follows
+    /// the key window, the long-standing behavior), 1...n = pinned
+    /// display in NSScreen.screens order. A pinned display that is
+    /// no longer attached falls back to the active monitor.
+    var notchScreen: Int {
+        get { int("AuraSettings.notchScreen", default: 0) }
+        set {
+            setInt("AuraSettings.notchScreen", newValue)
+            NotificationCenter.default.post(name: Self.notchScreenChanged, object: nil)
+        }
     }
 
     // MARK: - Appearance

@@ -187,12 +187,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // or the window being placed/constrained elsewhere
         // (hasNotch=true but Y wrong). No behavior change.
         print("[Aura] Overlap hide v3: direct 6px strip, setState clears flag only on state change")
-        if let screen = NSScreen.main {
-            let notch = HardwareNotch.forMainScreen()
+        if let screen = IslandWindow.targetScreen() {
+            let notch = HardwareNotch.forPillScreen()
             print("[Aura] Notch: hasNotch=\(notch.hasNotch) width=\(notch.width) height=\(notch.height) frame=\(screen.frame) visibleFrame=\(screen.visibleFrame) auxLeft=\(String(describing: screen.auxiliaryTopLeftArea)) auxRight=\(String(describing: screen.auxiliaryTopRightArea)) safeTop=\(screen.safeAreaInsets.top)")
         }
         window.placeAtTopCenter()
         window.orderFrontRegardless()
+        // Pinned display: glide the pill over when the setting
+        // changes, or when a display is plugged/unplugged.
+        NotificationCenter.default.addObserver(
+            forName: AuraSettings.notchScreenChanged, object: nil, queue: .main
+        ) { [weak self] _ in self?.movePillToTargetScreen() }
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in self?.movePillToTargetScreen() }
 
         setupStatusItem()
         // Event-driven refresh from the system sensor, so the island
@@ -570,6 +579,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         animator.animate(to: windowSize(for: state))
     }
 
+    /// Glide the pill to its target display (pinned or active). The
+    /// animator re-anchors X on every call, so this is a no-op when
+    /// nothing changed. An open card is left alone — it re-anchors
+    /// on close. An overlap-hidden pill keeps its 6px strip instead
+    /// of popping back open.
+    private func movePillToTargetScreen() {
+        guard islandView.state != .expanded else { return }
+        let size = windowSize(for: islandView.state)
+        animator.animate(to: pillHiddenForOverlap
+            ? NSSize(width: size.width, height: 6) : size)
+    }
+
     /// Window size for a state. A live pill alert widens every
     /// closed pill to 360x32 — horizontal only, the height never
     /// changes for an alert. An expanded card is never overridden:
@@ -587,7 +608,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // both sides of the pill. Expanded cards are already wider
         // than any notch, so they are left alone.
         if state != .expanded {
-            let notch = HardwareNotch.forMainScreen()
+            let notch = HardwareNotch.forPillScreen()
             if notch.hasNotch {
                 base.width = max(base.width, notch.width)
             }
@@ -1023,7 +1044,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
               AuraSettings.shared.overlapHideEnabled,
               !islandView.isDraggingOut, !islandView.isShowingModal,
               !islandView.trayDropHighlight, !islandView.isTrayBouncing,
-              let screen = window.screen ?? NSScreen.main else { return }
+              let screen = IslandWindow.targetScreen() ?? window.screen ?? NSScreen.main
+        else { return }
         // Lyrics exception: once the user has opened lyrics, the
         // inactive lyrics pill is never overlap-hidden — it exists
         // to keep the lyric line visible. If it was hidden before
