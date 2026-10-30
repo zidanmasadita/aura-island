@@ -2099,12 +2099,12 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
                          y: midY - 9)
             return
         }
-        // Lyrics mode (card was closed from the lyrics page): note icon
+        // Lyrics mode (card was closed from the lyrics page): mascot
         // + current lyric line, the line centered on the pill — never
         // clock, battery icon, or waveform. Without a synced line, the
         // song title stands in.
         if lyricsMode, let session {
-            drawSymbol("music.note", size: 20, center: CGPoint(x: 28, y: midY), fallback: "♪")
+            drawLyricsMascot(center: CGPoint(x: 28, y: midY), size: 22)
             let line = lyricCurrent ?? session.title
             let font = NSFont.systemFont(ofSize: 13, weight: .medium)
             drawCentered(truncated(line, toWidth: 236, font: font),
@@ -2589,6 +2589,34 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             Self.symbolCache[key] = img
         }
         drawImageUpright(img, in: rect)
+    }
+
+    /// Lyrics mascot: the white headset-wearing mascot, replacing
+    /// the music-note glyph in the compact lyrics pill. Loaded once
+    /// from the bundle; drawn clipped to a circle so its gray
+    /// backdrop never shows as a tile on the black pill. Falls back
+    /// to the note glyph when the asset is missing (old package script).
+    private static var lyricsMascot: NSImage? = {
+        guard let path = Bundle.main.path(forResource: "AuraLyricsMascot", ofType: "png"),
+              let img = NSImage(contentsOfFile: path) else { return nil }
+        return img
+    }()
+
+    private func drawLyricsMascot(center: CGPoint, size: CGFloat) {
+        guard let img = Self.lyricsMascot else {
+            drawSymbol("music.note", size: size, center: center, fallback: "♪")
+            return
+        }
+        let rect = NSRect(x: center.x - size / 2, y: center.y - size / 2, width: size, height: size)
+        guard let ctx = NSGraphicsContext.current?.cgContext else {
+            drawImageUpright(img, in: rect)
+            return
+        }
+        ctx.saveGState()
+        ctx.addPath(CGPath(ellipseIn: rect, transform: nil))
+        ctx.clip()
+        drawImageUpright(img, in: rect)
+        ctx.restoreGState()
     }
 
     private func drawCenteredText(_ text: String, font: NSFont, color: NSColor, center: CGPoint) {

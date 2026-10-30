@@ -11,6 +11,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp ".build/release/Aura" "$APP/Contents/MacOS/Aura"
 cp "Assets/AuraLogo.png" "$APP/Contents/Resources/AuraLogo.png"
+cp "Assets/AuraLyricsMascot.png" "$APP/Contents/Resources/AuraLyricsMascot.png"
 
 # App icon (.icns) from the same logo, via the standard macOS tools.
 ICONSET="$APP/Contents/Resources/Aura.iconset"
