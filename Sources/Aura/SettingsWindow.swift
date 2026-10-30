@@ -254,12 +254,18 @@ private struct SectionsSettingsView: View {
         List {
             Section("Card sections") {
                 // On macOS, .onMove on a ForEach enables drag-reorder
-                // directly — no edit mode needed (unlike iOS).
+                // directly — no edit mode needed (unlike iOS). The
+                // grip icon marks each row as draggable.
                 ForEach(settings.orderedToggleableSections, id: \.self) { page in
-                    Toggle(sectionDisplayName(page), isOn: Binding(
-                        get: { settings.isSectionEnabled(page) },
-                        set: { settings.setSectionEnabled(page, $0) }
-                    ))
+                    HStack {
+                        Image(systemName: "line.3.horizontal")
+                            .foregroundColor(.secondary)
+                        Toggle(sectionDisplayName(page), isOn: Binding(
+                            get: { settings.isSectionEnabled(page) },
+                            set: { settings.setSectionEnabled(page, $0) }
+                        ))
+                    }
+                    .padding(.vertical, 6)
                 }
                 .onMove { from, to in
                     var order = settings.sectionOrder
