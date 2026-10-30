@@ -48,6 +48,14 @@ final class AuraSettings: ObservableObject {
     }
     @Published var launchAtLoginError: String?
 
+    /// Whether hovering the pill opens it. When off, only a
+    /// click opens the pill (the overlap tip still reopens on
+    /// hover — it is the only way back besides clicking 6px).
+    var openOnHover: Bool {
+        get { bool("AuraSettings.openOnHover", default: true) }
+        set { setBool("AuraSettings.openOnHover", newValue) }
+    }
+
     /// Seconds of sustained hover before the card auto-opens.
     var hoverDelay: Double {
         get { double("AuraSettings.hoverDelay", default: 0.3) }
@@ -131,6 +139,34 @@ final class AuraSettings: ObservableObject {
 
     func setSectionEnabled(_ page: IslandView.CardPage, _ enabled: Bool) {
         setBool("AuraSettings.section.\(page)", enabled)
+    }
+
+    /// Display order of the card sections, as section keys
+    /// ("music", "pomodoro", ...). Unknown keys are dropped and
+    /// missing ones appended, so a future section never vanishes.
+    static let defaultSectionOrder: [String] = ["music", "pomodoro", "todo", "water", "tray", "removeBg", "convert"]
+
+    var sectionOrder: [String] {
+        get {
+            let stored = defaults.stringArray(forKey: "AuraSettings.sectionOrder") ?? []
+            let known = stored.filter { key in
+                Self.toggleableSections.contains(where: { "\($0)" == key })
+            }
+            let missing = Self.defaultSectionOrder.filter { !known.contains($0) }
+            return known + missing
+        }
+        set {
+            defaults.set(newValue, forKey: "AuraSettings.sectionOrder")
+            objectWillChange.send()
+        }
+    }
+
+    /// Toggleable sections in the user's order, for the
+    /// reorderable settings list.
+    var orderedToggleableSections: [IslandView.CardPage] {
+        sectionOrder.compactMap { key in
+            Self.toggleableSections.first(where: { "\($0)" == key })
+        }
     }
 
     // MARK: - Pill Alerts

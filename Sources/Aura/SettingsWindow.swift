@@ -56,6 +56,17 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .about: "info.circle"
         }
     }
+    var tint: Color {
+        switch self {
+        case .general: .gray
+        case .appearance: .blue
+        case .musicLyrics: .pink
+        case .sections: .purple
+        case .pillAlerts: .orange
+        case .permissions: .green
+        case .about: .gray
+        }
+    }
 }
 
 private struct SettingsRootView: View {
@@ -64,7 +75,15 @@ private struct SettingsRootView: View {
     var body: some View {
         NavigationSplitView {
             List(SettingsSection.allCases, selection: $selection) { section in
-                Label(section.title, systemImage: section.icon)
+                Label {
+                    Text(section.title)
+                } icon: {
+                    Image(systemName: section.icon)
+                        .foregroundColor(.white)
+                        .frame(width: 28, height: 28)
+                        .background(section.tint)
+                        .cornerRadius(7)
+                }
             }
             .navigationSplitViewColumnWidth(min: 180, ideal: 200)
         } detail: {
@@ -99,6 +118,10 @@ private struct GeneralSettingsView: View {
                 }
             }
             Section("Hover") {
+                Toggle("Open on hover", isOn: Binding(
+                    get: { settings.openOnHover },
+                    set: { settings.openOnHover = $0 }
+                ))
                 HStack {
                     Text("Auto-expand delay")
                     Slider(value: Binding(
@@ -109,6 +132,10 @@ private struct GeneralSettingsView: View {
                         .frame(width: 52, alignment: .trailing)
                         .monospacedDigit()
                 }
+                .disabled(!settings.openOnHover)
+                Text("When off, click the pill to open it.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
             Section("Pill") {
                 Toggle("Hide pill under other apps' content", isOn: Binding(
@@ -218,22 +245,27 @@ private struct SectionsSettingsView: View {
     @ObservedObject private var settings = AuraSettings.shared
 
     var body: some View {
-        Form {
+        List {
             Section("Card sections") {
-                ForEach(AuraSettings.toggleableSections, id: \.self) { page in
+                ForEach(settings.orderedToggleableSections, id: \.self) { page in
                     Toggle(sectionDisplayName(page), isOn: Binding(
                         get: { settings.isSectionEnabled(page) },
                         set: { settings.setSectionEnabled(page, $0) }
                     ))
                 }
+                .onMove { from, to in
+                    var order = settings.sectionOrder
+                    order.move(fromOffsets: from, toOffset: to)
+                    settings.sectionOrder = order
+                }
             }
             Section {
-                Text("Hidden sections disappear from the dots and swipe. If every section is hidden, Music stays as a fallback.")
+                Text("Tap Edit, then drag to reorder. The dots and swipe follow this order. Hidden sections disappear from the dots and swipe; if every section is hidden, Music stays as a fallback.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
         }
-        .formStyle(.grouped)
+        .toolbar { EditButton() }
         .navigationTitle("Sections")
         .padding()
     }

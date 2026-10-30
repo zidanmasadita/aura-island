@@ -428,6 +428,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if suppressHoverOpenAfterClickClose {
                 return
             }
+            // "Open on hover" setting: when off, the pill only
+            // opens on click. The overlap tip still reopens on
+            // hover above (it is the only way back besides
+            // clicking a 6px strip).
+            guard AuraSettings.shared.openOnHover else { return }
             // Hover always opens compact first, then the card on
             // its own after 0.3s of sustained hover (see
             // startHoverExpandTimer) - whether or not music is

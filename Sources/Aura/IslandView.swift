@@ -425,9 +425,14 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     /// never land on it; that was the old chevron's mistake (it
     /// jumped to lyrics).
     private var availableSections: [CardPage] {
-        let base: [CardPage] = sessionsForPicker.count > 1 ? [.music, .pomodoro, .todo, .water, .tray, .removeBg, .convert, .sources] : [.music, .pomodoro, .todo, .water, .tray, .removeBg, .convert]
-        let filtered = base.filter { AuraSettings.shared.isSectionEnabled($0) }
-        return filtered.isEmpty ? [.music] : filtered
+        let settings = AuraSettings.shared
+        let ordered = settings.sectionOrder.compactMap { key -> CardPage? in
+            guard let page = AuraSettings.toggleableSections.first(where: { "\($0)" == key }) else { return nil }
+            return settings.isSectionEnabled(page) ? page : nil
+        }
+        var sections = ordered
+        if sessionsForPicker.count > 1 { sections.append(.sources) }
+        return sections.isEmpty ? [.music] : sections
     }
 
     /// The page actually drawn (lyrics included). Sources falls back
