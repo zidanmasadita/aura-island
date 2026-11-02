@@ -627,6 +627,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return NSSize(width: base.width * IslandView.bounceHeadroomFactor,
                           height: base.height * IslandView.bounceHeadroomFactor)
         }
+        // Windows parity: apply notchScale (pill size multiplier)
+        let scale = AuraSettings.shared.notchScale
+        if scale != 1.0 {
+            base.width *= scale
+            base.height *= scale
+        }
         return base
     }
 
@@ -1042,55 +1048,116 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// visible while live.
     /// Windows parity: apply pill opacity, hide-in-fullscreen, minimal-notch (peek),
     /// and dodge. Called from the 1s tick alongside overlap hiding.
+    // MARK: - Windows parity hiding
+
+    /// Tracks why the pill is peeked (for Windows-parity features).
+    private var parityPeekReason: String? = nil
+    private var dodgeTriggerTime: Date? = nil
+
     private func updateWindowsParityHiding() {
         let s = AuraSettings.shared
-        // Opacity
+        // Opacity: apply live
         if abs(window.alphaValue - s.pillOpacity) > 0.01 {
             window.alphaValue = s.pillOpacity
         }
-        // Hide in fullscreen: check if frontmost app covers the screen
-        if s.hideInFullscreen && islandView.state != .expanded && !isHovering {
-            if let frontApp = NSWorkspace.shared.frontmostApplication,
-               frontApp.bundleIdentifier != Bundle.main.bundleIdentifier {
-                // Check if any window of the front app is fullscreen
-                // (simplified: check if the pill screen's frame is covered)
-                if let screen = IslandWindow.targetScreen() ?? NSScreen.main {
-                    let screenFrame = screen.frame
-                    // Use Accessibility to check frontmost window frame
-                    // For now, approximate: if the front app is a known fullscreen
-                    // app (games, video players), hide. A proper check needs AX.
-                    // TODO: Implement AX-based fullscreen detection like OverlapDetector
-                    _ = screenFrame
+
+        let isIdle = islandView.state != .expanded && !isHovering
+            && islandView.pillAlert == nil && !islandView.isLyricsPill
+            && !islandView.isDraggingOut && !islandView.isShowingModal
+
+        // Determine if we should peek for Windows-parity reasons
+        var shouldPeek: String? = nil
+        if isIdle {
+            // Minimal notch: always peek when idle
+            if s.minimalNotch {
+                shouldPeek = "minimalNotch"
+            }
+            // Hide in fullscreen: check via Accessibility
+            else if s.hideInFullscreen && isFrontmostFullscreen() {
+                shouldPeek = "fullscreen"
+            }
+            // Dodge: cursor within radius
+            else if s.dodgeEnabled {
+                let mouse = NSEvent.mouseLocation
+                let pillFrame = window.frame
+                // Distance from cursor to pill rect (top-center area)
+                let pillTopCenter = NSPoint(x: pillFrame.midX, y: pillFrame.maxY)
+                let dx = mouse.x - pillTopCenter.x
+                let dy = mouse.y - pillTopCenter.y
+                // Only consider cursor below the pill (dy < 0 means below in flipped coords)
+                // Actually NSEvent.mouseLocation is in screen coords (origin bottom-left)
+                // Pill is at top, so cursor below pill has y < pillTopCenter.y
+                let dist = sqrt(dx*dx + dy*dy)
+                if dist < s.dodgeRadius {
+                    if dodgeTriggerTime == nil {
+                        dodgeTriggerTime = Date()
+                    }
+                    let elapsed = Date().timeIntervalSince(dodgeTriggerTime!) * 1000
+                    if elapsed >= s.dodgeDelay {
+                        shouldPeek = "dodge"
+                    }
+                } else {
+                    dodgeTriggerTime = nil
+                }
+            }
+        } else {
+            dodgeTriggerTime = nil
+        }
+
+        // Apply or clear the peek
+        if let reason = shouldPeek {
+            if parityPeekReason != reason {
+                parityPeekReason = reason
+                // Peek: slide up leaving 6px tip (like overlap-hide)
+                let size = windowSize(for: islandView.state)
+                animator.animate(to: NSSize(width: size.width, height: 6))
+                islandView.isOverlapHidden = true
+            }
+        } else {
+            if parityPeekReason != nil {
+                parityPeekReason = nil
+                dodgeTriggerTime = nil
+                // Restore only if not hidden for overlap (don't fight overlap-hide)
+                if !pillHiddenForOverlap {
+                    islandView.isOverlapHidden = false
+                    animator.animate(to: windowSize(for: islandView.state))
                 }
             }
         }
-        // Minimal notch: always peek when idle (not expanded, not hovering)
-        if s.minimalNotch && islandView.state != .expanded && !isHovering
-            && islandView.pillAlert == nil && !islandView.isLyricsPill {
-            // Reuse the overlap-hide peek mechanism
-            if !pillHiddenForOverlap {
-                pillHiddenForOverlap = true
-                islandView.isOverlapHidden = true
-                // Animate to peek (6px tip, like overlap-hide)
-                let size = windowSize(for: islandView.state)
-                animator.animate(to: NSSize(width: size.width, height: 6))
+    }
+
+    /// Check if the frontmost app is fullscreen via Accessibility.
+    private func isFrontmostFullscreen() -> Bool {
+        guard let screen = IslandWindow.targetScreen() ?? NSScreen.main else { return false }
+        let screenFrame = screen.frame
+        // Get frontmost app's windows via AX
+        guard let frontApp = NSWorkspace.shared.frontmostApplication,
+              frontApp.bundleIdentifier != Bundle.main.bundleIdentifier else { return false }
+        let appRef = AXUIElementCreateApplication(frontApp.processIdentifier)
+        var windowsRef: CFTypeRef?
+        let err = AXUIElementCopyAttributeValue(appRef, kAXWindowsAttribute as CFString, &windowsRef)
+        guard err == .success, let windows = windowsRef as? [AXUIElement], !windows.isEmpty else { return false }
+        for win in windows {
+            var posRef: CFTypeRef?
+            var sizeRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(win, kAXPositionAttribute as CFString, &posRef) == .success,
+                  AXUIElementCopyAttributeValue(win, kAXSizeAttribute as CFString, &sizeRef) == .success else { continue }
+            var pos = CGPoint.zero
+            var size = CGSize.zero
+            if let posVal = posRef as? AXValue, let sizeVal = sizeRef as? AXValue {
+                AXValueGetValue(posVal, .cgPoint, &pos)
+                AXValueGetValue(sizeVal, .cgSize, &size)
+                let winFrame = NSRect(origin: pos, size: size)
+                // Fullscreen if window covers the screen (with 2px tolerance)
+                if abs(winFrame.minX - screenFrame.minX) < 2 &&
+                   abs(winFrame.minY - screenFrame.minY) < 2 &&
+                   abs(winFrame.width - screenFrame.width) < 2 &&
+                   abs(winFrame.height - screenFrame.height) < 2 {
+                    return true
+                }
             }
-            return
         }
-        // Dodge: hide when cursor is within radius
-        if s.dodgeEnabled && islandView.state != .expanded && !isHovering
-            && islandView.pillAlert == nil {
-            let mouse = NSEvent.mouseLocation
-            let pillFrame = window.frame
-            let pillCenter = NSPoint(x: pillFrame.midX, y: pillFrame.maxY)
-            let dx = mouse.x - pillCenter.x
-            let dy = mouse.y - pillCenter.y
-            let dist = sqrt(dx*dx + dy*dy)
-            if dist < s.dodgeRadius {
-                // TODO: implement dodge delay timer, then peek
-                _ = dist
-            }
-        }
+        return false
     }
 
     private func updateOverlapHiding() {
