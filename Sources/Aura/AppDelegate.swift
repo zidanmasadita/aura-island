@@ -1144,7 +1144,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                   AXUIElementCopyAttributeValue(win, kAXSizeAttribute as CFString, &sizeRef) == .success else { continue }
             var pos = CGPoint.zero
             var size = CGSize.zero
-            if let posVal = posRef as? AXValue, let sizeVal = sizeRef as? AXValue {
+            if let posRef, let sizeRef,
+               CFGetTypeID(posRef) == AXValueGetTypeID(),
+               CFGetTypeID(sizeRef) == AXValueGetTypeID() {
+                let posVal = unsafeBitCast(posRef, to: AXValue.self)
+                let sizeVal = unsafeBitCast(sizeRef, to: AXValue.self)
                 AXValueGetValue(posVal, .cgPoint, &pos)
                 AXValueGetValue(sizeVal, .cgSize, &size)
                 let winFrame = NSRect(origin: pos, size: size)
