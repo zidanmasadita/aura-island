@@ -2941,7 +2941,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             return (task: task,
                     pillRect: NSRect(x: 280, y: y, width: 320, height: 32),
                     rowRect: NSRect(x: 280, y: y, width: 288, height: 32),
-                    deleteRect: NSRect(x: 576, y: y, width: 24, height: 32))
+                    deleteRect: NSRect(x: 476, y: y, width: 24, height: 32))
         }
     }
 
@@ -3063,7 +3063,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     /// Input row: full-width below the add pill, y160-192, inside
     /// the 640x220 todo card with room for the hint at y196.
     private func todoInputRect() -> NSRect {
-        NSRect(x: 28, y: 160, width: 584, height: 32)
+        NSRect(x: 28, y: 140, width: 484, height: 32)
     }
 
     /// Starts inline editing. The window must become key for the
@@ -3428,15 +3428,15 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     /// be opened from share mode without leaving it for the
     /// right-click menu.
     private func trayShareMethodRects() -> (airDrop: NSRect, lan: NSRect, open: NSRect) {
-        (airDrop: NSRect(x: 28, y: 84, width: 572, height: 32),
-         lan: NSRect(x: 28, y: 124, width: 572, height: 32),
-         open: NSRect(x: 28, y: 164, width: 572, height: 32))
+        (airDrop: NSRect(x: 28, y: 84, width: 484, height: 32),
+         lan: NSRect(x: 28, y: 124, width: 484, height: 32),
+         open: NSRect(x: 28, y: 164, width: 484, height: 32))
     }
 
     /// LAN peer rows in share mode (max 3).
     private func traySharePeerRects() -> [(peer: LANPeer, rect: NSRect)] {
         lanPeers.prefix(3).enumerated().map { i, peer in
-            (peer: peer, rect: NSRect(x: 28, y: 84 + CGFloat(i) * 40, width: 572, height: 32))
+            (peer: peer, rect: NSRect(x: 28, y: 84 + CGFloat(i) * 40, width: 484, height: 32))
         }
     }
 
@@ -3658,7 +3658,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     }
 
     private func drawRemoveBg() {
-        drawCardHeader(width: 640, showWaveform: false)
+        drawCardHeader(width: 540, showWaveform: false)
         drawText("Remove BG", font: NSFont.boldSystemFont(ofSize: 20), color: .white,
                  at: NSPoint(x: 28, y: 10))
         let modelPill = removeBgModelPillRect()
@@ -3761,7 +3761,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         }
         // Drop highlight, on top of everything else in the section.
         if removeBgDropHighlight {
-            let zone = NSRect(x: 28, y: 48, width: 572, height: 180)
+            let zone = NSRect(x: 28, y: 52, width: 484, height: 100)
             NSColor.white.withAlphaComponent(0.08).setFill()
             NSBezierPath(roundedRect: zone, xRadius: 16, yRadius: 16).fill()
             let dashed = NSBezierPath(roundedRect: zone, xRadius: 16, yRadius: 16)
@@ -3807,7 +3807,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         let label = "Model: \(removeBgModel.displayName) \u{25be}"
         let font = NSFont.systemFont(ofSize: 13, weight: .medium)
         let width = (label as NSString).size(withAttributes: [.font: font]).width + 24
-        return NSRect(x: 600 - width, y: 10, width: width, height: 28)
+        return NSRect(x: 512 - width, y: 10, width: width, height: 28)
     }
 
     private func showRemoveBgModelMenu(at point: CGPoint) {
@@ -4222,7 +4222,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     }
 
     private func drawConvert() {
-        drawCardHeader(width: 640, showWaveform: false)
+        drawCardHeader(width: 540, showWaveform: false)
         drawText("Convert", font: NSFont.boldSystemFont(ofSize: 20), color: .white,
                  at: NSPoint(x: 28, y: 10))
         // Tool pills: active = solid white + black text (Save
@@ -4522,7 +4522,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         }
         // Drop highlight, on top of everything else in the section.
         if convertDropHighlight {
-            let zone = NSRect(x: 28, y: 72, width: 572, height: 156)
+            let zone = NSRect(x: 28, y: 60, width: 484, height: 100)
             NSColor.white.withAlphaComponent(0.08).setFill()
             NSBezierPath(roundedRect: zone, xRadius: 16, yRadius: 16).fill()
             let dashed = NSBezierPath(roundedRect: zone, xRadius: 16, yRadius: 16)
@@ -5381,7 +5381,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             drawText(trayShareStatus ?? "Sending...", font: NSFont.systemFont(ofSize: 14),
                      color: .white, at: NSPoint(x: 28, y: 120))
             if let progress = trayShareProgress {
-                let track = NSRect(x: 28, y: 152, width: 572, height: 8)
+                let track = NSRect(x: 28, y: 140, width: 484, height: 8)
                 NSColor.white.withAlphaComponent(0.15).setFill()
                 NSBezierPath(roundedRect: track, xRadius: 4, yRadius: 4).fill()
                 let fillW = max(0, min(1, progress)) * track.width
@@ -5688,7 +5688,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         drawText(dateStr, font: dateFont, color: .white, at: NSPoint(x: dateX, y: 14))
         let dateW = (dateStr as NSString).size(withAttributes: [.font: dateFont]).width
         drawText(timeStr, font: timeFont, color: .white, at: NSPoint(x: dateX + dateW + 6, y: 14))
-        drawWaveform(in: NSRect(x: 640 - 68, y: 14, width: 48, height: 16))
+        drawWaveform(in: NSRect(x: 540 - 68, y: 14, width: 48, height: 16))
     }
 
     private func drawWaterChart() {
@@ -5699,7 +5699,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         let hourly = waterHourly(forKey: waterTodayKey)
         let maxHour = hourly.values.max() ?? 0
         let scale = max(400, maxHour)
-        let barsLeft: CGFloat = 390
+        let barsLeft: CGFloat = 290
         let barsWidth: CGFloat = 202
         let baseline: CGFloat = 150
         let chartHeight: CGFloat = 100
@@ -5709,7 +5709,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         let yColor = NSColor.white.withAlphaComponent(0.5)
         func yLabel(_ text: String, y: CGFloat) {
             let w = (text as NSString).size(withAttributes: [.font: yFont]).width
-            drawText(text, font: yFont, color: yColor, at: NSPoint(x: 385 - w, y: y - 5))
+            drawText(text, font: yFont, color: yColor, at: NSPoint(x: 285 - w, y: y - 5))
         }
         yLabel("\(scale)", y: baseline - chartHeight)
         yLabel("\(scale / 2)", y: baseline - chartHeight / 2)
