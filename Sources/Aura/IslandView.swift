@@ -2847,7 +2847,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     }
 
     private func drawPomodoro() {
-        drawCardHeader(width: 640)
+        drawCardHeader(width: 540)
         drawText("Pomodoro", font: NSFont.boldSystemFont(ofSize: 20), color: .white, at: NSPoint(x: 28, y: 10))
         // Progress ring (left): background + remaining arc (shared
         // helper) + tinted interior + stopwatch.
@@ -2970,7 +2970,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     }
 
     private func drawTodo() {
-        drawCardHeader(width: 640)
+        drawCardHeader(width: 540)
         drawText("Todo", font: NSFont.boldSystemFont(ofSize: 20), color: .white, at: NSPoint(x: 28, y: 10))
         // Left column: progress + add.
         loadTodoTasksIfNeeded()
@@ -3488,14 +3488,14 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     /// Left panel: drop zone and pick target, also shows the
     /// original once one is loaded (clicking it re-picks).
     private func removeBgPickRect() -> NSRect {
-        NSRect(x: 28, y: 48, width: 180, height: 180)
+        NSRect(x: 28, y: 52, width: 150, height: 100)
     }
 
     /// Right panel: the result alone. Ends at x 600 so it
     /// never overlaps the vertical dot column on the right edge.
     /// Also the drag source: pressing it arms a drag-out.
     private func removeBgResultRect() -> NSRect {
-        NSRect(x: 224, y: 48, width: 376, height: 180)
+        NSRect(x: 190, y: 52, width: 322, height: 100)
     }
 
     /// Save pill, bottom-right of the card (only drawn/hit when a
@@ -3505,7 +3505,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         let label = saving ? "Saving…" : "Save"
         let font = NSFont.systemFont(ofSize: 14, weight: .medium)
         let width = (label as NSString).size(withAttributes: [.font: font]).width + 24 + (saving ? 20 : 0)
-        return NSRect(x: 600 - width, y: 236, width: width, height: 28)
+        return NSRect(x: 512 - width, y: 124, width: width, height: 28)
     }
 
     /// Spinner timer + pill label. Called after the pill fill;
@@ -5115,7 +5115,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             // the back pill at the top-right).
             drawTrayShare()
         } else {
-            drawCardHeader(width: 640)
+            drawCardHeader(width: 540)
             drawText("Tray", font: NSFont.boldSystemFont(ofSize: 20), color: .white, at: NSPoint(x: 28, y: 10))
             drawTrayGrid()
         }
@@ -5185,11 +5185,11 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         trayGridPageFiles().enumerated().map { i, file in
             let col = i % trayGridColumns
             let row = i / trayGridColumns
-            let rect = NSRect(x: 30 + CGFloat(col) * (136 + 12),
-                              y: 44 + CGFloat(row) * (100 + 12),
-                              width: 136, height: 100)
+            let rect = NSRect(x: 28 + CGFloat(col) * (112 + 12),
+                              y: 36 + CGFloat(row) * (60 + 8),
+                              width: 112, height: 60)
             return (file: file, rect: rect,
-                    deleteRect: NSRect(x: rect.maxX - 24, y: rect.minY, width: 24, height: 24),
+                    deleteRect: NSRect(x: rect.maxX - 20, y: rect.minY, width: 20, height: 20),
                     exists: trayFileExists(file))
         }
     }
@@ -5197,8 +5197,8 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     /// Arrow hit areas (44px, centered on the 36px circles at the
     /// grid's vertical center, y150).
     private func trayGridArrowRects() -> (left: NSRect, right: NSRect) {
-        (left: NSRect(x: 26, y: 128, width: 44, height: 44),
-         right: NSRect(x: 570, y: 128, width: 44, height: 44))
+        (left: NSRect(x: 24, y: 72, width: 44, height: 44),
+         right: NSRect(x: 472, y: 72, width: 44, height: 44))
     }
 
     /// Page dot hit slots (18px pitch, 16 tall, y260..276).
@@ -5206,8 +5206,8 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     private func trayGridPageDotRects() -> [NSRect] {
         let count = trayGridPageCount()
         guard count > 1 else { return [] }
-        let startX = (640 - CGFloat(count * 18)) / 2
-        return (0..<count).map { i in NSRect(x: startX + CGFloat(i * 18), y: 260, width: 18, height: 16) }
+        let startX = (540 - CGFloat(count * 18)) / 2
+        return (0..<count).map { i in NSRect(x: startX + CGFloat(i * 18), y: 164, width: 18, height: 16) }
     }
 
     /// Page dots (bottom center, like Shelf): active = dash, rest =
@@ -5265,7 +5265,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         if tiles.isEmpty {
             // Empty state: dashed drop-target box + file icon (the
             // tray is a drop target even when idle, not just mid-drag).
-            let zone = NSRect(x: 28, y: 44, width: 584, height: 212)
+            let zone = NSRect(x: 28, y: 36, width: 484, height: 120)
             let dashed = NSBezierPath(roundedRect: zone, xRadius: 20, yRadius: 20)
             dashed.setLineDash([8, 6], count: 2, phase: 0)
             dashed.lineWidth = 1.5
@@ -5302,7 +5302,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     /// area + "Release to add" + "+ Copy" badge at the cursor.
     /// Title, Clear, and dots stay; the file content is replaced.
     private func drawTrayDropZone() {
-        drawCardHeader(width: 640)
+        drawCardHeader(width: 540)
         drawText("Tray", font: NSFont.boldSystemFont(ofSize: 20), color: .white, at: NSPoint(x: 28, y: 10))
         drawTrayClearPill()
         let zone = NSRect(x: 28, y: 44, width: 584, height: 212)
