@@ -69,6 +69,72 @@ final class AuraSettings: ObservableObject {
         set { setDouble("AuraSettings.hoverDelay", min(1, max(0, newValue))) }
     }
 
+    // MARK: - Windows parity: Pill size & visibility
+
+    /// Pill size multiplier, 0.8...1.5 (slider, default 1.0).
+    var notchScale: Double {
+        get { double("AuraSettings.notchScale", default: 1.0) }
+        set { setDouble("AuraSettings.notchScale", min(1.5, max(0.8, newValue))) }
+    }
+
+    /// Minimal notch: hide the pill, leaving only its tip visible when idle.
+    var minimalNotch: Bool {
+        get { bool("AuraSettings.minimalNotch", default: false) }
+        set { setBool("AuraSettings.minimalNotch", newValue) }
+    }
+
+    /// Hide the pill when a fullscreen app is frontmost.
+    var hideInFullscreen: Bool {
+        get { bool("AuraSettings.hideInFullscreen", default: false) }
+        set { setBool("AuraSettings.hideInFullscreen", newValue) }
+    }
+
+    /// Pill opacity, 0.4...1.0 (slider, default 1.0).
+    var pillOpacity: Double {
+        get { double("AuraSettings.pillOpacity", default: 1.0) }
+        set { setDouble("AuraSettings.pillOpacity", min(1.0, max(0.4, newValue))) }
+    }
+
+    /// Show the pill on every monitor (in addition to the picked display).
+    var pillShowAllMonitors: Bool {
+        get { bool("AuraSettings.pillShowAllMonitors", default: false) }
+        set { setBool("AuraSettings.pillShowAllMonitors", newValue) }
+    }
+
+    // MARK: - Windows parity: Dodge
+
+    /// Hide the pill when the cursor comes close.
+    var dodgeEnabled: Bool {
+        get { bool("AuraSettings.dodgeEnabled", default: false) }
+        set { setBool("AuraSettings.dodgeEnabled", newValue) }
+    }
+
+    /// Cursor distance (px) that triggers dodge.
+    var dodgeRadius: Double {
+        get { double("AuraSettings.dodgeRadius", default: 140) }
+        set { setDouble("AuraSettings.dodgeRadius", min(300, max(60, newValue))) }
+    }
+
+    /// Delay (ms) before dodge hides the pill.
+    var dodgeDelay: Double {
+        get { double("AuraSettings.dodgeDelay", default: 350) }
+        set { setDouble("AuraSettings.dodgeDelay", min(1000, max(0, newValue))) }
+    }
+
+    // MARK: - Windows parity: RemoveBG & Convert
+
+    /// RemoveBG model: 0=Fast, 1=Balanced, 2=Quality.
+    var removebgModel: Int {
+        get { int("AuraSettings.removebgModel", default: 0) }
+        set { setInt("AuraSettings.removebgModel", min(2, max(0, newValue))) }
+    }
+
+    /// Convert default photo format: 0=AVIF, 1=WebP, 2=PNG.
+    var convertFormat: Int {
+        get { int("AuraSettings.convertFormat", default: 1) }
+        set { setInt("AuraSettings.convertFormat", min(2, max(0, newValue))) }
+    }
+
     /// Whether a pill covered by another app's content hides to a
     /// 6px tip (detection needs Accessibility permission).
     var overlapHideEnabled: Bool {

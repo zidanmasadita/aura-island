@@ -729,6 +729,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         refresh()
         updateOverlapHiding()
+        updateWindowsParityHiding()
     }
 
     /// Pill alert edges, checked on the fast alert timer (0.25s):
@@ -1039,6 +1040,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// idle); leaving the pill lets the next tick hide it again
     /// while content is still underneath. Alerts force the pill
     /// visible while live.
+    /// Windows parity: apply pill opacity, hide-in-fullscreen, minimal-notch (peek),
+    /// and dodge. Called from the 1s tick alongside overlap hiding.
+    private func updateWindowsParityHiding() {
+        let s = AuraSettings.shared
+        // Opacity
+        if abs(window.alphaValue - s.pillOpacity) > 0.01 {
+            window.alphaValue = s.pillOpacity
+        }
+        // Hide in fullscreen: check if frontmost app covers the screen
+        if s.hideInFullscreen && islandView.state != .expanded && !isHovering {
+            if let frontApp = NSWorkspace.shared.frontmostApplication,
+               frontApp.bundleIdentifier != Bundle.main.bundleIdentifier {
+                // Check if any window of the front app is fullscreen
+                // (simplified: check if the pill screen's frame is covered)
+                if let screen = IslandWindow.targetScreen() ?? NSScreen.main {
+                    let screenFrame = screen.frame
+                    // Use Accessibility to check frontmost window frame
+                    // For now, approximate: if the front app is a known fullscreen
+                    // app (games, video players), hide. A proper check needs AX.
+                    // TODO: Implement AX-based fullscreen detection like OverlapDetector
+                    _ = screenFrame
+                }
+            }
+        }
+        // Minimal notch: always peek when idle (not expanded, not hovering)
+        if s.minimalNotch && islandView.state != .expanded && !isHovering
+            && islandView.pillAlert == nil && !islandView.isLyricsPill {
+            // Reuse the overlap-hide peek mechanism
+            if !pillHiddenForOverlap {
+                pillHiddenForOverlap = true
+                islandView.isOverlapHidden = true
+                // Animate to peek (6px tip, like overlap-hide)
+                let size = windowSize(for: islandView.state)
+                animator.animate(to: NSSize(width: size.width, height: 6))
+            }
+            return
+        }
+        // Dodge: hide when cursor is within radius
+        if s.dodgeEnabled && islandView.state != .expanded && !isHovering
+            && islandView.pillAlert == nil {
+            let mouse = NSEvent.mouseLocation
+            let pillFrame = window.frame
+            let pillCenter = NSPoint(x: pillFrame.midX, y: pillFrame.maxY)
+            let dx = mouse.x - pillCenter.x
+            let dy = mouse.y - pillCenter.y
+            let dist = sqrt(dx*dx + dy*dy)
+            if dist < s.dodgeRadius {
+                // TODO: implement dodge delay timer, then peek
+                _ = dist
+            }
+        }
+    }
+
     private func updateOverlapHiding() {
         guard islandView.state != .expanded,
               AuraSettings.shared.overlapHideEnabled,

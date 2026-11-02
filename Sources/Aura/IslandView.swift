@@ -3474,7 +3474,13 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     private var removeBgDropHighlight = false { didSet { needsDisplay = true } }
     private var removeBgStatusText = "Drop an image, or click to pick one."
     private var removeBgStatusIsError = false
-    private var removeBgModel: RemoveBgModel = .fast
+    private var removeBgModel: RemoveBgModel {
+        get {
+            let idx = AuraSettings.shared.removebgModel
+            return RemoveBgModel.allCases[min(2, max(0, idx))]
+        }
+        set { AuraSettings.shared.removebgModel = RemoveBgModel.allCases.firstIndex(of: newValue) ?? 0 }
+    }
     private var removeBgInputImage: NSImage?
     private var removeBgInputData: Data?
     private var removeBgInputName: String?

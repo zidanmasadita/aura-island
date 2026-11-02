@@ -145,8 +145,64 @@ private struct GeneralSettingsView: View {
                     get: { settings.overlapHideEnabled },
                     set: { settings.overlapHideEnabled = $0 }
                 ))
+                Toggle("Minimal notch (peek)", isOn: Binding(
+                    get: { settings.minimalNotch },
+                    set: { settings.minimalNotch = $0 }
+                ))
+                Text("Hide the pill, leaving only its tip visible when idle.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Toggle("Hide in full screen", isOn: Binding(
+                    get: { settings.hideInFullscreen },
+                    set: { settings.hideInFullscreen = $0 }
+                ))
+                Toggle("Show on all monitors", isOn: Binding(
+                    get: { settings.pillShowAllMonitors },
+                    set: { settings.pillShowAllMonitors = $0 }
+                ))
+                HStack {
+                    Text("Size")
+                    Slider(value: Binding(
+                        get: { settings.notchScale },
+                        set: { settings.notchScale = $0 }
+                    ), in: 0.8...1.5, step: 0.05)
+                    Text(String(format: "%.0f%%", settings.notchScale * 100))
+                        .frame(width: 48, alignment: .trailing)
+                        .monospacedDigit()
+                }
                 DisplayPickerView()
                 Text("Pin the pill to a display instead of following the active monitor.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            Section("Dodge") {
+                Toggle("Dodge cursor", isOn: Binding(
+                    get: { settings.dodgeEnabled },
+                    set: { settings.dodgeEnabled = $0 }
+                ))
+                HStack {
+                    Text("Radius")
+                    Slider(value: Binding(
+                        get: { settings.dodgeRadius },
+                        set: { settings.dodgeRadius = $0 }
+                    ), in: 60...300, step: 5)
+                    Text(String(format: "%.0f px", settings.dodgeRadius))
+                        .frame(width: 58, alignment: .trailing)
+                        .monospacedDigit()
+                }
+                .disabled(!settings.dodgeEnabled)
+                HStack {
+                    Text("Delay")
+                    Slider(value: Binding(
+                        get: { settings.dodgeDelay },
+                        set: { settings.dodgeDelay = $0 }
+                    ), in: 0...1000, step: 50)
+                    Text(String(format: "%.0f ms", settings.dodgeDelay))
+                        .frame(width: 58, alignment: .trailing)
+                        .monospacedDigit()
+                }
+                .disabled(!settings.dodgeEnabled)
+                Text("Hide the pill when the cursor comes close.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -278,6 +334,38 @@ private struct AppearanceSettingsView: View {
                 Toggle("Clock", isOn: toggle({ settings.showClock }, { settings.showClock = $0 }))
                 Toggle("Battery", isOn: toggle({ settings.showBattery }, { settings.showBattery = $0 }))
                 Toggle("Waveform", isOn: toggle({ settings.showWaveform }, { settings.showWaveform = $0 }))
+                HStack {
+                    Text("Opacity")
+                    Slider(value: Binding(
+                        get: { settings.pillOpacity },
+                        set: { settings.pillOpacity = $0 }
+                    ), in: 0.4...1.0, step: 0.05)
+                    Text(String(format: "%.0f%%", settings.pillOpacity * 100))
+                        .frame(width: 48, alignment: .trailing)
+                        .monospacedDigit()
+                }
+            }
+            Section("Remove BG") {
+                Picker("Model", selection: Binding(
+                    get: { settings.removebgModel },
+                    set: { settings.removebgModel = $0 }
+                )) {
+                    Text("Fast").tag(0)
+                    Text("Balanced").tag(1)
+                    Text("Quality").tag(2)
+                }
+                .pickerStyle(.segmented)
+            }
+            Section("Convert") {
+                Picker("Photo format", selection: Binding(
+                    get: { settings.convertFormat },
+                    set: { settings.convertFormat = $0 }
+                )) {
+                    Text("AVIF").tag(0)
+                    Text("WebP").tag(1)
+                    Text("PNG").tag(2)
+                }
+                .pickerStyle(.segmented)
             }
             Section("Lyrics") {
                 Toggle("Cover-dominant gradient", isOn: toggle({ settings.lyricsGradient }, { settings.lyricsGradient = $0 }))
