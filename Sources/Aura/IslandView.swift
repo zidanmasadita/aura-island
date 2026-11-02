@@ -389,15 +389,15 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     /// Water Reminder). tray is 640x280 (grid 4x2 + share, DynamicNotch-style).
     var expandedSize: NSSize {
         switch currentPage {
-        case .music: return NSSize(width: 520, height: 180)
-        case .lyrics: return NSSize(width: 700, height: 180)
-        case .pomodoro: return NSSize(width: 640, height: 180)
-        case .todo: return NSSize(width: 640, height: 220)
-        case .water: return NSSize(width: 640, height: 180)
-        case .tray: return NSSize(width: 640, height: 280)
-        case .removeBg: return NSSize(width: 640, height: 280)
-        case .convert: return NSSize(width: 640, height: 280)
-        case .sources: return NSSize(width: 640, height: 220)
+        case .music: return NSSize(width: 540, height: 184)
+        case .lyrics: return NSSize(width: 700, height: 184)
+        case .pomodoro: return NSSize(width: 540, height: 184)
+        case .todo: return NSSize(width: 540, height: 184)
+        case .water: return NSSize(width: 540, height: 184)
+        case .tray: return NSSize(width: 540, height: 184)
+        case .removeBg: return NSSize(width: 540, height: 184)
+        case .convert: return NSSize(width: 540, height: 184)
+        case .sources: return NSSize(width: 540, height: 184)
         }
     }
 
@@ -434,8 +434,8 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     /// AppDelegate uses this instead of the fixed state size for
     /// compact/split.
     var closedSize: NSSize {
-        if isPomodoroActive { return NSSize(width: 160, height: 32) }
-        return lyricsMode ? NSSize(width: lyricsPillWidth, height: 32) : NSSize(width: 180, height: 32)
+        if isPomodoroActive { return NSSize(width: 160, height: 30) }
+        return lyricsMode ? NSSize(width: lyricsPillWidth, height: 30) : NSSize(width: 180, height: 30)
     }
 
     enum CardPage { case music, lyrics, pomodoro, todo, water, tray, removeBg, convert, sources }

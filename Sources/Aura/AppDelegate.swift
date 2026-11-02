@@ -13,11 +13,11 @@ enum IslandState {
 
     var size: NSSize {
         switch self {
-        case .zen: return NSSize(width: 140, height: 32)
+        case .zen: return NSSize(width: 104, height: 28)
         // Default closed size (plain music 180 wide); the view's
         // closedSize overrides it (lyrics mode is wider, pomodoro narrower).
-        case .compact, .split: return NSSize(width: 180, height: 32)
-        case .expanded: return NSSize(width: 640, height: 220)
+        case .compact, .split: return NSSize(width: 180, height: 30)
+        case .expanded: return NSSize(width: 540, height: 184)
         }
     }
 }
