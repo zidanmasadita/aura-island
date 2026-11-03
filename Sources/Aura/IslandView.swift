@@ -1660,7 +1660,9 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         }
         ctx.saveGState()
         ctx.addPath(path)
-        ctx.setFillColor(NSColor.black.withAlphaComponent(0.98).cgColor)
+        // Thin black backdrop (no white outline): translucent so the
+        // desktop shows through subtly, like a blur backdrop.
+        ctx.setFillColor(NSColor.black.withAlphaComponent(0.72).cgColor)
         ctx.fillPath()
         // Artwork gradient, lyrics only: the pill background
         // follows the cover's dominant color (black at the top down
@@ -1688,10 +1690,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             }
             ctx.restoreGState()
         }
-        ctx.addPath(path)
-        ctx.setStrokeColor(NSColor.white.withAlphaComponent(0.15).cgColor)
-        ctx.setLineWidth(0.5)
-        ctx.strokePath()
+        // No outline stroke (removed per user request).
         ctx.restoreGState()
 
         // Overlap-hidden tip: shape only, no content. Drawing eyes
