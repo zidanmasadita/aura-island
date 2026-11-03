@@ -1349,6 +1349,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             prev: index.flatMap { $0 > 0 ? lyricsLines[$0 - 1].text : nil },
             current: index.map { lyricsLines[$0].text },
             next: index.flatMap { $0 + 1 < lyricsLines.count ? lyricsLines[$0 + 1].text : nil })
+        // Full list for the scrollable lyrics reel (slot-machine
+        // panel); the reel diffs and rolls on active-index changes.
+        islandView.setLyricReel(lines: lyricsLines.map { $0.text }, activeIndex: index)
     }
 
     // MARK: - Menu bar

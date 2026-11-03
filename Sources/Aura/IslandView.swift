@@ -155,6 +155,34 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     private let rollDuration: TimeInterval = 0.7
     private var isRolling: Bool { rollTimer != nil }
 
+    // MARK: - Lyrics reel (scrollable slot-machine list)
+    // Panel geometry (flipped view: y=28 is the visual top).
+    private let reelX: CGFloat = 352
+    private let reelW: CGFloat = 308
+    private let reelTop: CGFloat = 28
+    private let reelH: CGFloat = 130
+    private let reelLineH: CGFloat = 30
+    private let reelDur: TimeInterval = 0.7
+    private var lyricReelHitRect: NSRect {
+        NSRect(x: 336, y: 20, width: 340, height: 146)
+    }
+    /// All lyric lines for the current track (plain text, no newlines).
+    var lyricReelLines: [String] = []
+    /// Index of the currently sung line in lyricReelLines.
+    var lyricReelActive: Int? = nil
+    /// Rendered content offset (points scrolled from the top).
+    private var reelOffsetY: CGFloat = 0
+    /// Where the offset is heading (manual scroll target / roll target).
+    private var reelTargetY: CGFloat = 0
+    /// Auto-follow the active line. Turned off by manual scrolling;
+    /// re-enabled when the user scrolls back near the active line.
+    private var reelFollow: Bool = true
+    private var reelAnimTimer: Timer? = nil
+    private var reelRollFrom: CGFloat = 0
+    private var reelRollTo: CGFloat = 0
+    private var reelRollStart: Date = Date()
+    private var reelRolling: Bool = false
+
     /// Single entry point for lyric-line updates (AppDelegate calls
     /// this, never the three vars directly). Rolls on a one-line
     /// advance while the page is visible; otherwise just stores the
@@ -184,6 +212,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         // longer current) — cancel it, then maybe start a new one.
         cancelLyricRoll()
         guard let oldCurrent, let current, oldNext == current,
+              lyricReelLines.isEmpty,
               state == .expanded, currentPage == .lyrics else {
             needsDisplay = true
             return
@@ -200,7 +229,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         lyricPrev = nil
         lyricCurrent = nil
         lyricNext = nil
-        needsDisplay = true
+        setLyricReel(lines: [], activeIndex: nil)
     }
 
     private func cancelLyricRoll() {
@@ -208,6 +237,208 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         rollTimer = nil
         rollLines = []
         rollProgress = 0
+    }
+
+    // MARK: - Lyrics reel implementation
+
+    /// Feed the full lyric list to the reel. Called from AppDelegate
+    /// on every lyric tick; diffs internally. When the track's lines
+    /// change, the reel resets to follow the active line. When only
+    /// the active index advances and follow is on, the reel rolls to
+    /// it with the slot-machine animation.
+    func setLyricReel(lines: [String], activeIndex: Int?) {
+        let clean = lines.map {
+            $0.replacingOccurrences(of: "\r\n", with: " ")
+              .replacingOccurrences(of: "\n", with: " ")
+              .replacingOccurrences(of: "\r", with: " ")
+        }
+        let listChanged = clean != lyricReelLines
+        lyricReelLines = clean
+        let oldActive = lyricReelActive
+        lyricReelActive = activeIndex
+        if clean.isEmpty {
+            reelFollow = true
+            reelRolling = false
+            reelOffsetY = 0
+            reelTargetY = 0
+            needsDisplay = true
+            return
+        }
+        if listChanged {
+            reelFollow = true
+            reelRolling = false
+            reelTargetY = reelAutoOffset()
+            reelOffsetY = reelTargetY
+        } else if activeIndex != oldActive, activeIndex != nil, reelFollow {
+            let to = reelAutoOffset()
+            if state == .expanded && currentPage == .lyrics {
+                reelRollFrom = reelOffsetY
+                reelRollTo = to
+                reelRollStart = Date()
+                reelRolling = true
+                reelTargetY = to
+                startReelDriver()
+            } else {
+                reelTargetY = to
+                reelOffsetY = to
+            }
+        }
+        needsDisplay = true
+    }
+
+    /// Content offset that centers the active line in the panel.
+    private func reelAutoOffset() -> CGFloat {
+        guard let idx = lyricReelActive, !lyricReelLines.isEmpty else { return 0 }
+        return reelClamp(CGFloat(idx) * reelLineH - (reelH / 2 - reelLineH / 2))
+    }
+
+    private func reelClamp(_ v: CGFloat) -> CGFloat {
+        let maxO = max(0, CGFloat(lyricReelLines.count) * reelLineH - reelH)
+        return min(maxO, max(0, v))
+    }
+
+    /// Slot-machine easing: fast roll that settles with a small
+    /// overshoot bounce, like a mechanical reel stopping.
+    private func reelEase(_ t: CGFloat) -> CGFloat {
+        let c1: CGFloat = 1.15
+        let c3 = c1 + 1
+        let u = t - 1
+        return 1 + c3 * u * u * u + c1 * u * u
+    }
+
+    private func startReelDriver() {
+        guard reelAnimTimer == nil else { return }
+        reelAnimTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] t in
+            guard let self else { t.invalidate(); return }
+            self.reelTick()
+        }
+    }
+
+    private func reelTick() {
+        if reelRolling {
+            let p = min(1, Date().timeIntervalSince(reelRollStart) / reelDur)
+            reelOffsetY = reelRollFrom + (reelRollTo - reelRollFrom) * reelEase(CGFloat(p))
+            if p >= 1 {
+                reelRolling = false
+                reelOffsetY = reelRollTo
+            }
+            needsDisplay = true
+            return
+        }
+        let diff = reelTargetY - reelOffsetY
+        if abs(diff) < 0.15 {
+            reelOffsetY = reelTargetY
+            reelAnimTimer?.invalidate()
+            reelAnimTimer = nil
+        } else {
+            reelOffsetY += diff * 0.22
+        }
+        needsDisplay = true
+    }
+
+    /// Scroll-wheel / trackpad over the lyrics panel drives the reel
+    /// instead of switching sections. Manual scrolling pauses
+    /// auto-follow; scrolling back near the active line resumes it.
+    /// On gesture end the reel snaps to the nearest line (detent).
+    private func handleReelScroll(_ event: NSEvent) {
+        let phase = event.phase
+        let mom = event.momentumPhase
+        if phase == .ended || phase == .cancelled || mom == .ended || mom == .cancelled {
+            reelTargetY = reelClamp((reelTargetY / reelLineH).rounded() * reelLineH)
+            reelResumeCheck()
+            startReelDriver()
+            return
+        }
+        let dy = event.scrollingDeltaY
+        guard dy != 0 else { return }
+        reelRolling = false
+        reelFollow = false
+        reelTargetY = reelClamp(reelTargetY - dy)
+        reelResumeCheck()
+        startReelDriver()
+        needsDisplay = true
+    }
+
+    private func reelResumeCheck() {
+        if abs(reelTargetY - reelAutoOffset()) < reelLineH * 0.6 {
+            reelFollow = true
+        }
+    }
+
+    private func truncatedLyric(_ text: String, font: NSFont, width: CGFloat) -> String {
+        let attrs: [NSAttributedString.Key: Any] = [.font: font]
+        if (text as NSString).size(withAttributes: attrs).width <= width { return text }
+        var s = text
+        while !s.isEmpty {
+            let cand = s + "\u{2026}"
+            if (cand as NSString).size(withAttributes: attrs).width <= width { return cand }
+            s = String(s.dropLast())
+        }
+        return "\u{2026}"
+    }
+
+    /// Draws the scrollable reel: every line in a vertical strip,
+    /// clipped to the panel, active line bold and bright, the rest
+    /// dimmed with a distance fade. A teal dot marks "scrolled away
+    /// from live" while auto-follow is off.
+    private func drawLyricReel() {
+        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+        ctx.saveGState()
+        NSBezierPath(rect: NSRect(x: reelX, y: reelTop, width: reelW, height: reelH)).setClip()
+        let count = lyricReelLines.count
+        if count > 0 {
+            let first = max(0, Int((reelOffsetY / reelLineH).rounded(.down)) - 1)
+            let last = min(count - 1, Int(((reelOffsetY + reelH) / reelLineH).rounded(.up)) + 1)
+            if first <= last {
+                for i in first...last {
+                    let top = reelTop + CGFloat(i) * reelLineH - reelOffsetY
+                    let isActive = (i == lyricReelActive)
+                    let font: NSFont = isActive ? .boldSystemFont(ofSize: 17) : .systemFont(ofSize: 14)
+                    let centerY = top + reelLineH / 2
+                    let dist = abs(centerY - (reelTop + reelH / 2)) / (reelH / 2)
+                    let alpha: CGFloat = (isActive ? 1.0 : 0.42) * max(0.2, 1 - dist * 0.8)
+                    let text = truncatedLyric(lyricReelLines[i], font: font, width: reelW)
+                    let th = (text as NSString).size(withAttributes: [.font: font]).height
+                    let ty = top + (reelLineH - th) / 2
+                    var scale: CGFloat = 1.0
+                    if reelRolling && isActive {
+                        let p = min(1, Date().timeIntervalSince(reelRollStart) / reelDur)
+                        scale = 1 + 0.06 * CGFloat(sin(Double(p) * .pi))
+                    }
+                    let color = NSColor.white.withAlphaComponent(alpha)
+                    if scale != 1.0 {
+                        ctx.saveGState()
+                        ctx.translateBy(x: reelX, y: centerY)
+                        ctx.scaleBy(x: scale, y: scale)
+                        ctx.translateBy(x: -reelX, y: -centerY)
+                        drawText(text, font: font, color: color, at: NSPoint(x: reelX, y: ty))
+                        ctx.restoreGState()
+                    } else {
+                        drawText(text, font: font, color: color, at: NSPoint(x: reelX, y: ty))
+                    }
+                }
+            }
+        }
+        // Soft edge fades so lines melt at the panel's top/bottom.
+        let fadeH: CGFloat = 22
+        if let grad = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
+                                 colors: [NSColor.black.withAlphaComponent(0.85).cgColor,
+                                          NSColor.clear.cgColor] as CFArray,
+                                 locations: [0, 1]) {
+            ctx.drawLinearGradient(grad,
+                                   start: CGPoint(x: 0, y: reelTop),
+                                   end: CGPoint(x: 0, y: reelTop + fadeH),
+                                   options: [])
+            ctx.drawLinearGradient(grad,
+                                   start: CGPoint(x: 0, y: reelTop + reelH),
+                                   end: CGPoint(x: 0, y: reelTop + reelH - fadeH),
+                                   options: [])
+        }
+        if !reelFollow {
+            NSColor.systemTeal.withAlphaComponent(0.9).setFill()
+            NSBezierPath(ovalIn: NSRect(x: reelX + reelW - 10, y: reelTop + 5, width: 6, height: 6)).fill()
+        }
+        ctx.restoreGState()
     }
 
     private func lyricLineHeight(_ font: NSFont) -> CGFloat {
@@ -1550,6 +1781,11 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     /// moveSection signs (one line each).
     private var scrollAccumulatedY: CGFloat = 0
     override func scrollWheel(with event: NSEvent) {
+        if state == .expanded && currentPage == .lyrics && !lyricReelLines.isEmpty
+            && lyricReelHitRect.contains(convert(event.locationInWindow, from: nil)) {
+            handleReelScroll(event)
+            return
+        }
         guard state == .expanded else { return }
         guard event.momentumPhase.isEmpty else { return }
         if event.phase == .ended || event.phase == .cancelled {
@@ -2373,6 +2609,10 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         // While a slot roll runs, the roll strip replaces this block
         // (see startLyricRoll); the divider above stays fixed — it
         // is the window's frame, not part of the reel.
+        if !lyricReelLines.isEmpty {
+            drawLyricReel()
+            return
+        }
         let x: CGFloat = 352
         let width: CGFloat = 308
         if isRolling {
