@@ -338,8 +338,8 @@ private struct AppearanceSettingsView: View {
                     Text("Opacity")
                     Slider(value: Binding(
                         get: { settings.pillOpacity },
-                        set: { settings.pillOpacity = $0 }
-                    ), in: 0.4...1.0, step: 0.05)
+                        set: { settings.pillOpacity = min(1.0, max(0.4, $0)) }
+                    ), in: 0.4...1.0)
                     Text(String(format: "%.0f%%", settings.pillOpacity * 100))
                         .frame(width: 48, alignment: .trailing)
                         .monospacedDigit()
