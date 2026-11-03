@@ -3692,6 +3692,14 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     /// Add dropped URLs to the tray (dedupe by path, directories
     /// allowed). Returns how many were added.
     @discardableResult
+    /// ScreenshotWatcher callback: a fresh screenshot lands in the
+    /// tray by itself. Respects the Settings toggle; duplicates are
+    /// already filtered by addTrayFiles (path dedup).
+    func addScreenshotToTray(_ url: URL) {
+        guard AuraSettings.shared.autoAddScreenshots else { return }
+        addTrayFiles([url])
+    }
+
     private func addTrayFiles(_ urls: [URL]) -> Int {
         loadTrayFilesIfNeeded()
         var addedFiles: [TrayFile] = []

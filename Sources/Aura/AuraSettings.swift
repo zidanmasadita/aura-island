@@ -271,6 +271,15 @@ final class AuraSettings: ObservableObject {
         }
     }
 
+    // MARK: - Tray
+
+    /// Screenshots are detected via FSEvents on the macOS screenshot
+    /// folder and land in the tray automatically, no drag needed.
+    var autoAddScreenshots: Bool {
+        get { bool("AuraSettings.autoAddScreenshots", default: true) }
+        set { setBool("AuraSettings.autoAddScreenshots", newValue) }
+    }
+
     // MARK: - Pill Alerts
 
     /// Master switch for the closed-pill event alerts (battery,

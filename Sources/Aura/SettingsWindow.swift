@@ -140,6 +140,15 @@ private struct GeneralSettingsView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
+            Section("Tray") {
+                Toggle("Add screenshots to tray automatically", isOn: Binding(
+                    get: { settings.autoAddScreenshots },
+                    set: { settings.autoAddScreenshots = $0 }
+                ))
+                Text("Every screenshot you take goes straight into the tray, no drag needed.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
             Section("Pill") {
                 Toggle("Hide pill under other apps' content", isOn: Binding(
                     get: { settings.overlapHideEnabled },

@@ -25,6 +25,7 @@ enum IslandState {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: IslandWindow!
     private var islandView: IslandView!
+    private let screenshotWatcher = ScreenshotWatcher()
     private var statusItem: NSStatusItem!
     private var animator: IslandAnimator!
 
@@ -142,6 +143,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         islandView.onSeek = { [weak self] seconds in
             self?.performSeek(seconds)
         }
+        screenshotWatcher.onScreenshot = { [weak self] url in
+            self?.islandView.addScreenshotToTray(url)
+        }
+        screenshotWatcher.start()
         islandView.onDragEnteredTray = { [weak self] in
             // Show tray first (sets the expanded size), then expand.
             self?.islandView.showTray()
