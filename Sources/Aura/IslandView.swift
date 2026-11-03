@@ -1660,9 +1660,10 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         }
         ctx.saveGState()
         ctx.addPath(path)
-        // Thin black backdrop (no white outline): translucent so the
-        // desktop shows through subtly, like a blur backdrop.
-        ctx.setFillColor(NSColor.black.withAlphaComponent(0.72).cgColor)
+        // Solid black backdrop (no white outline). Overall opacity
+        // is controlled by window.alphaValue from the pillOpacity
+        // setting (see updateWindowsParityHiding), so 100% = opaque.
+        ctx.setFillColor(NSColor.black.withAlphaComponent(1.0).cgColor)
         ctx.fillPath()
         // Artwork gradient, lyrics only: the pill background
         // follows the cover's dominant color (black at the top down
