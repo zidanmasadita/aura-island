@@ -182,6 +182,9 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     private var reelRollTo: CGFloat = 0
     private var reelRollStart: Date = Date()
     private var reelRolling: Bool = false
+    /// Fires 1s after the last manual scroll event, rolling the reel
+    /// back to the active line.
+    private var reelIdleTimer: Timer? = nil
 
     /// Single entry point for lyric-line updates (AppDelegate calls
     /// this, never the three vars directly). Rolls on a one-line
@@ -265,6 +268,8 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             return
         }
         if listChanged {
+            reelIdleTimer?.invalidate()
+            reelIdleTimer = nil
             reelFollow = true
             reelRolling = false
             reelTargetY = reelAutoOffset()
@@ -347,6 +352,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             reelTargetY = reelClamp((reelTargetY / reelLineH).rounded() * reelLineH)
             reelResumeCheck()
             startReelDriver()
+            reelScheduleIdleReturn()
             return
         }
         let dy = event.scrollingDeltaY
@@ -356,6 +362,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         reelTargetY = reelClamp(reelTargetY - dy)
         reelResumeCheck()
         startReelDriver()
+        reelScheduleIdleReturn()
         needsDisplay = true
     }
 
@@ -363,6 +370,35 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         if abs(reelTargetY - reelAutoOffset()) < reelLineH * 0.6 {
             reelFollow = true
         }
+    }
+
+    private func reelScheduleIdleReturn() {
+        reelIdleTimer?.invalidate()
+        reelIdleTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: false) { [weak self] t in
+            self?.reelReturnToLive()
+        }
+    }
+
+    /// 1s after the user stops scrolling, roll back to the active
+    /// line (no-op if already following).
+    private func reelReturnToLive() {
+        reelIdleTimer?.invalidate()
+        reelIdleTimer = nil
+        guard !lyricReelLines.isEmpty, !reelFollow else { return }
+        reelFollow = true
+        let to = reelAutoOffset()
+        if state == .expanded && currentPage == .lyrics {
+            reelRollFrom = reelOffsetY
+            reelRollTo = to
+            reelRollStart = Date()
+            reelRolling = true
+            reelTargetY = to
+            startReelDriver()
+        } else {
+            reelTargetY = to
+            reelOffsetY = to
+        }
+        needsDisplay = true
     }
 
     private func truncatedLyric(_ text: String, font: NSFont, width: CGFloat) -> String {
@@ -418,21 +454,6 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
                     }
                 }
             }
-        }
-        // Soft edge fades so lines melt at the panel's top/bottom.
-        let fadeH: CGFloat = 22
-        if let grad = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
-                                 colors: [NSColor.black.withAlphaComponent(0.85).cgColor,
-                                          NSColor.clear.cgColor] as CFArray,
-                                 locations: [0, 1]) {
-            ctx.drawLinearGradient(grad,
-                                   start: CGPoint(x: 0, y: reelTop),
-                                   end: CGPoint(x: 0, y: reelTop + fadeH),
-                                   options: [])
-            ctx.drawLinearGradient(grad,
-                                   start: CGPoint(x: 0, y: reelTop + reelH),
-                                   end: CGPoint(x: 0, y: reelTop + reelH - fadeH),
-                                   options: [])
         }
         if !reelFollow {
             NSColor.systemTeal.withAlphaComponent(0.9).setFill()
