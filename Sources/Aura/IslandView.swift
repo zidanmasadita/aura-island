@@ -426,12 +426,25 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         }
     }
 
+    private func isCursorOverReel() -> Bool {
+        guard let window = self.window else { return false }
+        let viewPt = convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
+        return lyricReelHitRect.contains(viewPt)
+    }
+
     /// 1s after the user stops scrolling, roll back to the active
-    /// line (no-op if already following).
+    /// line (no-op if already following). But while the cursor is
+    /// still held over the scrolled panel, the user's reading
+    /// position is kept — the check simply re-arms for another
+    /// second instead of yanking back to the active line.
     private func reelReturnToLive() {
         reelIdleTimer?.invalidate()
         reelIdleTimer = nil
         guard !lyricReelLines.isEmpty, !reelFollow else { return }
+        if state == .expanded && currentPage == .lyrics && isCursorOverReel() {
+            reelScheduleIdleReturn()
+            return
+        }
         reelFollow = true
         let to = reelAutoOffset()
         if state == .expanded && currentPage == .lyrics {
