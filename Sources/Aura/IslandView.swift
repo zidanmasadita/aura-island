@@ -1844,7 +1844,8 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     /// one eye a flat line, the other a rectangle. Blink
     /// (eyesClosed) still closes both eyes into flat lines.
     private func drawEyes() {
-        let centers: [CGFloat] = [56.5, 83.5]
+        // Zen pill is 104x28 (Windows parity): eyes centered at x=52, y=14.
+        let centers: [CGFloat] = [38.5, 65.5]
         let w: CGFloat = 18
         for (i, cx) in centers.enumerated() {
             // Proximity blink height: the eye shrinks toward the
@@ -1852,9 +1853,9 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             let openness = eyeExpression == .normal ? eyeOpenness[i] : 1
             let h: CGFloat = 2.5 + (11 - 2.5) * openness
             let x = cx - w / 2 + eyeLook.x * 2
-            let y = 16 - h / 2 + eyeLook.y * 3
+            let y = 14 - h / 2 + eyeLook.y * 3
             let rect = NSRect(x: x, y: y, width: w, height: h)
-            let lineRect = NSRect(x: x, y: 16 - 1.25, width: w, height: 2.5)
+            let lineRect = NSRect(x: x, y: 14 - 1.25, width: w, height: 2.5)
             if eyesClosed {
                 NSColor.white.setFill()
                 NSBezierPath(roundedRect: lineRect, xRadius: 1.25, yRadius: 1.25).fill()
