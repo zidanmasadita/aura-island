@@ -161,8 +161,18 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     private let reelW: CGFloat = 308
     private let reelTop: CGFloat = 28
     private let reelH: CGFloat = 130
-    private let reelLineH: CGFloat = 30
+    private let reelRowH: CGFloat = 22
+    private let reelEntryGap: CGFloat = 8
     private let reelDur: TimeInterval = 0.7
+    /// One lyric line laid out into wrapped visual rows. Heights
+    /// vary because long lines wrap instead of being truncated.
+    private struct ReelEntry {
+        var rows: [String]
+        var height: CGFloat
+        var top: CGFloat
+    }
+    private var reelEntries: [ReelEntry] = []
+    private var reelContentH: CGFloat = 0
     private var lyricReelHitRect: NSRect {
         NSRect(x: 336, y: 20, width: 340, height: 146)
     }
@@ -260,12 +270,18 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         let oldActive = lyricReelActive
         lyricReelActive = activeIndex
         if clean.isEmpty {
+            reelEntries = []
+            reelContentH = 0
             reelFollow = true
             reelRolling = false
             reelOffsetY = 0
             reelTargetY = 0
             needsDisplay = true
             return
+        }
+        let activeChanged = activeIndex != oldActive
+        if listChanged || activeChanged {
+            reelRelayout()
         }
         if listChanged {
             reelIdleTimer?.invalidate()
@@ -274,7 +290,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
             reelRolling = false
             reelTargetY = reelAutoOffset()
             reelOffsetY = reelTargetY
-        } else if activeIndex != oldActive, activeIndex != nil, reelFollow {
+        } else if activeChanged, activeIndex != nil, reelFollow {
             let to = reelAutoOffset()
             if state == .expanded && currentPage == .lyrics {
                 reelRollFrom = reelOffsetY
@@ -291,15 +307,46 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         needsDisplay = true
     }
 
-    /// Content offset that centers the active line in the panel.
+    /// Wrap every lyric line into visual rows (no truncation) and
+    /// stack the entries. The active line wraps in its bigger bold
+    /// font so it never reflows mid-roll.
+    private func reelRelayout() {
+        var tops: [CGFloat] = []
+        var y: CGFloat = 0
+        reelEntries = lyricReelLines.enumerated().map { (i, text) in
+            let font: NSFont = (i == lyricReelActive) ? .boldSystemFont(ofSize: 17) : .systemFont(ofSize: 14)
+            let rows = wrappedLines(text, font: font, width: reelW, maxLines: 99)
+            let h = CGFloat(max(1, rows.count)) * reelRowH + reelEntryGap
+            tops.append(y)
+            y += h
+            return ReelEntry(rows: rows, height: h, top: 0)
+        }
+        for i in reelEntries.indices { reelEntries[i].top = tops[i] }
+        reelContentH = y
+    }
+
+    /// Content offset that centers the active entry in the panel.
     private func reelAutoOffset() -> CGFloat {
-        guard let idx = lyricReelActive, !lyricReelLines.isEmpty else { return 0 }
-        return reelClamp(CGFloat(idx) * reelLineH - (reelH / 2 - reelLineH / 2))
+        guard let idx = lyricReelActive, idx < reelEntries.count else { return 0 }
+        let e = reelEntries[idx]
+        return reelClamp(e.top + e.height / 2 - reelH / 2)
     }
 
     private func reelClamp(_ v: CGFloat) -> CGFloat {
-        let maxO = max(0, CGFloat(lyricReelLines.count) * reelLineH - reelH)
+        let maxO = max(0, reelContentH - reelH)
         return min(maxO, max(0, v))
+    }
+
+    /// Snap a raw offset to the nearest entry top (reel detent).
+    private func reelSnap(_ v: CGFloat) -> CGFloat {
+        guard !reelEntries.isEmpty else { return 0 }
+        var best = reelEntries[0].top
+        var bestD = abs(v - best)
+        for e in reelEntries {
+            let d = abs(v - e.top)
+            if d < bestD { bestD = d; best = e.top }
+        }
+        return reelClamp(best)
     }
 
     /// Slot-machine easing: fast roll that settles with a small
@@ -349,7 +396,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         let phase = event.phase
         let mom = event.momentumPhase
         if phase == .ended || phase == .cancelled || mom == .ended || mom == .cancelled {
-            reelTargetY = reelClamp((reelTargetY / reelLineH).rounded() * reelLineH)
+            reelTargetY = reelSnap(reelTargetY)
             reelResumeCheck()
             startReelDriver()
             reelScheduleIdleReturn()
@@ -367,7 +414,7 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
     }
 
     private func reelResumeCheck() {
-        if abs(reelTargetY - reelAutoOffset()) < reelLineH * 0.6 {
+        if abs(reelTargetY - reelAutoOffset()) < 18 {
             reelFollow = true
         }
     }
@@ -401,58 +448,51 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
         needsDisplay = true
     }
 
-    private func truncatedLyric(_ text: String, font: NSFont, width: CGFloat) -> String {
-        let attrs: [NSAttributedString.Key: Any] = [.font: font]
-        if (text as NSString).size(withAttributes: attrs).width <= width { return text }
-        var s = text
-        while !s.isEmpty {
-            let cand = s + "\u{2026}"
-            if (cand as NSString).size(withAttributes: attrs).width <= width { return cand }
-            s = String(s.dropLast())
-        }
-        return "\u{2026}"
-    }
-
-    /// Draws the scrollable reel: every line in a vertical strip,
-    /// clipped to the panel, active line bold and bright, the rest
-    /// dimmed with a distance fade. A teal dot marks "scrolled away
-    /// from live" while auto-follow is off.
+    /// Draws the scrollable reel: every lyric line in a vertical
+    /// strip, clipped to the panel, long lines wrapped onto further
+    /// rows (never truncated). The active line is always bold and
+    /// fully bright no matter where it sits; the rest dim with a
+    /// distance fade. A teal dot marks "scrolled away from live"
+    /// while auto-follow is off.
     private func drawLyricReel() {
-        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+        guard let ctx = NSGraphicsContext.current?.cgContext, !reelEntries.isEmpty else { return }
         ctx.saveGState()
         NSBezierPath(rect: NSRect(x: reelX, y: reelTop, width: reelW, height: reelH)).setClip()
-        let count = lyricReelLines.count
-        if count > 0 {
-            let first = max(0, Int((reelOffsetY / reelLineH).rounded(.down)) - 1)
-            let last = min(count - 1, Int(((reelOffsetY + reelH) / reelLineH).rounded(.up)) + 1)
-            if first <= last {
-                for i in first...last {
-                    let top = reelTop + CGFloat(i) * reelLineH - reelOffsetY
-                    let isActive = (i == lyricReelActive)
-                    let font: NSFont = isActive ? .boldSystemFont(ofSize: 17) : .systemFont(ofSize: 14)
-                    let centerY = top + reelLineH / 2
-                    let dist = abs(centerY - (reelTop + reelH / 2)) / (reelH / 2)
-                    let alpha: CGFloat = (isActive ? 1.0 : 0.42) * max(0.2, 1 - dist * 0.8)
-                    let text = truncatedLyric(lyricReelLines[i], font: font, width: reelW)
-                    let th = (text as NSString).size(withAttributes: [.font: font]).height
-                    let ty = top + (reelLineH - th) / 2
-                    var scale: CGFloat = 1.0
-                    if reelRolling && isActive {
-                        let p = min(1, Date().timeIntervalSince(reelRollStart) / reelDur)
-                        scale = 1 + 0.06 * CGFloat(sin(Double(p) * .pi))
-                    }
-                    let color = NSColor.white.withAlphaComponent(alpha)
-                    if scale != 1.0 {
-                        ctx.saveGState()
-                        ctx.translateBy(x: reelX, y: centerY)
-                        ctx.scaleBy(x: scale, y: scale)
-                        ctx.translateBy(x: -reelX, y: -centerY)
-                        drawText(text, font: font, color: color, at: NSPoint(x: reelX, y: ty))
-                        ctx.restoreGState()
-                    } else {
-                        drawText(text, font: font, color: color, at: NSPoint(x: reelX, y: ty))
-                    }
+        let viewTop = reelOffsetY
+        let viewBottom = reelOffsetY + reelH
+        for (i, e) in reelEntries.enumerated() {
+            if e.top + e.height < viewTop || e.top > viewBottom { continue }
+            let isActive = (i == lyricReelActive)
+            let font: NSFont = isActive ? .boldSystemFont(ofSize: 17) : .systemFont(ofSize: 14)
+            let entryCenterY = reelTop + e.top + e.height / 2 - reelOffsetY
+            let dist = abs(entryCenterY - (reelTop + reelH / 2)) / (reelH / 2)
+            // The active line keeps full brightness everywhere (it
+            // sits at the panel edge for the first/last lines, where
+            // the distance fade used to wash its highlight out).
+            let alpha: CGFloat = isActive ? 1.0 : 0.42 * max(0.2, 1 - dist * 0.8)
+            var scale: CGFloat = 1.0
+            if reelRolling && isActive {
+                let p = min(1, Date().timeIntervalSince(reelRollStart) / reelDur)
+                scale = 1 + 0.06 * CGFloat(sin(Double(p) * .pi))
+            }
+            let color = NSColor.white.withAlphaComponent(alpha)
+            let drawRows = {
+                for (j, row) in e.rows.enumerated() {
+                    let rowTop = reelTop + e.top + CGFloat(j) * reelRowH - reelOffsetY
+                    let th = (row as NSString).size(withAttributes: [.font: font]).height
+                    drawText(row, font: font, color: color,
+                             at: NSPoint(x: reelX, y: rowTop + (reelRowH - th) / 2))
                 }
+            }
+            if scale != 1.0 {
+                ctx.saveGState()
+                ctx.translateBy(x: reelX, y: entryCenterY)
+                ctx.scaleBy(x: scale, y: scale)
+                ctx.translateBy(x: -reelX, y: -entryCenterY)
+                drawRows()
+                ctx.restoreGState()
+            } else {
+                drawRows()
             }
         }
         if !reelFollow {
