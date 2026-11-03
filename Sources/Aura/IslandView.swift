@@ -476,12 +476,15 @@ final class IslandView: NSView, NSDraggingSource, NSTextFieldDelegate {
                 scale = 1 + 0.06 * CGFloat(sin(Double(p) * .pi))
             }
             let color = NSColor.white.withAlphaComponent(alpha)
+            // Hoisted for the closure below: Swift requires explicit
+            // self for member access inside closures.
+            let rx = reelX, rt = reelTop, rrh = reelRowH, offY = reelOffsetY
             let drawRows = {
                 for (j, row) in e.rows.enumerated() {
-                    let rowTop = reelTop + e.top + CGFloat(j) * reelRowH - reelOffsetY
+                    let rowTop = rt + e.top + CGFloat(j) * rrh - offY
                     let th = (row as NSString).size(withAttributes: [.font: font]).height
-                    drawText(row, font: font, color: color,
-                             at: NSPoint(x: reelX, y: rowTop + (reelRowH - th) / 2))
+                    self.drawText(row, font: font, color: color,
+                                  at: NSPoint(x: rx, y: rowTop + (rrh - th) / 2))
                 }
             }
             if scale != 1.0 {
