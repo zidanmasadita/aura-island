@@ -52,17 +52,27 @@ final class ScreenshotWatcher {
             info: Unmanaged.passUnretained(self).toOpaque(),
             retain: nil, release: nil, copyDescription: nil)
         let callback: FSEventStreamCallback = { _, info, numEvents, eventPaths, eventFlags, _ in
-            guard let info else { return }
+            guard let info, numEvents > 0 else { return }
+            // eventPaths arrived as a bad pointer once in the wild
+            // (EXC_BAD_ACCESS inside the NSArray-> [String] force
+            // bridge), so validate everything before touching it:
+            // non-null, real CFArray, element count sane, every
+            // element a real CFString. No force-casts anywhere.
+            let ptrOpt: UnsafeMutableRawPointer? = eventPaths
+            guard UInt(bitPattern: ptrOpt) != 0 else { return }
+            let cfPaths = unsafeBitCast(eventPaths, to: CFArray.self)
+            let pathCount = CFArrayGetCount(cfPaths)
+            guard pathCount > 0 else { return }
             let watcher = Unmanaged<ScreenshotWatcher>.fromOpaque(info).takeUnretainedValue()
-            let paths = unsafeBitCast(eventPaths, to: NSArray.self) as! [String]
-            for i in 0..<numEvents {
+            for i in 0..<min(numEvents, pathCount) {
                 let flags = eventFlags[i]
                 let created = flags & UInt32(kFSEventStreamEventFlagItemCreated) != 0
                 let isDir = flags & UInt32(kFSEventStreamEventFlagItemIsDir) != 0
                 let removed = flags & UInt32(kFSEventStreamEventFlagItemRemoved) != 0
-                if created && !isDir && !removed {
-                    watcher.handleNewFile(at: paths[i])
-                }
+                guard created && !isDir && !removed else { continue }
+                guard let rawValue = CFArrayGetValueAtIndex(cfPaths, i) else { continue }
+                let path = Unmanaged<CFString>.fromOpaque(rawValue).takeUnretainedValue() as String
+                watcher.handleNewFile(at: path)
             }
         }
         let flags = FSEventStreamCreateFlags(kFSEventStreamCreateFlagFileEvents
